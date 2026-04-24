@@ -1,0 +1,220 @@
+task_id: task-7
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: >
+      Many agent-specific fields are marked Optional in AgentMetadata.
+      This avoids validation failures when an agent does not provide a field,
+      but it means consumers must check for None everywhere. A stricter approach
+      would use discriminated unions per agent type, but this adds complexity
+      beyond POC scope.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      The success field is inferred from Claude Code stderr presence, but ONLY
+      for Bash tool (refined during self-iteration). For non-Bash tools, success
+      is left as None. Phase 1 should use JSONL transcript is_error field for
+      non-Bash tools.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Using a single flat SecondSightEvent dataclass instead of a type hierarchy
+      (ToolCallEvent, SessionEvent, etc.). This means the type system does not
+      enforce which fields are populated for which event types. A tool_call_start
+      event SHOULD have tool_name but nothing prevents it from being None.
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: >
+      Agent format change breaks normalization silently: If Claude Code, OpenCode,
+      or Codex changes their event format (field names, nesting, types), the
+      normalize_event function will produce events with more None fields than
+      expected. The typed_field_percentage will drop, but only if someone runs
+      the death tests. In production, events will silently lose data.
+      Detection: monitor typed_field_percentage per agent in production.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Codex JSON string arguments that fail to parse: If Codex changes the
+      arguments field format (e.g., from JSON string to raw text), json.loads()
+      will fail and the schema falls back to {"raw_arguments": <string>}.
+      This fallback means tool_args is technically populated (not None) but
+      the structured data is lost. The typed_field_percentage metric will not
+      catch this because the field is non-None.
+      Detection: check for "raw_arguments" key in tool_args as a degradation signal.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      OpenCode plugin hook events lack timestamps: The normalize_event for
+      OpenCode plugin hooks does not set event.timestamp because the plugin
+      API does not provide timestamps. Events ingested via plugin hooks will
+      have timestamp=None. Consumers that assume all events have timestamps
+      will fail or produce incorrect orderings.
+      Detection: assert timestamp is not None in event consumers.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Token usage is_cumulative flag misinterpreted: If a consumer treats
+      Codex cumulative token counts as per-event counts, cost tracking will
+      be wildly incorrect (reporting session totals as single-event costs).
+      Detection: consumers must check is_cumulative before summing.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      Event payloads from reference_opensoure (lazyagent, observagent,
+      langfuse-template) are representative of current agent versions.
+    verified: false
+    note: >
+      Reference projects were last updated at unknown dates. Agent versions
+      may have changed since. If agent formats have changed, normalize_event
+      will produce events with degraded typed field coverage.
+      CONSEQUENCE: Phase 1 adapters must validate against live agent output,
+      not just reference data.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      Schema versioning is needed at POC stage (v0.1 will change significantly).
+    verified: true
+    note: >
+      Verified by design: schema_version costs nothing (one string field)
+      and provides migration detection. Even if v0.1 changes drastically,
+      old serialized events can be detected and migrated.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      Codex function_call.arguments is always a valid JSON string when the
+      tool is exec_command or apply_patch.
+    verified: false
+    note: >
+      Confirmed from lazyagent process_test.go synthetic data. But the
+      Codex source code (protocol.rs) defines arguments as a String type,
+      not JSON -- it could contain non-JSON content for custom tools.
+      CONSEQUENCE: The json.loads() fallback to raw_arguments handles this,
+      but structured parsing is lost for those cases.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      Python dataclasses are sufficient for POC. Pydantic is not needed.
+    verified: true
+    note: >
+      Dataclasses provide typed fields, serialization via asdict(),
+      and zero external dependencies. 37 tests pass without Pydantic.
+      Phase 1 may add Pydantic for runtime validation if needed.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      OpenCode tool.execute.before hook is distinguishable from
+      tool.execute.after by the presence of output.output field.
+    verified: false
+    note: >
+      The normalization uses presence of "output" key in output_data
+      to distinguish before/after hooks. If OpenCode changes the output
+      structure, this heuristic will misclassify events.
+      CONSEQUENCE: Before events may be classified as after events or vice versa.
+    deferred_to_feature_iteration: false
+
+debt_registered: true
+debt_location: >
+  Multiple items:
+  1. src/secondsight/poc/event_schema.py: success field inference from stderr
+     is a heuristic that needs replacement in Phase 1 (use JSONL is_error).
+  2. src/secondsight/poc/event_schema.py: OpenCode before/after hook
+     discrimination is fragile (relies on output field presence).
+  3. src/secondsight/poc/event_schema.py: No runtime validation of event
+     field types -- a consumer could set tool_args to a string and nothing
+     would catch it at the Python level (dataclasses don't validate).
+  4. tests/poc/conftest.py: Sample events are synthetic, not captured from
+     live agent runs. Phase 1 must validate against live data.
+
+narrative: |
+  The schema design prioritizes typed fields over flexibility. The DC-3
+  death test (>50% typed fields per agent) passes with comfortable margins
+  (~80-90% typed across all three agents). The key design decisions were:
+
+  1. **Normalize at the boundary**: All agent-specific parsing is in
+     normalize_event(). Internal code only sees SecondSightEvent.
+
+  2. **Typed AgentMetadata instead of dict[str, Any]**: 20+ typed fields
+     covering known agent-specific data. Only an `extra` dict for truly
+     unexpected fields.
+
+  3. **Codex double-parsing handled at normalization**: JSON-encoded string
+     arguments are parsed to dicts before they enter the schema. Consumers
+     never see the raw string.
+
+  4. **TokenUsage.is_cumulative flag**: Explicitly models the different
+     token usage granularities across agents. Prevents silent misuse of
+     cumulative counts as per-event counts.
+
+  The primary concerns are:
+  - Agent format stability is unverified (all three agents could change)
+  - Success/failure inference is unreliable for non-Bash CC tools
+  - No runtime type validation (dataclasses trust the caller)
+
+resolved_items:
+  - original_section: assumptions_made
+    original_description: "Schema versioning is needed at POC stage"
+    resolution: >
+      Verified by implementation: schema_version field costs nothing
+      (one string default), provides migration detection, and is included
+      in both Python events and JSON Schema export. Death test confirms
+      schema_version is present and non-empty.
+
+  - original_section: assumptions_made
+    original_description: "Python dataclasses are sufficient for POC"
+    resolution: >
+      Verified by implementation: 37 tests pass using only dataclasses.
+      Serialization (event_to_dict, event_from_dict), JSON Schema export,
+      and typed field percentage computation all work without Pydantic.
+
+  - original_section: known_shortcuts
+    original_description: "success field inferred from Claude Code stderr"
+    resolution: >
+      Added explicit documentation in event_schema.py and design notes
+      that stderr heuristic is unreliable for non-Bash tools. Phase 1
+      debt item registered. Cannot fix within task scope because JSONL
+      is_error field access requires JSONL reading infrastructure not
+      yet built.
+
+  - original_section: silent_failure_conditions
+    original_description: "Codex JSON string arguments that fail to parse"
+    resolution: >
+      Added fallback to {"raw_arguments": <string>} in _normalize_codex.
+      Added documentation in design notes. Cannot add production monitoring
+      within task scope, but the death test for double-parsing verifies
+      the happy path works correctly.
+
+  - original_section: silent_failure_conditions
+    original_description: "Token usage is_cumulative flag misinterpreted"
+    resolution: >
+      Added explicit is_cumulative field to TokenUsage dataclass with
+      documentation. Death test verifies Codex token_count events set
+      is_cumulative=True. Design notes document the granularity differences.
+      Cannot enforce consumer behavior within task scope.
+
+  - original_section: known_shortcuts
+    original_description: "success field inferred from Claude Code stderr for all tools"
+    resolution: >
+      Self-iteration fix: narrowed success inference to Bash tool only.
+      For non-Bash tools, success is now explicitly left as None instead
+      of being inferred from stderr presence. This prevents false success
+      signals for tools like Read/Write/Edit where stderr doesn't mean failure.
+      Code change in _normalize_claude_code: added tool_name check.
+
+  - original_section: silent_failure_conditions
+    original_description: "Codex JSON string arguments fail to parse silently"
+    resolution: >
+      Self-iteration fix: added logger.warning() calls in both Codex
+      normalization paths (_normalize_codex JSONL and hook callback)
+      when json.loads() fails and falls back to raw_arguments.
+      This makes the degradation observable via logging instead of silent.
+
+  - original_section: assumptions_made
+    original_description: "OpenCode before/after hook discrimination by output field presence"
+    resolution: >
+      Self-iteration fix: added fallback branch in _normalize_opencode
+      for unknown output structures. When neither "output" nor "args"
+      is present in output_data, the event defaults to tool_call_end
+      and logs a warning. This prevents silent misclassification --
+      the degradation is now observable via logging.

@@ -1,0 +1,79 @@
+task_id: task-2
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: "Plugin hook payload schemas were read from TypeScript type definitions (packages/plugin/src/index.ts) rather than being observed from a live running OpenCode instance. The types define the contract but actual runtime behavior (e.g., whether output.args is always populated, edge cases in metadata) was not empirically verified."
+    deferred_to_feature_iteration: false
+
+  - description: "The investigation confirmed lazyagent cross-validates against sst/opencode@dev but did not pin the exact commit hash of sst/opencode examined. The 'dev' branch is actively changing. Schema findings are time-bounded to investigation date 2026-04-24."
+    deferred_to_feature_iteration: false
+
+  - description: "The event payload for the generic `event` hook (input: { event: Event }) relies on @opencode-ai/sdk's Event type — a union of all event payloads. This type was not fully enumerated from source because the SDK package itself was not cloned. The event list was taken from the official docs plugin page (authoritative) and spot-checked against bus-event.ts definitions."
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: "If OpenCode migrates away from SQLite (e.g., to a server-side database in future workspace/cloud mode), DB polling stops working silently. There is no migration notice mechanism. SecondSight would silently stop receiving events with no error — just absence of new data."
+    deferred_to_feature_iteration: true
+
+  - description: "Plugin hooks run in Bun. If SecondSight's JS/TS bridge plugin crashes or fails to start (Bun not installed, plugin syntax error), OpenCode continues working normally and emits no error observable by SecondSight. The failure is invisible from the Python side."
+    deferred_to_feature_iteration: true
+
+  - description: "tool.execute.after's output.output field is typed as string but some tools may return empty string or truncated output in edge cases. SecondSight's outcome analysis would see empty results without knowing whether it was a genuinely empty result or a truncation. The ToolStateCompleted schema shows time.compacted field suggesting output can be compacted — truncated outputs would silently reduce analysis quality."
+    deferred_to_feature_iteration: false
+
+  - description: "DB polling uses time_updated as a staleness indicator (per lazyagent's cache implementation). If OpenCode writes a message but does not update time_updated on the session row (e.g., a background operation), the poll-based cache would miss the update silently."
+    deferred_to_feature_iteration: true
+
+assumptions_made:
+  - assumption: "sst/opencode is the correct and current implementation of OpenCode that opencode.ai docs refers to"
+    verified: true
+    note: "Verified: opencode.ai/docs/ renders content from sst/opencode@dev. The README in sst/opencode links to opencode.ai and references the @opencode-ai/plugin npm package. The archived opencode-ai/opencode README explicitly states 'project has moved' and links to charmbracelet/crush (not sst/opencode). The npm package opencode-ai corresponds to sst/opencode."
+
+  - assumption: "lazyagent's DB schema (session, message, part tables with data JSON columns) matches the current sst/opencode DB schema"
+    verified: true
+    note: "Verified by cross-referencing lazyagent's types.go (dbSession, messageData, partData) against sst/opencode's session.sql.ts (SessionTable, MessageTable, PartTable). Column names and JSON structure match. Lazyagent reads part.data as {type, text, tool, callID, state} which matches PartData = Omit<MessageV2.Part, 'id' | 'sessionID' | 'messageID'>. However, the current schema has more part types (SnapshotPart, PatchPart, AgentPart, RetryPart, CompactionPart) that lazyagent doesn't handle — it only processes 'text' and 'tool' types."
+
+  - assumption: "OpenCode supports external hooks (not just internal event bus) — i.e., plugin system is accessible from outside the process"
+    verified: true
+    note: "Verified: plugin system is in-process (Bun). However, the plugin receives an opencode SDK `client` object that makes HTTP API calls to the running OpenCode server. The plugin IS internal to the process, but can exfiltrate data via HTTP to an external Python service. This is a weaker form of external hook than Claude Code's stdin-based mechanism — it requires maintaining a running Bun plugin process alongside SecondSight."
+
+  - assumption: "OpenCode's session storage format (SQLite) is stable across versions"
+    verified: false
+    note: "Cannot be verified without monitoring multiple versions. The storage module uses Effect-framework migrations (storage.ts has Migration type). No changelog was inspected for schema changes. CONSEQUENCE: If schema changes break DB polling, SecondSight loses all data access silently for the polling path."
+
+  - assumption: "The event list on opencode.ai/docs/plugins is complete and current"
+    verified: false
+    note: "The docs page may lag behind source. Spot-checked against bus-event.ts and session.ts — the documented events match what was found in source. However, there may be events in other modules not captured. CONSEQUENCE: If undocumented events exist that are relevant to SecondSight, they would be missed. This is a low-severity assumption given the comprehensiveness of the documented list."
+
+debt_registered: true
+debt_location: "opencode-hooks.md and opencode-hooks.yaml: risks section documents Bun runtime constraint, schema stability, and untyped output.metadata. test_opencode_hook_report_quality.py verifies these are documented. silent_failure_conditions in this scar report describe additional runtime failure modes."
+
+resolved_items:
+  - original_section: "assumptions_made"
+    original_description: "sst/opencode is the correct current implementation"
+    resolution: "Verified by tracing npm package name, README links, and archived repo's redirect notice. Confirmed via raw GitHub access to sst/opencode@dev README."
+
+  - original_section: "assumptions_made"
+    original_description: "lazyagent DB schema matches current sst/opencode"
+    resolution: "Cross-validated lazyagent internal/opencode/types.go against sst/opencode session.sql.ts and message-v2.ts. Core tables and JSON column structures match. Documented discrepancy: lazyagent only processes text and tool part types; current schema has 10+ part types."
+
+  - original_section: "assumptions_made"
+    original_description: "OpenCode supports external hooks"
+    resolution: "Clarified: plugin system is in-process Bun. External access requires HTTP bridge via SDK client. Documented in hook_types and risks."
+
+  - original_section: "known_shortcuts"
+    original_description: "Payload schemas from TypeScript types, not live observation"
+    resolution: "Added explicit documentation in opencode-hooks.md under DC-1 section noting the payload schema source. Added test (test_tool_execute_after_documents_args_and_output_fields) that enforces the payload fields are documented with correct field names matching source types."
+
+  - original_section: "silent_failure_conditions"
+    original_description: "tool.execute.after output.output truncation via compaction"
+    resolution: "Added explicit risk entry in opencode-hooks.yaml risks section: 'Tool output compaction: ToolStateCompleted includes a time.compacted field...' Documented the time.compacted field in db.polling.part_table hook entry. Risk is now visible to Phase 2 architects."
+
+narrative: |
+  The most significant finding is the identity clarification: the archived opencode-ai/opencode (Go) is not the same project as sst/opencode (TypeScript/Bun), which is what opencode.ai now documents. This could have caused the investigation to fail silently if the wrong repo was analyzed.
+
+  The second critical finding is the Bun runtime constraint: OpenCode plugins are JavaScript/TypeScript, not Python. SecondSight needs a bridge layer (JS plugin that forwards events via HTTP to Python). This is documented but not prototyped — it is a Phase 1 task.
+
+  The DB polling path (lazyagent approach) covers all 8 SecondSight requirements but is unofficial. The plugin API covers 6/8 officially. The recommended approach is to use both: DB polling for observation (all data) and plugin hooks for injection (directive delivery).
+
+  Sub-agent detection is an important gap in the plugin API: session.created fires but doesn't carry parent_id in the event payload — parent_id must be retrieved from DB or via a client API call from within the plugin.

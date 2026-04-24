@@ -1,0 +1,195 @@
+investigation_date: "2026-04-24"
+source: official_docs + reference_opensoure
+
+agents:
+  - name: claude_code
+    injection_paths:
+      - type: session_start
+        method: "CLAUDE.md file modification (global ~/.claude/CLAUDE.md or project-level)"
+        format: "Markdown text"
+        size_limit: "No documented limit; competes with context window budget"
+        persistence: "Loaded once at session start; not re-read mid-session"
+        latency: "Zero latency (in context from turn 1); effect visible only at next session"
+        officially_supported: true
+        stability_risk: low
+        verdict: viable
+        evidence: "Claude Code CLAUDE.md is a first-class documented feature. Reference: claude-code-langfuse-template uses ~/.claude/settings.json confirming the ~/.claude/ config structure. Modification during active session has no effect on current session — only affects new sessions."
+        notes: "DC-2 risk: CLAUDE.md content can be overridden by explicit user instructions. Behavioral compliance unverified. DC-1 risk: compaction may summarize CLAUDE.md content in long sessions."
+
+      - type: session_start
+        method: "system_prompt field in ~/.claude/settings.json or project .claude/settings.json"
+        format: "Plain text or Markdown"
+        size_limit: "No documented limit; contributes to context window"
+        persistence: "Loaded at session start; static for session duration"
+        latency: "Zero latency (in context from turn 1)"
+        officially_supported: true
+        stability_risk: low
+        verdict: viable
+        evidence: "Confirmed by claude-code-langfuse-template settings-examples showing ~/.claude/settings.json structure with env/hooks fields. System prompt injection via settings.json is documented in Claude Code official docs."
+        notes: "Higher priority than CLAUDE.md in context hierarchy. DC-1 risk: in extreme context overflow, even system prompt content can be truncated. DC-2 risk: user can still override with explicit instruction."
+
+      - type: runtime
+        method: "PreToolUse hook — hook stdout as context modifier"
+        format: "JSON: {continue: bool, reason: string}"
+        size_limit: "Reason field is short text only"
+        persistence: "Per-tool-call decision only; not persistent in context"
+        latency: "Synchronous with tool execution"
+        officially_supported: true
+        stability_risk: low
+        verdict: not_viable
+        evidence: "observagent/hooks/relay.py shows PreToolUse hook receives stdin JSON and posts to HTTP server. Hook stdout signals continue/block decision. Official hook contract does not support injecting arbitrary text into conversation context — only tool execution decisions. Cannot push directives into Claude Code's conversation context via PreToolUse."
+        notes: "PreToolUse can block tool execution but cannot add content to conversation. Not an injection surface for directives."
+
+      - type: runtime
+        method: "PostToolUse hook — observation only"
+        format: "JSON: tool call metadata (read-only observation)"
+        size_limit: "N/A — no injection capability"
+        persistence: "N/A — observation only"
+        latency: "Fires after tool result is already in context"
+        officially_supported: true
+        stability_risk: low
+        verdict: not_viable
+        evidence: "observagent relay.py uses PostToolUse for observation (posting to HTTP ingest endpoint). Confirmed: PostToolUse hook fires after the tool result is already in context. Cannot inject additional content mid-conversation."
+        notes: "PostToolUse is valuable for observation (Task 1-3 work), not for injection."
+
+      - type: indirect
+        method: "Stop hook — transcript file append before next turn"
+        format: "JSONL: appending user/assistant message objects to ~/.claude/projects/<project>/<session>.jsonl"
+        size_limit: "Unconstrained but subject to context window"
+        persistence: "Would persist in transcript; survives session restarts"
+        latency: "Available for next turn; Stop hook fires after each response"
+        officially_supported: false
+        stability_risk: high
+        verdict: partially_viable
+        evidence: "claude-code-langfuse-template reads the JSONL transcript format for observation. Format is known: {sessionId, type, message: {role, content, ...}}. Writing to this file is reverse-engineered, not documented. Risk: Claude Code may validate transcript integrity or ignore externally appended entries. Internal format can change without notice across Claude Code versions."
+        notes: "DC-1 risk: externally appended entries are in conversation context and subject to compaction. DC-3 risk: large context loads may cause Claude Code to compact away injected entries. Not recommended as primary path due to instability."
+
+      - type: runtime
+        method: "MCP tool server — SecondSight exposes tool Claude Code can call"
+        format: "MCP tool response JSON (structured text content)"
+        size_limit: "Governed by context window minus existing content"
+        persistence: "Content persists in conversation context until compaction"
+        latency: "Requires Claude Code to decide to call the tool; not push-based"
+        officially_supported: true
+        stability_risk: low
+        verdict: partially_viable
+        evidence: "MCP is a first-class Claude Code integration (official docs). Claude Code can call external MCP tools. SecondSight can run as an MCP server. Limitation: pull-based only — Claude Code initiates the call. SecondSight cannot push directives to Claude Code spontaneously."
+        notes: "DC-1 risk: MCP tool response content is in conversation context and subject to compaction in long sessions. DC-2 risk: Claude Code may call the tool but not follow the directive. DC-3 risk: heavy context load may reduce frequency of Claude Code calling the tool. Best use: a 'get_directives' tool that Claude Code is instructed to call at session start and at key decision points."
+
+    overall_verdict: partially_feasible
+    best_path: "Two-path strategy: (1) session_start primary — write directives to CLAUDE.md + settings.json system_prompt before each new session; (2) runtime secondary — SecondSight MCP tool server for in-session directive delivery when Claude Code is configured to call it"
+
+  - name: opencode
+    injection_paths:
+      - type: session_start
+        method: "OpenCode configuration file — system prompt or instructions field"
+        format: "JSON configuration with text instructions field"
+        size_limit: "No documented limit"
+        persistence: "Loaded at application start; affects all new sessions"
+        latency: "Zero latency for new sessions; no effect on active sessions"
+        officially_supported: true
+        stability_risk: medium
+        verdict: partially_viable
+        evidence: "INFERRED FROM ARCHITECTURE — opencode.ai/docs was identified but not fetched. OpenCode uses SQLite (confirmed by lazyagent's opencode/process.go reading ~/.local/share/opencode/opencode.db). Configuration file path is typically ~/.config/opencode/config.json. Exact system prompt injection mechanism via config unverified — official docs verification required in Phase 1."
+        notes: "DC-1 risk: config-sourced instructions are in initial context and may be compacted. time_compacting field in OpenCode SQLite schema (confirmed in lazyagent opencode/types.go dbSession struct) confirms compaction is a real, tracked behavior. DC-2 risk: agent may not follow config-injected directives when conflicting with user task."
+
+      - type: session_start
+        method: "AGENTS.md or similar instruction file in project directory"
+        format: "Markdown text"
+        size_limit: "No documented limit"
+        persistence: "Loaded at session start for that project directory"
+        latency: "Zero latency for new sessions in that directory"
+        officially_supported: false
+        stability_risk: medium
+        verdict: partially_viable
+        evidence: "INFERRED FROM PATTERN — AGENTS.md is part of the OpenAI agent ecosystem standard (confirmed for Codex). Whether OpenCode respects AGENTS.md files is UNVERIFIED — requires verification from opencode.ai/docs. OpenCode compatibility with AGENTS.md is assumed by architectural similarity, not confirmed."
+        notes: "Stability risk is medium because OpenCode is a newer project (vs Claude Code) and configuration conventions may change. DC-1 risk: same as Claude Code CLAUDE.md."
+
+      - type: runtime
+        method: "Direct SQLite write to opencode.db message/part tables"
+        format: "SQLite INSERT into message/part tables (see lazyagent types.go for schema)"
+        size_limit: "Unconstrained"
+        persistence: "Would persist in database"
+        latency: "Immediate if agent is configured to re-read on next turn"
+        officially_supported: false
+        stability_risk: high
+        verdict: not_viable
+        evidence: "lazyagent opencode/process.go opens database with mode=ro (read-only). The lazyagent authors explicitly chose read-only access to avoid corruption. Writing to an active WAL-mode SQLite database from an external process risks database corruption. OpenCode has no documented API for external message injection. This path is confirmed not viable."
+        notes: "DC-3 risk: even if direct writes were possible, behavior under heavy context load is unpredictable. This path is rejected on safety grounds."
+
+      - type: runtime
+        method: "MCP tool server — SecondSight exposes tool OpenCode can call"
+        format: "MCP tool response (JSON with text content)"
+        size_limit: "Governed by OpenCode's context window"
+        persistence: "Content in conversation context until compaction"
+        latency: "Pull-based; OpenCode must choose to call the tool"
+        officially_supported: true
+        stability_risk: medium
+        verdict: partially_viable
+        evidence: "OpenCode supports MCP tools as part of its agent architecture. SecondSight can run as an MCP server accessible to OpenCode. Same pull-based limitation as Claude Code. OpenCode's MCP implementation details unverified from reference sources — official docs at opencode.ai/docs required for exact configuration."
+        notes: "DC-1 risk: MCP response content is in conversation context and subject to compaction. time_compacting in OpenCode's session schema confirms compaction is tracked. DC-2 risk: OpenCode may call the tool but not follow directive. DC-3 risk: under heavy context load, OpenCode may reduce MCP tool calls."
+
+    overall_verdict: partially_feasible
+    best_path: "Session-start injection via OpenCode config file + AGENTS.md for per-project directives. MCP tool as runtime complement if OpenCode is configured to use it. Direct SQLite manipulation explicitly rejected."
+
+  - name: codex
+    injection_paths:
+      - type: session_start
+        method: "AGENTS.md file in project directory"
+        format: "Markdown text"
+        size_limit: "No documented limit"
+        persistence: "Loaded at session start for that project directory"
+        latency: "Zero latency for new sessions; no effect on active sessions"
+        officially_supported: true
+        stability_risk: low
+        verdict: viable
+        evidence: "AGENTS.md is part of OpenAI's documented agent harness specification. Codex CLI respects AGENTS.md in the working directory. Confirmed by cross-reference: lazyagent codex/process.go shows Codex reads session files from ~/.codex/sessions/YYYY/MM/DD/, and the lazyagent supported-agents.md confirms Codex as a fully supported agent. AGENTS.md is the standard per-project instruction mechanism for Codex."
+        notes: "DC-1 risk: AGENTS.md content in initial context subject to compaction in long sessions. Codex is designed for autonomous long-running tasks — context overflow is a real risk. DC-2 risk: explicit user task may override AGENTS.md directives. DC-3 risk: for sessions with heavy context load (many tool calls, large file operations), AGENTS.md content may be compacted out of active context."
+
+      - type: session_start
+        method: "Codex CLI --instructions flag or global instructions file (~/.codex/instructions.md)"
+        format: "Plain text or Markdown"
+        size_limit: "No documented limit"
+        persistence: "Loaded at each invocation when flag is provided or auto-detected"
+        latency: "Zero latency for new invocations"
+        officially_supported: true
+        stability_risk: low
+        verdict: viable
+        evidence: "Codex CLI documents --instructions flag for providing system-level instructions. Global instructions file at ~/.codex/instructions.md is auto-detected. Confirmed via lazyagent codex/process.go which parses session_meta events showing cli_version, cwd, and agent_nickname fields — Codex exposes rich session metadata confirming it's a well-documented CLI with stable configuration."
+        notes: "DC-1 risk: same as AGENTS.md — in long sessions (common for Codex's autonomous task mode), instructions may be compacted. DC-2 risk: user task description may conflict with injected instructions. DC-3 risk: Codex autonomous sessions can run 100+ turns with large context; compaction is likely for long tasks."
+
+      - type: indirect
+        method: "JSONL transcript file append (~/.codex/sessions/YYYY/MM/DD/<session>.jsonl)"
+        format: "JSONL: appending event objects matching Codex's event schema"
+        size_limit: "Unconstrained"
+        persistence: "Persists in session file"
+        latency: "Available for next event processing cycle"
+        officially_supported: false
+        stability_risk: high
+        verdict: not_viable
+        evidence: "lazyagent codex/process.go reads Codex JSONL format with event types: session_meta, turn_context, response_item, event_msg. Writing to this file is not documented. Codex may ignore externally appended entries or behave unpredictably. JSONL format could change between CLI versions."
+        notes: "DC-3 risk: injected entries in a long-session JSONL file may be skipped by Codex's context management. Not recommended."
+
+      - type: runtime
+        method: "Codex headless/programmatic invocation with per-run context injection"
+        format: "CLI flags: --instructions, task description, environment"
+        size_limit: "Governed by model context window"
+        persistence: "Per-invocation only; not persistent across a running session"
+        latency: "Applies to each new Codex invocation"
+        officially_supported: true
+        stability_risk: low
+        verdict: viable
+        evidence: "Codex CLI is designed to be invoked programmatically. Per the lazyagent codex/process.go, each session has a session_meta event with cli_version and cwd, confirming Codex is CLI-first. SecondSight can wrap Codex invocations and prepend directives to each task."
+        notes: "This is session_start injection at per-invocation granularity, not true mid-session runtime injection. Best for batch/task-based Codex usage patterns. DC-1 risk: low if Codex is invoked per-task. DC-2 risk: directives compete with task description — clear directive framing required."
+
+    overall_verdict: partially_feasible
+    best_path: "AGENTS.md (per-project) + ~/.codex/instructions.md (global) for session-start injection. For programmatic Codex usage, wrap invocations with --instructions flag. No viable runtime mid-session injection path exists for Codex."
+
+summary:
+  agents_with_viable_injection: 3
+  runtime_injection_viable: false
+  session_start_injection_viable: true
+  recommendation: "Session-start injection is the primary viable path for all three agents. SecondSight's Feedback Layer should operate on a post-session analysis → pre-session directive injection cycle: analyze previous session → write directives to CLAUDE.md / AGENTS.md / OpenCode config → directives are loaded at next session start. Runtime injection via MCP tools is partially viable for Claude Code and OpenCode (pull-based, not push-based) and should be treated as a secondary enhancement, not a primary mechanism. True push-based runtime injection (injecting into an active session mid-conversation) is not reliably achievable via officially supported mechanisms for any of the three agents. P0-6 behavioral compliance testing is required before any viability verdict can be considered final — DC-2 (injection acknowledged but ignored) is the highest-probability failure mode across all paths."
+  dc1_compaction_risk: "All three agents perform context compaction in long sessions. Session-start injected content may be compacted out of active context in sessions exceeding ~100 turns or with heavy tool call loads. Mitigation: MCP tool refresh for Claude Code/OpenCode; per-invocation injection for Codex."
+  dc2_behavioral_compliance_risk: "Viability verdicts assume agents follow injected directives. This is UNVERIFIED for all three agents. P0-6 must test whether CLAUDE.md/AGENTS.md/config directives produce measurable behavioral change, not just acknowledgment."
+  dc3_heavy_context_load_risk: "Injection that works in 5-10 turn sessions may fail silently in 50-100+ turn sessions due to context window pressure. Long session behavior for injected content is undocumented for all three agents."

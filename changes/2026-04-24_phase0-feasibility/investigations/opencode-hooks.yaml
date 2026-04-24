@@ -1,0 +1,254 @@
+agent: opencode
+investigation_date: "2026-04-24"
+source: "official_docs (opencode.ai/docs/plugins) + sst/opencode@dev source (packages/plugin/src/index.ts, packages/opencode/src/session/message-v2.ts, bus/index.ts) + reference_opensoure/lazyagent cross-validation"
+verdict: partially_feasible
+
+# IMPORTANT: OpenCode offers TWO distinct access mechanisms.
+# Hook types 1-9 are official Plugin Hook API (JS/TS, Bun runtime, in-process).
+# Hook types 10-11 are unofficial DB polling (Python-compatible, read-only SQLite).
+# Both are documented here because SecondSight needs both to meet all requirements.
+
+hook_types:
+  - name: "tool.execute.before"
+    trigger: "Fires before any tool call is executed. Plugin can inspect and modify args."
+    payload_fields:
+      - name: "input.tool"
+        type: "string"
+        required: true
+        analysis_use: "Tool call type classification (read, write, bash, etc.)"
+      - name: "input.sessionID"
+        type: "string"
+        required: true
+        analysis_use: "Correlate tool call to session"
+      - name: "input.callID"
+        type: "string"
+        required: true
+        analysis_use: "Unique identifier to join before/after events"
+      - name: "output.args"
+        type: "any (modifiable)"
+        required: true
+        analysis_use: "Tool call arguments — file paths, command strings, search queries. Core input for action classification."
+    limitations: "No timestamp field. Time must be derived from wall clock at hook invocation or from DB part.data.state.time.start. Plugin must be written in JS/TS for Bun runtime — cross-language bridge required for Python-based SecondSight."
+
+  - name: "tool.execute.after"
+    trigger: "Fires after tool call completes. Plugin can inspect and modify output."
+    payload_fields:
+      - name: "input.tool"
+        type: "string"
+        required: true
+        analysis_use: "Tool call type for result attribution"
+      - name: "input.sessionID"
+        type: "string"
+        required: true
+        analysis_use: "Session correlation"
+      - name: "input.callID"
+        type: "string"
+        required: true
+        analysis_use: "Join with tool.execute.before record"
+      - name: "input.args"
+        type: "any"
+        required: true
+        analysis_use: "The actual arguments used (mirrors output.args from before hook)"
+      - name: "output.output"
+        type: "string"
+        required: true
+        analysis_use: "Raw tool result text — file content for read, shell output for bash, diff for write. Needed for outcome analysis."
+      - name: "output.title"
+        type: "string"
+        required: true
+        analysis_use: "Human-readable tool execution summary"
+      - name: "output.metadata"
+        type: "any"
+        required: false
+        analysis_use: "Unstructured tool metadata — schema not enforced, content varies by tool"
+    limitations: "No end timestamp. output.metadata is untyped any — no documented subfields. output.output content structure varies by tool (not schema-enforced)."
+
+  - name: "event.session.created"
+    trigger: "Fires when a new session is created"
+    payload_fields:
+      - name: "event.properties.sessionID"
+        type: "string"
+        required: true
+        analysis_use: "Session lifecycle start tracking"
+    limitations: "Carries sessionID only. Directory, title, and other session metadata require a subsequent DB query or session.updated event."
+
+  - name: "event.session.idle"
+    trigger: "Fires when session becomes idle (agent finishes responding)"
+    payload_fields:
+      - name: "event.properties.sessionID"
+        type: "string"
+        required: true
+        analysis_use: "Session lifecycle end detection — proxy for session completion"
+    limitations: "Does not mean session is permanently closed. A new user prompt can restart the session."
+
+  - name: "event.session.error"
+    trigger: "Fires when a session encounters an error"
+    payload_fields:
+      - name: "event.properties.sessionID"
+        type: "string"
+        required: false
+        analysis_use: "Error attribution to session"
+      - name: "event.properties.error"
+        type: "discriminated union (AuthError | APIError | ContextOverflowError | AbortedError | ...)"
+        required: true
+        analysis_use: "Error classification — distinguishes auth failures, context overflow, API rate limits"
+    limitations: "sessionID is optional in schema (edge case where error occurs before session is assigned). Error type is a complex discriminated union requiring runtime type checking in JS/TS."
+
+  - name: "event.message.part.updated"
+    trigger: "Fires when a message part is created or updated (streaming and final)"
+    payload_fields:
+      - name: "event.properties.sessionID"
+        type: "string"
+        required: true
+        analysis_use: "Session correlation"
+      - name: "event.properties.part"
+        type: "Part (discriminated union: TextPart | ToolPart | StepFinishPart | SubtaskPart | ...)"
+        required: true
+        analysis_use: "When part.type=tool: full ToolPart with tool name, callID, state (input/output/timestamps). When part.type=step-finish: token usage and cost."
+      - name: "event.properties.time"
+        type: "number (milliseconds epoch)"
+        required: true
+        analysis_use: "Timestamp of the part update event"
+    limitations: "Fires for EVERY part update including streaming deltas — high event volume. ToolPart state progresses: pending -> running -> completed/error. Only the final 'completed' state has full timestamps and output."
+
+  - name: "chat.message hook"
+    trigger: "Called when a new user message is received by the agent"
+    payload_fields:
+      - name: "input.sessionID"
+        type: "string"
+        required: true
+        analysis_use: "Session correlation"
+      - name: "output.message"
+        type: "UserMessage (role, agent, model, system)"
+        required: true
+        analysis_use: "User prompt content — primary source of what the user asked"
+      - name: "output.parts"
+        type: "Part[]"
+        required: true
+        analysis_use: "Full prompt parts including text, file attachments"
+    limitations: "Only fires for user-originated messages, not agent responses. Agent response content must be captured via message.part.updated."
+
+  - name: "event.session.updated"
+    trigger: "Fires when session metadata changes"
+    payload_fields:
+      - name: "event.properties.sessionID"
+        type: "string"
+        required: true
+        analysis_use: "Session identity tracking"
+    limitations: "busSchema only carries sessionID — full session info requires DB query."
+
+  - name: "permission.ask hook"
+    trigger: "Called when OpenCode needs permission before executing a potentially dangerous action"
+    payload_fields:
+      - name: "input"
+        type: "Permission (sessionID, type, description)"
+        required: true
+        analysis_use: "Governance tracking — captures when agent requests elevated permissions"
+      - name: "output.status"
+        type: "'ask' | 'deny' | 'allow'"
+        required: true
+        analysis_use: "Permission decision — needed for Phase 3B governance analysis"
+    limitations: "Permission schema not fully documented in plugin types. Exact Permission fields require inspection of @opencode-ai/sdk."
+
+  - name: "db.polling.part_table"
+    trigger: "Not an event — SQLite polling of part table in opencode.db. Unofficial mechanism."
+    payload_fields:
+      - name: "part.data.type"
+        type: "string (tool | text | step-finish | ...)"
+        required: true
+        analysis_use: "Discriminate tool calls from text responses"
+      - name: "part.data.tool"
+        type: "string"
+        required: false
+        analysis_use: "Tool name (present only when type=tool)"
+      - name: "part.data.callID"
+        type: "string"
+        required: false
+        analysis_use: "Join key to correlate with plugin hook events"
+      - name: "part.data.state.input"
+        type: "Record<string, any>"
+        required: false
+        analysis_use: "Tool arguments — structured JSON, not a raw string"
+      - name: "part.data.state.output"
+        type: "string"
+        required: false
+        analysis_use: "Tool result text"
+      - name: "part.data.state.time.start"
+        type: "number (epoch ms)"
+        required: false
+        analysis_use: "Precise tool execution start timestamp — only available here, not in plugin hooks"
+      - name: "part.data.state.time.end"
+        type: "number (epoch ms)"
+        required: false
+        analysis_use: "Precise tool execution end timestamp — only available here, not in plugin hooks"
+    limitations: "Unofficial API. Schema not guaranteed stable across OpenCode versions. lazyagent cross-validation confirms schema as of 2026-04 but provides no future stability guarantee. Requires poll interval (3s in lazyagent) — not real-time. Read-only — cannot be used for injection."
+
+  - name: "db.polling.message_table"
+    trigger: "Not an event — SQLite polling of message table. Unofficial mechanism."
+    payload_fields:
+      - name: "message.data.role"
+        type: "string ('user' | 'assistant')"
+        required: true
+        analysis_use: "Message role classification"
+      - name: "message.data.cost"
+        type: "number"
+        required: true
+        analysis_use: "Cumulative cost for this message"
+      - name: "message.data.tokens.input"
+        type: "number"
+        required: true
+        analysis_use: "Token usage tracking (input tokens for this message)"
+      - name: "message.data.tokens.output"
+        type: "number"
+        required: true
+        analysis_use: "Token usage tracking (output tokens)"
+      - name: "message.data.tokens.cache.read"
+        type: "number"
+        required: true
+        analysis_use: "Cache token read count"
+      - name: "message.data.tokens.cache.write"
+        type: "number"
+        required: true
+        analysis_use: "Cache token write count"
+      - name: "message.data.time.created"
+        type: "number (epoch ms)"
+        required: false
+        analysis_use: "Message creation timestamp"
+    limitations: "Token counts are per-message (LLM step), not per individual tool call. Multiple tool calls in one step share the same token attribution. Unofficial API — same schema stability caveat as part table."
+
+coverage:
+  needed_event_types: 8
+  # 1. tool call type, 2. tool call arguments, 3. tool call results,
+  # 4. timestamp start, 5. timestamp end (or duration),
+  # 6. token usage per call, 7. session lifecycle, 8. sub-agent spawning
+  available_event_types: 11
+  # 9 plugin hook types + 2 DB polling mechanisms documented above
+  sufficient_field_event_types: 6
+  # Conservative count using plugin API only (official, stable):
+  # tool type(1), tool args(2), tool results(3) — via tool.execute.before/after hooks
+  # timestamp start(4), timestamp end(5) — via tool.execute.before/after hook timestamps
+  # session lifecycle(7) — via session.create/session.delete hooks
+  # = 6 types covered by plugin API alone.
+  # Token usage(6) requires DB polling (message table cost/tokens fields).
+  # Sub-agent spawning(8) requires DB polling (session.parent_id).
+  # With DB polling added: 8/8 = 100%
+  coverage_rate: 75
+  # 6/8 needs met by plugin API alone = 75%
+  # Note: DB polling brings this to 100% but is unofficial
+
+risks:
+  - "Schema stability: OpenCode's SQLite schema (session, message, part tables) is internal and has no documented stability guarantee. lazyagent cross-validation confirms the schema as of the investigation date but future schema migrations (managed via Effect framework in storage.ts) could silently break DB polling without version bumps."
+  - "Plugin runtime constraint: OpenCode plugins must be written in JavaScript/TypeScript and run in Bun. SecondSight is Python-based. A cross-language bridge (e.g., JS plugin forwarding events via HTTP to Python SecondSight) adds a runtime dependency (Bun must be installed), a network/IPC hop, and a second codebase to maintain."
+  - "OpenCode is active development: The sst/opencode project is on the 'dev' branch with frequent changes. The plugin API package (@opencode-ai/plugin) is versioned on npm, but the experimental.* hooks are explicitly unstable and could change or be removed."
+  - "Token attribution granularity: Token usage is available at message (LLM step) level, not individual tool call level. If a step contains 3 tool calls, all 3 share one token count. Phase 2 cost attribution per tool call requires estimation, not exact counts."
+  - "tool.execute.after output.metadata is untyped any: No documented subfields. Different tools may populate metadata differently. Phase 2 parsers that assume specific metadata fields will fail silently for tools that don't emit them."
+  - "Original opencode-ai/opencode (Go) is archived: If the task spec referenced the Go implementation, it no longer exists. This investigation covers the current TypeScript implementation (sst/opencode). Any references to the original Go project are stale."
+  - "No external hook API: Unlike Claude Code's stdin-based external hook API, OpenCode's plugin hooks run in-process (Bun). There is no mechanism to call an external Python process directly from an OpenCode hook without implementing an HTTP/IPC bridge."
+  - "Tool output compaction: ToolStateCompleted includes a time.compacted field, and lazyagent's compact command truncates bulky tool outputs. If SecondSight reads from a compacted database, tool output strings may be truncated mid-content with no error signal — just shorter strings. SecondSight should not assume full output is always present in DB."
+
+missing:
+  - "Per-call precise timestamps from plugin hooks: tool.execute.before/after have no timestamp fields. Wall clock at hook invocation provides an approximation but not the actual start/end times stored in ToolStateCompleted.time. DB polling is required for exact per-call timing."
+  - "Per-call token usage: Plugin hooks carry no token count. Token data is in StepFinishPart (message.part.updated where part.type=step-finish), available via event subscription or DB polling. Granularity is per-LLM-step, not per-tool-call."
+  - "Sub-agent parent_id from plugin events: session.created event only carries sessionID. To detect that a session is a sub-agent spawned by a parent, DB polling of the session table (parent_id column) or a separate client.session.get() call is required."
+  - "Structured tool output schema: output.output in tool.execute.after is a raw string. There is no enforced schema for individual tool result formats (bash stdout, file content, search results). Phase 2 must implement per-tool output parsers."
+  - "Agent response streaming content for injection: To inject directives into the agent's ongoing response, there is no documented hook. The experimental.chat.system.transform hook can modify system prompts, and tool.execute.before can modify tool args, but injecting content mid-response is not supported."

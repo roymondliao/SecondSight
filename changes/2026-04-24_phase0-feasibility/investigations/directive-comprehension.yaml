@@ -1,0 +1,717 @@
+investigation_date: "2026-04-24"
+experiment_type: directive_comprehension
+phase: "Phase 0 — protocol design (live testing deferred to Phase 1)"
+note: >
+  Live agent execution was not feasible in Phase 0. This document contains:
+  (1) experiment protocol designed for Phase 1 execution,
+  (2) protocol-based result entries (compliance=not_tested) that define the
+      full experiment matrix, and
+  (3) failure mode analysis based on agent architecture knowledge from Tasks 1-4.
+  Results will be populated during Phase 1 live testing. The protocol is
+  complete enough that Phase 1 can execute without further design work.
+
+injection_paths_used:
+  claude_code: "CLAUDE.md file modification (session-start, per Task 4 findings)"
+  opencode: "Config file system prompt (session-start, per Task 4 findings, INFERRED)"
+  codex: "AGENTS.md in project directory (session-start, per Task 4 findings)"
+
+# ============================================================================
+# TEST DIRECTIVES
+# Three directives with clear, measurable trigger conditions and expected
+# behavioral changes. Designed to span a range of complexity.
+# ============================================================================
+
+test_directives:
+  - id: d_test_1
+    scope: "file_reading"
+    trigger: "repeat_read_same_file > 2"
+    instruction: >
+      Before reading a file you have already read in this session,
+      verify whether the needed information is already in your context.
+      Only re-read if you can identify specific new information you need
+      that was not present in the previous read.
+    expected_behavior_change: >
+      Agent should read fewer unique files more than twice per session.
+      Observable metric: count of repeat reads of the same file path.
+      Complied = measurably fewer repeat reads vs baseline session.
+    rationale: >
+      Directly maps to PRD §10.2 canonical directive example. Tests both
+      trigger identification (counting reads) and behavioral change
+      (checking context before re-reading). Non-trivial trigger.
+
+  - id: d_test_2
+    scope: "verification"
+    trigger: "verification_after_verified_fact"
+    instruction: >
+      If you have already confirmed a fact (e.g., a file exists, a test passes,
+      a value equals X) within this session, do not re-verify the same fact
+      using the same method unless you have a specific reason to believe it
+      may have changed. State the reason explicitly before re-verifying.
+    expected_behavior_change: >
+      Agent should not re-run commands to verify facts already confirmed earlier
+      in the same session (e.g., re-running the same test that already passed,
+      re-checking a file's contents that were just read).
+      Observable metric: count of repeated verification commands for same fact.
+      Complied = agent states a reason before re-verifying, or skips redundant
+      re-verification entirely.
+    rationale: >
+      Tests PRD §6.2 "Over-verified" waste pattern. Trigger requires tracking
+      session state (what has been confirmed). More complex than d_test_1.
+
+  - id: d_test_3
+    scope: "task_scoping"
+    trigger: "out_of_scope_action_attempt"
+    instruction: >
+      If you are about to take an action that was not explicitly requested in
+      the current task (e.g., refactoring code adjacent to what you were asked
+      to fix, updating documentation for functions you were not asked to change),
+      stop and ask for confirmation before proceeding. Do not make unrequested
+      changes.
+    expected_behavior_change: >
+      Agent should pause and ask before making changes beyond the explicit task
+      scope. Observable metric: count of unrequested changes vs baseline.
+      Complied = agent asks before making scope-expanding changes, or makes zero
+      unrequested changes.
+    rationale: >
+      Tests PRD §6.2 "Divergent" action pattern. Trigger fires on intent
+      detection, not a countable numeric threshold. Tests whether agent can
+      recognize out-of-scope intent before acting on it. Most cognitively complex
+      of the three directives.
+
+# ============================================================================
+# PHRASING VARIANTS
+# Three phrasing styles per directive. Formal JSON mirrors the PRD directive
+# contract (§10.2). Natural language is conversational. Concise imperative
+# is a direct one-sentence instruction.
+# ============================================================================
+
+phrasing_variants:
+  d_test_1:
+    formal_json: |
+      {
+        "directive_id": "d_test_1",
+        "scope": "file_reading",
+        "trigger": "repeat_read_same_file > 2",
+        "instruction": "Before rereading a file you have already read in this session, verify whether the needed evidence is already in context. Only re-read if you can identify specific new information not previously captured.",
+        "priority": "high",
+        "expected_effect": "reduce redundant file reads"
+      }
+    natural_language: >
+      During this session, before you re-read a file you've already looked at,
+      take a moment to check if the information you need is already in your
+      context from the previous read. If it is, use what you have rather than
+      reading the file again. Only re-read when you specifically need something
+      new that you didn't capture before.
+    concise_imperative: >
+      Do not re-read a file unless you can name specific new information you need
+      that you did not capture in the previous read.
+
+  d_test_2:
+    formal_json: |
+      {
+        "directive_id": "d_test_2",
+        "scope": "verification",
+        "trigger": "verification_after_verified_fact",
+        "instruction": "If a fact has been confirmed in this session (file exists, test passes, value equals X), do not re-verify the same fact using the same method unless you can state a specific reason to believe it may have changed.",
+        "priority": "medium",
+        "expected_effect": "reduce redundant verification commands"
+      }
+    natural_language: >
+      When you've already confirmed something in this session — like a test
+      passing, a file existing, or a value being correct — don't check it again
+      unless something might have changed. If you do need to re-check, say why
+      you think the previous confirmation might no longer be valid.
+    concise_imperative: >
+      Before re-verifying a fact you already confirmed this session, state
+      explicitly why it may have changed. If you cannot state a reason, skip
+      the re-verification.
+
+  d_test_3:
+    formal_json: |
+      {
+        "directive_id": "d_test_3",
+        "scope": "task_scoping",
+        "trigger": "out_of_scope_action_attempt",
+        "instruction": "If you are about to take an action not explicitly requested in the current task (adjacent refactoring, unrequested documentation updates, scope-expanding changes), stop and ask for confirmation before proceeding.",
+        "priority": "high",
+        "expected_effect": "eliminate unrequested scope-expanding changes"
+      }
+    natural_language: >
+      Please stick to what was explicitly asked in this task. If you notice
+      something adjacent that could be improved — a nearby function that could
+      use refactoring, documentation that's slightly outdated — that's good to
+      notice, but don't make changes to it without asking first. Let me know
+      what you found and confirm before proceeding.
+    concise_imperative: >
+      Do not make changes beyond the explicit scope of this task. Before any
+      adjacent or unrequested change, ask for confirmation.
+
+# ============================================================================
+# MEASUREMENT CRITERIA
+# Defines what counts as complied, ignored, misinterpreted.
+# Compliance is determined by behavioral observation, NOT verbal acknowledgment.
+# ============================================================================
+
+measurement_criteria:
+  complied: >
+    The agent demonstrably changed the targeted behavior in the expected direction.
+    For d_test_1: fewer repeat file reads (count < baseline, observable in tool call
+    log). For d_test_2: fewer redundant verification commands or agent explicitly
+    states reason before re-verifying. For d_test_3: agent pauses and asks before
+    making out-of-scope changes, or makes no unrequested changes.
+    CRITICAL: verbal acknowledgment ("I'll follow this directive") is NOT compliance.
+    Compliance requires observed behavioral change independently of what the agent says.
+    Baseline behavior must be established before directive injection to enable comparison.
+
+  ignored: >
+    The agent received the directive (injection confirmed) and may or may not have
+    acknowledged it verbally, but showed no measurable behavioral change relative
+    to baseline. The trigger condition fired during the session but the agent
+    continued the original behavior unchanged. Verbal acknowledgment + unchanged
+    behavior = ignored, not complied.
+
+  misinterpreted: >
+    The agent changed behavior in response to the directive, but the change was
+    in an unintended direction or was applied too broadly/too literally.
+    Examples: d_test_1 directive causes agent to stop reading files entirely
+    (overcorrection), or to refuse re-reads even when the previous read was
+    incomplete (too literal). d_test_3 directive causes agent to ask for
+    confirmation before every single action rather than only scope-expanding ones
+    (overgeneralization). Misinterpretation produces behavior change that is
+    detectable but wrong — it should not be classified as "complied."
+
+  not_tested: >
+    The combination (agent + directive + phrasing) was not executed in this phase.
+    Used for Phase 0 protocol design entries where live testing is deferred.
+
+# ============================================================================
+# RESULTS
+# Phase 0: All entries are protocol-based (compliance=not_tested).
+# Phase 1 will execute the experiment and populate actual compliance values.
+# The full matrix (3 agents x 3 directives x 3 phrasings = 27 combinations)
+# is defined here as the test plan.
+# ============================================================================
+
+results:
+  # --- d_test_1: repeat file read ---
+  - agent: claude_code
+    directive: d_test_1
+    phrasing: formal_json
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only. Injection path: CLAUDE.md. Baseline measurement:
+      count repeat reads of same file path in a controlled task (e.g., implement
+      a feature that requires referencing the same file 3+ times). Post-injection
+      measurement: same task with directive injected. Compare repeat-read counts.
+      Detection threshold: >= 20% reduction in repeat reads = complied.
+
+  - agent: claude_code
+    directive: d_test_1
+    phrasing: natural_language
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only. Same measurement method as formal_json variant.
+      Test whether phrasing affects compliance rate on same directive.
+
+  - agent: claude_code
+    directive: d_test_1
+    phrasing: concise_imperative
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only. Concise imperative removes the "why" explanation
+      present in other phrasings. Test whether rationale affects compliance.
+
+  - agent: opencode
+    directive: d_test_1
+    phrasing: formal_json
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only. Injection path: config system prompt (INFERRED,
+      verify in Phase 1). Measurement method same as claude_code. Additional
+      risk: OpenCode config injection method is unverified — if config injection
+      fails, all opencode results will be not_tested with injection_failed note.
+
+  - agent: opencode
+    directive: d_test_1
+    phrasing: natural_language
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only.
+
+  - agent: opencode
+    directive: d_test_1
+    phrasing: concise_imperative
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only.
+
+  - agent: codex
+    directive: d_test_1
+    phrasing: formal_json
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only. Injection path: AGENTS.md in project directory
+      (officially supported, Task 4 findings). Measurement method same as
+      claude_code.
+
+  - agent: codex
+    directive: d_test_1
+    phrasing: natural_language
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only.
+
+  - agent: codex
+    directive: d_test_1
+    phrasing: concise_imperative
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only.
+
+  # --- d_test_2: redundant verification ---
+  - agent: claude_code
+    directive: d_test_2
+    phrasing: formal_json
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only. Injection path: CLAUDE.md. Baseline measurement:
+      count redundant verification commands (same command re-run on already-confirmed
+      fact) in controlled task (e.g., "write a function, run the test, then continue
+      building"). Post-injection: same task with directive injected. Look for agent
+      either skipping re-runs or explicitly justifying them. Detection threshold:
+      agent either reduces redundant verifications by >= 30% OR explicitly states
+      reason before each re-verification = complied.
+
+  - agent: claude_code
+    directive: d_test_2
+    phrasing: natural_language
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only.
+
+  - agent: claude_code
+    directive: d_test_2
+    phrasing: concise_imperative
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only.
+
+  - agent: opencode
+    directive: d_test_2
+    phrasing: formal_json
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only.
+
+  - agent: opencode
+    directive: d_test_2
+    phrasing: natural_language
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only.
+
+  - agent: opencode
+    directive: d_test_2
+    phrasing: concise_imperative
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only.
+
+  - agent: codex
+    directive: d_test_2
+    phrasing: formal_json
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only.
+
+  - agent: codex
+    directive: d_test_2
+    phrasing: natural_language
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only.
+
+  - agent: codex
+    directive: d_test_2
+    phrasing: concise_imperative
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only.
+
+  # --- d_test_3: task scoping ---
+  - agent: claude_code
+    directive: d_test_3
+    phrasing: formal_json
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only. Injection path: CLAUDE.md. Baseline measurement:
+      count unrequested adjacent changes in controlled task (e.g., "fix bug in
+      function X" where function Y in same file has a minor issue visible in
+      context). Post-injection: same task with directive. Look for agent either
+      making no unrequested changes, or asking before making them. Misinterpret
+      detection: agent asks for confirmation before every action including
+      explicitly requested ones (overgeneralization).
+
+  - agent: claude_code
+    directive: d_test_3
+    phrasing: natural_language
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only.
+
+  - agent: claude_code
+    directive: d_test_3
+    phrasing: concise_imperative
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only.
+
+  - agent: opencode
+    directive: d_test_3
+    phrasing: formal_json
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only.
+
+  - agent: opencode
+    directive: d_test_3
+    phrasing: natural_language
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only.
+
+  - agent: opencode
+    directive: d_test_3
+    phrasing: concise_imperative
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only.
+
+  - agent: codex
+    directive: d_test_3
+    phrasing: formal_json
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only.
+
+  - agent: codex
+    directive: d_test_3
+    phrasing: natural_language
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only.
+
+  - agent: codex
+    directive: d_test_3
+    phrasing: concise_imperative
+    compliance: not_tested
+    evidence: >
+      Phase 0 protocol only.
+
+# ============================================================================
+# SUMMARY
+# Phase 0: all rates are "not_measured" (protocol not yet executed).
+# The structure is complete for Phase 1 to populate.
+# ============================================================================
+
+summary:
+  overall_compliance_rate: "not_measured (Phase 0 — protocol design only)"
+  per_agent:
+    claude_code: "not_measured"
+    opencode: "not_measured"
+    codex: "not_measured"
+  per_phrasing:
+    formal_json: "not_measured"
+    natural_language: "not_measured"
+    concise_imperative: "not_measured"
+  recommended_phrasing: >
+    natural_language (hypothesis, unverified) — based on prior knowledge that
+    LLM instruction-following is generally stronger for natural language
+    instructions than for formal structured data. Formal JSON may be parsed
+    as data rather than instruction by some agents. Concise imperative lacks
+    the contextual framing that helps agents understand the intent.
+    This hypothesis must be verified by Phase 1 experiment execution.
+    If formal_json shows higher compliance, revise recommendation to formal_json.
+  verdict: "partially_feasible"
+  verdict_rationale: >
+    Based on Task 4 findings: session-start injection paths are viable for all
+    three agents. The injection delivery mechanism works. The open question is
+    whether agents will FOLLOW directives reliably, not just receive them.
+    Based on LLM architecture knowledge: agents are capable of instruction
+    following, but trigger-condition-based directives (d_test_1, d_test_2) require
+    ongoing self-monitoring that may degrade over session length or after
+    compaction. The dc_b compaction risk is the most significant unknown.
+    Verdict is partially_feasible pending live testing. If compaction consistently
+    drops directives, the verdict for runtime-long-session use is infeasible;
+    for fresh sessions and short sessions, likely feasible.
+
+# ============================================================================
+# FAILURE MODES
+# Analysis of how the experiment can produce misleading results, and how
+# each agent architecture creates specific failure patterns.
+# ============================================================================
+
+failure_modes:
+  acknowledgment_without_behavior: >
+    The most common and most silent failure mode. Agent responds to directive
+    injection with "I understand, I'll follow this guideline" or similar
+    acknowledgment, then proceeds with unchanged behavior. This registers as
+    "directive received and understood" but is functionally equivalent to
+    injection failure. Detection requires behavioral comparison, not
+    acknowledgment reading. In Phase 1 experiments, any result where the
+    agent verbally acknowledged the directive but behavioral metrics show no
+    change must be classified as "ignored," not "complied."
+
+  compaction_drop_mid_session: >
+    After context compaction (which all three agents perform on long sessions),
+    session-start injected content may be summarized into a compressed form
+    that loses the specific trigger conditions and instructions. The agent
+    may retain a vague awareness ("there was something about file reads") but
+    lose the precise trigger threshold and behavioral instruction. This creates
+    a session-length-dependent compliance pattern: high compliance in turns 1-20,
+    degrading compliance after compaction, and eventual return to baseline behavior.
+    Detection: run the same experiment in both short (10-turn) and long (50-turn)
+    sessions and compare compliance rates. If short-session compliance > long-session
+    compliance, compaction_drop is the suspected cause.
+
+  overgeneralization_overcorrection: >
+    Agent applies directive too broadly, interpreting "reduce X" as "eliminate X"
+    or interpreting "before doing X, check Y" as "never do X without explicit
+    permission." For d_test_1: agent stops reading files even when reading is
+    clearly necessary for the task, blocking forward progress. For d_test_3: agent
+    asks for confirmation before every action including explicitly requested ones,
+    creating excessive friction. This looks like compliance on naive metrics
+    (behavior changed) but produces worse task outcomes. Must be classified as
+    "misinterpreted" and tracked separately. Detection: observe whether task
+    completion rate or quality degrades when directive is active.
+
+  trigger_identification_failure: >
+    Agent receives and remembers the directive but fails to identify when the
+    trigger condition fires during execution. For trigger-condition directives
+    (d_test_1 with threshold, d_test_2 with state tracking), the agent must
+    maintain a mental count or state register across turns. If the agent's
+    working memory or attention does not track this state, the directive
+    becomes effectively unreachable. This is not acknowledgment failure —
+    the agent would follow the directive if it knew the trigger fired. It is
+    a self-monitoring capability limitation. Detection: in post-experiment
+    review, ask the agent whether it recognized the trigger condition during
+    the session and compare its answer to the actual observed event log.
+
+  multiple_directive_interference: >
+    When three directives are injected simultaneously (all three d_test_* directives),
+    they may interfere with each other or compete for attention. An agent prioritizing
+    d_test_3 (scope limitation) may interpret d_test_1 as out-of-scope context
+    checking and not apply it. An agent following d_test_2 (verification reduction)
+    may conflict with d_test_1 (re-reading the same file to verify something).
+    Phase 1 should test directives individually AND in combination to detect
+    interference effects.
+
+# ============================================================================
+# ASSUMPTIONS
+# Explicit assumptions with verification status.
+# ============================================================================
+
+assumptions:
+  - assumption: >
+      Session-start injection via CLAUDE.md / config / AGENTS.md successfully
+      delivers directive content into agent context before first turn
+    verified: true
+    note: >
+      Verified by Task 4 injection feasibility investigation. All three injection
+      paths confirmed to load content at session start. The content IS in context.
+      What is unverified is whether the agent FOLLOWS it.
+
+  - assumption: >
+      Directive compliance is stable across session length (not just first few turns)
+    verified: false
+    note: >
+      Not verified. This is the highest-risk assumption in this experiment.
+      All three agents perform context compaction on long sessions. Session-start
+      injected content may be summarized away during compaction. If this assumption
+      is false, directives are only reliable for short sessions or fresh sessions.
+      Must be tested explicitly in Phase 1 by running the same experiment in both
+      short (10-turn) and long (50+ turn) sessions.
+
+  - assumption: >
+      Multiple simultaneous directives do not interfere with each other's compliance
+    verified: false
+    note: >
+      Not verified. When all three d_test_* directives are active simultaneously,
+      they may create conflicts (d_test_1 vs d_test_2 as described in failure_modes).
+      Phase 1 must test directives individually first, then in combination.
+      If interference is detected, directive injection strategy must include
+      conflict resolution logic.
+
+  - assumption: >
+      Compliance rate for trigger-condition directives is comparable to always-apply
+      directives
+    verified: false
+    note: >
+      Not verified. Trigger-condition directives require ongoing state monitoring
+      by the agent. Always-apply directives do not. If trigger-condition compliance
+      is significantly lower than always-apply compliance, SecondSight's most
+      important directives (those targeting specific waste patterns) may be less
+      effective than simpler always-apply instructions.
+
+  - assumption: >
+      Phrasing style (formal JSON vs natural language vs concise imperative)
+      significantly affects compliance rate
+    verified: false
+    note: >
+      Not verified. This is the key hypothesis of the phrasing variant experiment.
+      If no significant phrasing effect exists, SecondSight can use any format.
+      If formal_json shows higher compliance, it aligns with the PRD directive
+      contract. If natural_language wins, SecondSight should generate human-readable
+      directives and include the JSON schema only as metadata.
+
+# ============================================================================
+# EXPERIMENT PROTOCOL
+# Detailed protocol for Phase 1 execution. Designed to be self-contained
+# enough that Phase 1 can execute without additional design work.
+# ============================================================================
+
+experiment_protocol:
+  overview: >
+    For each (agent, directive, phrasing) combination, the experiment runs two
+    sessions: a baseline session (no directive injected) and a test session
+    (directive injected via the agent's session-start injection path). Behavioral
+    metrics are compared between sessions. Results are classified per measurement_criteria.
+
+  injection_methods:
+    claude_code: >
+      Write directive content to ~/.claude/CLAUDE.md or project-level .claude/CLAUDE.md
+      before starting a new Claude Code session. For formal_json phrasing, wrap in a
+      markdown code block with label "SecondSight Directive". For natural_language and
+      concise_imperative, include as a section "## Active Directives". Remove before
+      baseline session.
+    opencode: >
+      Write directive content to OpenCode configuration system prompt field
+      (path: ~/.config/opencode/config.json, field: systemPrompt or equivalent).
+      UNVERIFIED — if this path does not work, try AGENTS.md in project directory.
+      OpenCode injection method must be verified at Phase 1 start before running
+      all 9 opencode experiment combinations.
+    codex: >
+      Write directive content to AGENTS.md in the project directory, or pass via
+      --instructions flag for CLI invocation. AGENTS.md is preferred for session
+      persistence. Format: include under "## Active Session Directives" header.
+
+  test_task_design:
+    d_test_1_task: >
+      Task: "Implement a function [X] in [file Y]. The implementation requires
+      understanding the existing structure of [file Y] and related utility functions
+      in [file Z]." Design the task so that a naive agent would naturally read
+      file Y multiple times (once to understand structure, once to write, once to
+      verify). The task should be complex enough to take 5-10 turns. Baseline:
+      run task without directive and count how many times the agent reads file Y
+      and file Z. Test: inject d_test_1 directive, run same task, count repeat reads.
+
+    d_test_2_task: >
+      Task: "Add a new test case to the test suite for [function X], then run the
+      tests to verify everything passes, then add another test case." Design so that
+      an agent would naturally run the test suite multiple times (after each addition).
+      Baseline: count total test-run commands. Test: inject d_test_2, count test-run
+      commands and look for explicit reason statements before re-runs. Complied if:
+      agent either skips redundant runs or explicitly justifies each re-run.
+
+    d_test_3_task: >
+      Task: "Fix the bug in function X at line Y." Design the test file so that
+      there is a clearly visible adjacent issue in function Z (e.g., inconsistent
+      naming, minor style issue, or a TODO comment) that an agent would naturally
+      want to fix. Baseline: count unrequested changes to function Z and other
+      out-of-scope items. Test: inject d_test_3, count unrequested changes.
+      Complied if: agent either makes zero unrequested changes OR explicitly asks
+      before making them.
+
+  measurement_procedure: >
+    Step 1 — Establish baseline: Run each task with no directive. Record all tool
+    calls in session log. Count the target behavior (repeat reads / redundant verifications
+    / unrequested changes).
+    Step 2 — Inject directive: Write directive via the agent's injection path.
+    Step 3 — Run test session: Execute the same task. Record all tool calls.
+    Step 4 — Compare: Count the target behavior in test session. Calculate delta.
+    Step 5 — Classify compliance: Apply measurement_criteria to classify the result.
+    Step 6 — Check for misinterpretation: Review whether task was completed with
+    equivalent quality. If task completion quality degraded, flag as potential
+    misinterpretation even if the target metric improved.
+    Step 7 — Long-session stability test (for d_test_1 and d_test_2): Repeat with
+    a 50+ turn session to test compaction effects.
+
+  acceptance_thresholds:
+    complied_threshold: "Target metric reduces by >= 20% vs baseline, AND task completes successfully"
+    ignored_threshold: "Target metric within 10% of baseline"
+    misinterpreted_threshold: "Target metric changes by > 20% in wrong direction, OR task completion quality degrades significantly"
+    session_length_stable: "Compliance rate in 50-turn session >= 70% of compliance rate in 10-turn session"
+
+  phase1_execution_order: >
+    1. Verify injection methods for all three agents before running full matrix.
+    2. Run baseline sessions for all three tasks.
+    3. Test d_test_1 individually across all agents and phrasings (9 combinations).
+    4. Test d_test_2 individually (9 combinations).
+    5. Test d_test_3 individually (9 combinations).
+    6. Run combined-directive sessions (all 3 directives active simultaneously, 1 session per agent).
+    7. Run long-session tests for d_test_1 and d_test_2 (6 combinations).
+
+# ============================================================================
+# FEASIBILITY VERDICT
+# Current assessment based on architecture knowledge from Tasks 1-4.
+# Will be updated after Phase 1 live testing.
+# ============================================================================
+
+feasibility_verdict:
+  overall: "partially_feasible (pre-live-testing assessment)"
+  confidence: "low — no live behavioral data available in Phase 0"
+
+  phrasing_recommendation: >
+    Use natural_language phrasing as the default for Phase 3A directive generation.
+    This is a hypothesis: LLMs generally follow conversational instructions more
+    reliably than they parse structured data as imperatives. Include formal_json as
+    machine-readable metadata alongside the natural_language version.
+    If Phase 1 experiments show formal_json achieves higher compliance, revise to
+    dual-format: formal_json body with natural_language rationale field.
+
+  per_agent_assessment:
+    claude_code: >
+      Most likely to achieve reasonable compliance. CLAUDE.md is a first-class
+      feature explicitly designed for persistent instructions. The model has been
+      trained to follow CLAUDE.md instructions. Compaction risk exists but may
+      be mitigated by placing directives early in the file. Primary risk: DC-A
+      (acknowledgment without behavior) — Claude Code is known to acknowledge
+      system instructions fluently even when not following them perfectly.
+    opencode: >
+      Assessment confidence is lowest due to injection path being INFERRED
+      (Task 4 finding). If config injection works, compliance behavior likely
+      similar to Claude Code. If config injection fails, opencode results are
+      entirely blocked until an alternative injection path is found.
+    codex: >
+      AGENTS.md injection is officially supported and low-risk (Task 4). Codex
+      is designed for task execution and may have different compliance characteristics
+      than conversational agents. Trigger-condition directives (d_test_1, d_test_2)
+      may be harder for Codex as it is more task-focused and may not maintain
+      session state for trigger tracking.
+
+  known_risks:
+    - >
+      DC-A (acknowledgment without behavior): All three agents may verbally
+      acknowledge directives without changing behavior. This is the primary
+      risk that makes this experiment necessary. Mitigation: measure behavioral
+      metrics, not acknowledgment.
+    - >
+      DC-B (compaction drop): Long sessions may lose directive content during
+      context compaction. SecondSight's most valuable use cases involve long
+      sessions (complex tasks). If compaction drops directives, runtime injection
+      via MCP tool server becomes necessary even though it is pull-based.
+    - >
+      DC-C (misinterpretation/overcorrection): Complex directives with threshold
+      triggers may be interpreted as blanket prohibitions. d_test_1 is at
+      particular risk: "don't re-read after 2 reads" may become "never re-read."
+      Mitigation: include explicit "unless necessary" language in directive
+      instructions.
+    - >
+      OpenCode injection path unverified: If config system prompt injection does
+      not work, OpenCode has no Phase 0-validated injection path for session-start.
+      Phase 1 must resolve this before running the opencode experiment matrix.
+    - >
+      Multiple directive interference: Running all three directives simultaneously
+      may degrade overall compliance relative to single-directive sessions. If
+      SecondSight injects 10+ directives at session start, compliance may be
+      significantly lower than the single-directive baseline.

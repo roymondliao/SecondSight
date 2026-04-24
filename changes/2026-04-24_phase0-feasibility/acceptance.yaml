@@ -1,0 +1,128 @@
+feature: phase0-feasibility-validation
+coverage_type: verified
+
+scenarios:
+  # --- Death paths first ---
+
+  - name: "Silent failure - hook investigation reports feasible but event data too shallow for analysis"
+    type: death_path
+    given: "Agent hook exposes event types (e.g., tool_call, session_start)"
+    when: "Investigation reports hook as feasible based on event type count alone"
+    then:
+      - "Report must map each event type to specific Analysis Layer needs (action classification fields, span boundary signals)"
+      - "Each event type must list: available fields, missing fields, field completeness score"
+      - "If > 30% of required fields are missing, verdict must be partially_feasible, not feasible"
+
+  - name: "Silent failure - injection verified but agent ignores directive content"
+    type: death_path
+    given: "Directive successfully injected into agent session context"
+    when: "Agent continues execution without behavioral change"
+    then:
+      - "Comprehension test must include before/after behavioral comparison, not just acknowledgment"
+      - "Test must use at least 3 distinct directive phrasings per agent"
+      - "Compliance rate must be measured as observable behavior change, not agent self-report"
+
+  - name: "Silent failure - storage POC passes on synthetic data but fails on real traces"
+    type: death_path
+    given: "Storage POC tested with synthetic event data"
+    when: "Real agent traces from reference_opensoure have unpredictable sizes and nesting"
+    then:
+      - "Storage tests must include at least one real trace dataset from reference_opensoure projects"
+      - "Query latency must be measured on real data, not only synthetic"
+      - "If real-data latency exceeds synthetic-data latency by > 3x, POC must document the gap"
+
+  - name: "Silent failure - event schema hides incompatibility behind untyped fields"
+    type: death_path
+    given: "Unified event schema covers all three agents"
+    when: "Schema uses metadata: Any or extension_fields: dict to absorb agent differences"
+    then:
+      - "Schema must report typed_field_percentage per agent"
+      - "If any agent has < 50% typed fields, schema verdict is partially_feasible"
+      - "Design notes must explicitly list what cannot be unified and why"
+
+  - name: "Silent failure - session identity works single-agent but breaks cross-agent"
+    type: death_path
+    given: "Session identity model links consecutive sessions from the same agent"
+    when: "Sessions from different agents target the same project"
+    then:
+      - "Design document must include cross-agent identity scenario"
+      - "If cross-agent linking is infeasible, must explicitly state scope limitation"
+      - "Degradation strategy must define what features are lost without cross-agent identity"
+
+  # --- Degradation paths ---
+
+  - name: "Degradation - one agent has no hook mechanism at all"
+    type: degradation
+    given: "One of three agents provides no event hook API"
+    when: "Investigation finds no viable event capture path for that agent"
+    then:
+      - "Report must explicitly mark agent as unsupported with reason"
+      - "Must assess if workaround exists (e.g., JSONL transcript file watching)"
+      - "Phase 0 overall verdict must account for reduced agent coverage"
+      - "Fallback design must address single-agent-only scenario"
+
+  - name: "Degradation - runtime injection infeasible, session-start only"
+    type: degradation
+    given: "Runtime injection not supported by any agent"
+    when: "Only session-start injection is viable"
+    then:
+      - "Fallback design must document session-start-only product implications"
+      - "Must explicitly state which Feedback Layer features are lost (runtime feedback)"
+      - "Must define what SecondSight becomes in session-start-only mode"
+
+  - name: "Degradation - directive comprehension below 50% but above 30%"
+    type: degradation
+    given: "Agent directive compliance rate is 30-50%"
+    when: "Comprehension test shows partial understanding"
+    then:
+      - "Report must analyze which directive types are understood vs ignored"
+      - "Must propose phrasing iteration strategy for Phase 3A"
+      - "Must NOT treat 30-50% as equivalent to > 50% in feasibility verdict"
+
+  # --- Happy paths with evidence ---
+
+  - name: "Success - all three agents expose tool-call-level events"
+    type: happy_path
+    given: "Investigation of all three agent hook mechanisms completed"
+    when: "Each agent exposes events with tool call details"
+    then:
+      - "Each agent report includes: event types, payload fields, capture latency, known limitations"
+      - "Hook coverage rate >= 70% per agent"
+      - "Evidence includes actual event payload samples (redacted if needed)"
+
+  - name: "Success - at least one injection path verified per agent"
+    type: happy_path
+    given: "Injection feasibility test completed for all agents"
+    when: "At least one injection method works per agent"
+    then:
+      - "Report includes: injection method, latency, content size limits, persistence"
+      - "Evidence includes reproduction steps"
+      - "Comprehension test baseline >= 50% for at least one agent"
+
+  - name: "Success - unified event schema covers all three agents with >= 50% typed fields"
+    type: happy_path
+    given: "Event schema POC implemented based on hook investigation findings"
+    when: "Schema validated against real trace samples from each agent"
+    then:
+      - "JSON Schema file passes validation against sample events from all three agents"
+      - "typed_field_percentage >= 50% for each agent"
+      - "Design notes document all unification decisions and tradeoffs"
+
+  - name: "Success - storage POC handles 1000 sessions within latency target"
+    type: happy_path
+    given: "Dual-layer storage prototype with filesystem + SQLite"
+    when: "Loaded with 1000 session equivalent data including real traces"
+    then:
+      - "Single session query latency < 500ms"
+      - "Write throughput supports real-time event ingestion"
+      - "Tests pass with both synthetic and real trace data"
+      - "Design notes document scaling limitations and Phase 1 optimization opportunities"
+
+  - name: "Success - session identity model supports cross-session linking"
+    type: happy_path
+    given: "Session identity design document completed"
+    when: "Model applied to sample multi-session scenario"
+    then:
+      - "Design includes identity attributes, linking strategy, and storage representation"
+      - "Example data demonstrates linked sessions across at least 3 sessions"
+      - "Document explicitly states supported and unsupported linking scenarios"

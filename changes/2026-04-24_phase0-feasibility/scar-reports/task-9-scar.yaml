@@ -1,0 +1,228 @@
+task_id: task-9
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: >
+      The fallback design assesses product viability at each fallback level using
+      qualitative market analysis (naming LangSmith, Langfuse, OpenTelemetry as
+      comparators) rather than quantitative differentiation measurement. Claims like
+      "FB-2 is still differentiated" are reasoned arguments, not measured user data.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The directive lifecycle at FB-2 (session-start injection) documents the
+      "one-session delay" gap but does not design the merge strategy for
+      CLAUDE.md / AGENTS.md writes. The design assumes a merge strategy will exist
+      but leaves it unspecified. This is the largest concrete design gap in the document.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Phase-by-phase impact estimates ("FB-3 is 40-50% of FB-1 scope") are rough
+      fractions not backed by a feature-level count or story-point estimate.
+      These are orientation figures, not reliable planning inputs.
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: >
+      The design says FB-2 is viable if "at least two agents have confirmed session-start
+      injection" but does not define what "confirmed" means operationally. If Phase 1
+      testing writes a directive to CLAUDE.md and the agent reads it (file access logged)
+      but behavioral compliance is 0%, has injection been "confirmed"? The distinction
+      between technical delivery confirmation and behavioral compliance confirmation is
+      not defined, allowing a false-positive "confirmed viable" verdict.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The no-injection delivery mechanisms (secondsight-report.md, secondsight-recommendations.md,
+      CLI output) are defined at concept level only. There is no specification of the
+      format, location, or update behavior of these files. If Phase 3A develops a
+      report format inconsistently with what Phase 3B's learning pipeline expects,
+      the human review path silently fails to feed back into cross-session learning.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The design registers a dependency on Phase 1 comprehension results as a
+      go/no-go gate for Phase 3A investment. But there is no mechanism to enforce
+      this gate. The team may proceed to Phase 3A development before Phase 1
+      comprehension data is available, if schedules slip. Silent bypass of the gate
+      produces a Phase 3A that is built on unvalidated assumptions.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Injection confirmation is noted as impossible at all levels ("fire-and-forget").
+      This means the Phase 3A injection pipeline has no way to know whether a directive
+      was loaded by the agent. If the CLAUDE.md write succeeds but the agent starts
+      without reading it (e.g., non-standard startup path), SecondSight logs a successful
+      injection while the agent runs without directives. No error, no warning.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      Session-start injection delivers directives to the agent before the first user turn
+      for at least two agents (Claude Code and Codex)
+    verified: partially
+    note: >
+      Verified for Claude Code (official docs + ref source confirm CLAUDE.md is loaded
+      at session start). Partially verified for Codex (AGENTS.md is an OpenAI ecosystem
+      standard, exact Codex 1.x behavior unverified). UNVERIFIED for OpenCode.
+      Risk: if live testing shows CLAUDE.md is not reliably loaded (e.g., in non-standard
+      Claude Code invocations), FB-2 validity is undermined.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      Directive comprehension above 30% for at least one agent produces a functional
+      (if partial) feedback loop
+    verified: false
+    note: >
+      The 30% threshold is adopted from the kickoff document (P0-6 death condition:
+      comprehension below 30%). Whether 30-50% compliance is "functional" has not been
+      validated. At 40% compliance, 60% of directives are ignored — it is possible
+      that the ignored 60% includes all the directives targeting the most impactful
+      waste patterns, making 40% compliance effectively zero useful compliance.
+      Phase 1 must measure compliance per directive type, not just aggregate rate.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      Post-session analysis pipeline will complete before session N+1 starts
+    verified: false
+    note: >
+      Analysis latency is unknown. If users run back-to-back sessions (e.g., a developer
+      running Codex for 3 sequential tasks), there may be < 30 seconds between sessions.
+      If analysis takes longer than the gap, FB-2's directive lifecycle breaks silently.
+      Must measure analysis pipeline latency in Phase 1.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      Human review delivery (CLI report + recommendation file) is actionable for
+      the target user without significant friction
+    verified: false
+    note: >
+      Target users are technical developers who use CLI coding agents. They can read
+      and apply CLAUDE.md-formatted directives manually. However, this adds a manual
+      step that reduces actual adoption below 100%. If only 20% of generated
+      recommendations are ever applied manually, FB-3's value is further diminished.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      One-session delay is tolerable for the target workflow (developers using
+      Claude Code, OpenCode, Codex for coding tasks)
+    verified: false
+    note: >
+      Not validated with target users. Risk: if developers use short, iterative sessions
+      (5-10 minutes each), one-session delay means feedback arrives within minutes —
+      tolerable. If they use long single sessions (2+ hours), the delay is one 2-hour
+      session — less tolerable. Session length distribution is unknown.
+    deferred_to_feature_iteration: false
+
+debt_registered: true
+debt_location: >
+  fallback-design.md: directive merge strategy for CLAUDE.md/AGENTS.md writes is
+  undesigned (mentioned in Step 3 and Step 8 Recommendations);
+  injection confirmation signal design gap (Step 8 Known Limitations #5);
+  Phase 1 go/no-go gate enforcement mechanism not designed (Step 8 Recommendations);
+  OpenCode injection path verification required before Phase 3A (Step 8 Recommendations)
+
+narrative: |
+  Task 9 produces a fallback design that is honest about the gaps it cannot fill.
+
+  The core finding is that FB-2 (session-start-only injection) is the current best-evidence
+  viable architecture — not because runtime injection is impossible in principle, but because
+  no push-based runtime mechanism exists in the documented agent APIs. The MCP pull-based path
+  exists but requires the agent to call the tool, which is not guaranteed.
+
+  The most consequential design decision in this document is the explicit market differentiation
+  assessment: FB-2 retains differentiation because the feedback loop still exists (post-session,
+  automated injection). FB-3 does not retain full differentiation because it requires human
+  intervention to close the loop. This is the threshold the team must not cross permanently.
+
+  Two unresolved items from this task are particularly important for Phase 3A:
+  1. The directive merge strategy: if session N generates 5 directives and session N+1 generates
+     3 new directives, how does SecondSight decide what to write to CLAUDE.md? Append grows
+     unboundedly. Overwrite loses history. Neither is designed.
+  2. The injection confirmation gap: SecondSight has no way to know whether a directive was
+     loaded by the agent after being written to the config file. This is a fundamental
+     observability gap in the feedback loop.
+
+  The Phase 1 go/no-go gate is the most important forward-looking item: before Phase 3A code
+  is written, the team must have comprehension data from the Task 6 protocol. If the team
+  proceeds without this gate, the risk is a Phase 3A injection pipeline built on the assumption
+  that 30-50% compliance is achievable — which may be wrong.
+
+resolved_items:
+  - original_section: "known_shortcuts"
+    original_description: >
+      Directive merge strategy for CLAUDE.md/AGENTS.md writes is undesigned —
+      append grows unboundedly, overwrite loses history.
+    resolution: >
+      Added a skeletal merge strategy to fallback-design.md Step 3: SecondSight
+      maintains a marker-delimited section (<!-- secondsight:start/end -->) inside
+      CLAUDE.md/AGENTS.md. Only content within markers is rewritten at each injection
+      cycle. User content outside markers is preserved. Directives older than N sessions
+      without behavioral confirmation are expired. This is specific enough to implement
+      in Phase 3A without additional design work.
+
+  - original_section: "silent_failure_conditions"
+    original_description: >
+      "Confirmed viable" is not operationally defined — technical delivery vs
+      behavioral compliance distinction missing.
+    resolution: >
+      Added an explicit two-part definition in Step 8 Recommendations section:
+      (1) Technical confirmation — file written without error, content present;
+      (2) Behavioral confirmation — session N+1 shows measurably different behavior
+      vs baseline. Only when both conditions are met is injection "confirmed viable."
+      If only technical confirmation is available, the path is labeled "technically
+      confirmed, behaviorally unverified."
+
+  - original_section: "silent_failure_conditions"
+    original_description: >
+      Report format for FB-3 delivery (secondsight-report.md, secondsight-recommendations.md)
+      is defined at concept level only — format unspecified.
+    resolution: >
+      Added a skeletal format spec to fallback-design.md Step 4: secondsight-recommendations.md
+      is formatted as a valid CLAUDE.md/AGENTS.md section, immediately copy-pasteable.
+      Each directive includes confidence label and evidence reference. Format example
+      included in the document.
+
+  - original_section: "silent_failure_conditions"
+    original_description: >
+      Phase 1 go/no-go gate has no enforcement mechanism — team may proceed to
+      Phase 3A before comprehension data is available.
+    resolution: >
+      Added explicit gate enforcement mechanism in Step 8 Recommendations section:
+      three-step procedure (complete Task 6 protocol → record results in YAML → make
+      Phase 3A kickoff conditional on results). Documents that the gate is a planning
+      commitment enforced by kickoff review, not by automation. Also specifies the
+      fallback if the gate is bypassed: use FB-3 scope for Phase 3A, not FB-2.
+
+  - original_section: "silent_failure_conditions"
+    original_description: >
+      Injection confirmation is impossible — fire-and-forget, no signal that agent
+      loaded the directive.
+    resolution: >
+      Cannot be fully resolved without code. Partially resolved: added explicit
+      acknowledgment in Step 3 that behavioral change is the only observable proxy
+      for injection confirmation. Phase 3B cross-session learning must track directive
+      effectiveness via behavioral change delta, not delivery confirmation. The gap
+      is documented and visible; it cannot be eliminated at this level.
+
+  - original_section: "known_shortcuts"
+    original_description: >
+      Phase-by-phase impact estimates ("FB-3 is 40-50% of FB-1 scope") are rough
+      fractions not backed by a feature-level count or story-point estimate.
+    resolution: >
+      Added "(unvalidated estimate — not backed by feature-level count or story
+      points; use as orientation only)" hedging to all scope fraction claims in
+      fallback-design.md. The estimates remain as orientation but are now explicitly
+      marked as rough, not planning inputs.
+
+  - original_section: "review_finding"
+    original_description: >
+      FD-1 death test used four positionally-independent substring checks
+      ("| feature", "fb-2", "lost", "available") that could match content from
+      any section — e.g., Phase 3A table instead of the FB-2 feature table.
+    resolution: >
+      Refactored test_document_names_features_lost_in_session_start_only_mode to
+      extract the FB-2 section (between ### FB-2 heading and next ### heading) via
+      _extract_fb2_section() helper, then check for the feature table within that
+      scoped section only. Eliminated cross-section false positive risk.
+

@@ -1,0 +1,706 @@
+agent: codex_cli
+investigation_date: "2026-04-24"
+source: "official_docs + github_source_codex-rs + reference_opensoure/lazyagent"
+verdict: partially_feasible
+
+# TARGET CLARIFICATION:
+# This investigation targets Codex CLI — the open-source Rust-based local coding agent
+# at https://github.com/openai/codex (codex-rs/). This is distinct from:
+# - Codex Web (chatgpt.com/codex) — a cloud-based coding service
+# - Codex API (OpenAI's legacy code completion API)
+# SecondSight can ONLY observe the CLI, not the cloud service.
+
+# EVIDENCE SOURCES:
+# 1. GitHub: openai/codex codex-rs/protocol/src/protocol.rs — full EventMsg enum + payload structs
+# 2. GitHub: openai/codex codex-rs/rollout/src/policy.rs — event persistence tiers (Limited/Extended)
+# 3. GitHub: openai/codex codex-rs/rollout/src/recorder.rs — JSONL rollout file mechanics
+# 4. GitHub: openai/codex codex-rs/hooks/src/types.rs — HookPayload / HookEvent types
+# 5. GitHub: openai/codex codex-rs/rollout/src/lib.rs — confirms ~/.codex/sessions/ path
+# 6. reference_opensoure/lazyagent/internal/codex/process.go — confirmed JSONL parsing:
+#    session_meta, turn_context, response_item (message/function_call/function_call_output),
+#    event_msg (token_count, task_complete, user_message, agent_message)
+# 7. reference_opensoure/lazyagent/internal/codex/process_test.go — synthetic JSONL files
+#    showing exact wire format
+
+# OBSERVATION ARCHITECTURE OVERVIEW:
+# Codex CLI provides TWO distinct observation surfaces:
+#
+# SURFACE 1 — JSONL Rollout Files (primary, post-hoc, rich):
+#   Location: ~/.codex/sessions/rollout-TIMESTAMP-UUID.jsonl
+#   Format: One JSON object per line with {timestamp, type, payload} envelope
+#   Access: File polling or inotify-based watching (no API required)
+#   Event types persisted: See hook_types below
+#   Persistence tier: "Limited" (default CLI) vs "Extended" (can be configured)
+#
+# SURFACE 2 — Hook Callbacks (secondary, real-time, limited payload):
+#   Registration: ~/.codex/config.toml [hooks] section
+#   Handler types: command (subprocess), prompt (model prompt), agent (sub-agent)
+#   Execution modes: sync (blocking) or async (non-blocking)
+#   Hook event names: pre_tool_use, post_tool_use, session_start,
+#                     user_prompt_submit, stop, permission_request
+#   Payload delivered to handler: JSON via stdin
+
+hook_types:
+  # =========================================================================
+  # SURFACE 1: JSONL ROLLOUT FILE EVENTS
+  # These are the events Codex CLI persists to ~/.codex/sessions/rollout-*.jsonl
+  # =========================================================================
+
+  - name: "session_meta (JSONL)"
+    trigger: "First line of every JSONL rollout file. Written when session starts."
+    payload_fields:
+      - name: "id"
+        type: "string (UUID)"
+        required: true
+        analysis_use: "Session identity — primary key for all event correlation. Matches ThreadId."
+      - name: "timestamp"
+        type: "string (RFC3339)"
+        required: true
+        analysis_use: "Session start time"
+      - name: "cwd"
+        type: "string (path)"
+        required: true
+        analysis_use: "Working directory — project identity and file scope context"
+      - name: "cli_version"
+        type: "string"
+        required: true
+        analysis_use: "Agent version — for compatibility tracking and regression detection"
+      - name: "source"
+        type: "string (enum: cli, vscode, exec, mcp, subagent, unknown)"
+        required: true
+        analysis_use: "Session lifecycle: distinguishes user-initiated (cli/vscode) from sub-agent sessions"
+      - name: "agent_nickname"
+        type: "string (optional)"
+        required: false
+        analysis_use: "Sub-agent spawning: present when source=subagent, identifies the spawned agent"
+      - name: "model_provider"
+        type: "string (optional)"
+        required: false
+        analysis_use: "Which model provider (openai, etc.) — useful for multi-provider environments"
+    limitations: >
+      This is the ONLY event that provides session identity (thread ID). All subsequent events
+      in the same JSONL file belong to this session. The session_meta line must be parsed first
+      to establish identity context. sub-agent sessions have source='subagent' + agent_nickname
+      but do NOT have a separate spawning event visible in the parent session's JSONL file.
+
+  - name: "turn_context (JSONL)"
+    trigger: "Written once per user turn, before tool calls. Captures turn-level context."
+    payload_fields:
+      - name: "turn_id"
+        type: "string (optional)"
+        required: false
+        analysis_use: "Turn identity — correlates all tool calls within a single user request"
+      - name: "cwd"
+        type: "string (path)"
+        required: true
+        analysis_use: "Working directory for this turn (may differ from session cwd)"
+      - name: "model"
+        type: "string"
+        required: true
+        analysis_use: "Model used for this turn (e.g., 'codex-mini-latest', 'o4-mini')"
+      - name: "approval_policy"
+        type: "string (enum)"
+        required: true
+        analysis_use: "Governance: approval mode (untrusted/on-request/never/granular)"
+      - name: "sandbox_policy"
+        type: "string (enum)"
+        required: true
+        analysis_use: "Execution risk context: read-only vs. workspace-write vs. full-access"
+      - name: "user_instructions"
+        type: "string (optional)"
+        required: false
+        analysis_use: "User-injected system prompt content (CLAUDE.md equivalent)"
+      - name: "git"
+        type: "object {branch: string}"
+        required: false
+        analysis_use: "Git context for the turn — branch tracking"
+    limitations: >
+      Not all turn_context fields are always present. Older sessions may lack turn_id.
+      user_instructions are only present when the user has configured them.
+
+  - name: "response_item/message (JSONL)"
+    trigger: "Written for each user or assistant message in the conversation."
+    payload_fields:
+      - name: "type"
+        type: "string (='message')"
+        required: true
+        analysis_use: "Discriminator: identifies this as a message (not a tool call)"
+      - name: "role"
+        type: "string ('user' | 'assistant')"
+        required: true
+        analysis_use: "Message direction: user prompt vs agent response content"
+      - name: "content"
+        type: "array of {type: string, text: string}"
+        required: true
+        analysis_use: >
+          Prompt and response content. 'input_text' blocks = user prompt text.
+          'output_text' blocks = assistant response text.
+          Required for user prompt content and agent response content fields.
+    limitations: >
+      Content is a JSON array of content blocks. Text must be extracted from blocks
+      with type 'input_text' (user) or 'output_text' (assistant).
+      Streaming delivers multiple partial messages — DEDUPLICATION by message ID
+      may be required if consuming live JSONL. The final record per turn is authoritative.
+
+  - name: "response_item/function_call (JSONL)"
+    trigger: "Written for each tool invocation by the agent."
+    payload_fields:
+      - name: "type"
+        type: "string (='function_call')"
+        required: true
+        analysis_use: "Discriminator: identifies this as a tool call"
+      - name: "name"
+        type: "string"
+        required: true
+        analysis_use: >
+          Tool call type classification. Core Codex CLI tool names:
+          'exec_command' (shell execution), 'apply_patch' (file edits),
+          'local_shell' (interactive shell). Also includes MCP tool names
+          (server::tool_name format).
+      - name: "arguments"
+        type: "string (JSON-encoded)"
+        required: true
+        analysis_use: >
+          Tool call arguments as JSON string. For exec_command: contains command array.
+          For apply_patch: contains patch content. This is the critical field for
+          action classification (what did the tool do, not just which tool ran).
+      - name: "call_id"
+        type: "string (optional)"
+        required: false
+        analysis_use: "Pair this call with function_call_output for timing measurement"
+    limitations: >
+      Arguments are JSON-encoded as a string (not a nested object). Must be parsed
+      separately. For apply_patch, the arguments can be very large (full file diffs).
+      The lazyagent compact tool truncates 'arguments' to manage file size.
+      Tool names for MCP tools depend on which MCP servers are configured — variable.
+
+  - name: "response_item/function_call_output (JSONL)"
+    trigger: "Written after each tool call completes, containing the result."
+    payload_fields:
+      - name: "type"
+        type: "string (='function_call_output')"
+        required: true
+        analysis_use: "Discriminator: identifies this as a tool result"
+      - name: "call_id"
+        type: "string"
+        required: true
+        analysis_use: "Correlate with function_call entry to pair call + result"
+      - name: "output"
+        type: "string"
+        required: true
+        analysis_use: >
+          Tool execution output. For exec_command: combined stdout/stderr.
+          For apply_patch: success/failure summary.
+          This is the primary field for failure attribution (non-empty error output).
+    limitations: >
+      Output can be very large (multi-MB for long-running commands).
+      The lazyagent compact tool truncates 'output' to manage file size — if SecondSight
+      reads a compacted session, output may be truncated and failure analysis degraded.
+      Output is raw string, not structured — extracting exit codes requires heuristics.
+
+  - name: "event_msg/task_started (JSONL)"
+    trigger: "Written when agent begins processing a user turn."
+    payload_fields:
+      - name: "type"
+        type: "string (='task_started' or 'turn_started')"
+        required: true
+        analysis_use: "Session lifecycle: marks turn start timestamp"
+      - name: "turn_id"
+        type: "string"
+        required: true
+        analysis_use: "Turn identity — same turn_id as turn_context and all tool calls in this turn"
+      - name: "started_at"
+        type: "integer (unix timestamp, optional)"
+        required: false
+        analysis_use: "Turn start time (seconds precision)"
+      - name: "model_context_window"
+        type: "integer (optional)"
+        required: false
+        analysis_use: "Context window size for this turn's model — useful for pressure analysis"
+    limitations: >
+      v1 wire format uses 'task_started'; v2 uses 'turn_started'. Both are accepted.
+      started_at is optional — timestamp from JSONL envelope must be used as fallback.
+
+  - name: "event_msg/task_complete (JSONL)"
+    trigger: "Written when agent finishes all actions for a user turn."
+    payload_fields:
+      - name: "type"
+        type: "string (='task_complete' or 'turn_complete')"
+        required: true
+        analysis_use: "Session lifecycle: marks turn end"
+      - name: "turn_id"
+        type: "string"
+        required: true
+        analysis_use: "Turn identity — close the turn opened by task_started"
+      - name: "last_agent_message"
+        type: "string (optional)"
+        required: false
+        analysis_use: "Agent response summary — final message text if available"
+      - name: "completed_at"
+        type: "integer (unix timestamp, optional)"
+        required: false
+        analysis_use: "Turn end time — compute turn_duration = completed_at - started_at"
+      - name: "duration_ms"
+        type: "integer (optional)"
+        required: false
+        analysis_use: "Turn duration in milliseconds (when available, prefer this over wall clock)"
+      - name: "time_to_first_token_ms"
+        type: "integer (optional)"
+        required: false
+        analysis_use: "Latency to first token — useful for model performance tracking"
+    limitations: >
+      v1 wire format uses 'task_complete'; v2 uses 'turn_complete'. Both accepted.
+      completed_at and duration_ms are optional — JSONL envelope timestamp is fallback.
+
+  - name: "event_msg/token_count (JSONL)"
+    trigger: >
+      Written during or after each turn with cumulative token usage.
+      Persisted in 'Limited' mode (default). May appear multiple times per turn.
+    payload_fields:
+      - name: "type"
+        type: "string (='token_count')"
+        required: true
+        analysis_use: "Event discriminator"
+      - name: "info"
+        type: "object (optional)"
+        required: false
+        analysis_use: "Contains token usage data when available"
+      - name: "info.total_token_usage"
+        type: "object"
+        required: false
+        analysis_use: "Cumulative token counts for the session (not per-call)"
+      - name: "info.total_token_usage.input_tokens"
+        type: "integer"
+        required: false
+        analysis_use: "Total input tokens consumed in the session so far"
+      - name: "info.total_token_usage.cached_input_tokens"
+        type: "integer"
+        required: false
+        analysis_use: "Cache-read tokens (lower cost) — important for accurate cost tracking"
+      - name: "info.total_token_usage.output_tokens"
+        type: "integer"
+        required: false
+        analysis_use: "Total output tokens generated (includes reasoning_output_tokens)"
+      - name: "info.total_token_usage.reasoning_output_tokens"
+        type: "integer"
+        required: false
+        analysis_use: "Reasoning tokens (o-series models) — separate from output_tokens"
+      - name: "info.last_token_usage"
+        type: "object (same structure as total_token_usage)"
+        required: false
+        analysis_use: "Token usage for the LAST turn only — enables per-turn cost calculation"
+    limitations: >
+      Token usage is SESSION-CUMULATIVE (total_token_usage), not per-tool-call.
+      Per-turn usage requires computing delta between consecutive token_count events.
+      Per-tool-call token usage is NOT available in the JSONL transcript.
+      When info is null, token data is unavailable for that session.
+
+  - name: "event_msg/exec_command_end (JSONL)"
+    trigger: "Written when a shell command (exec_command/local_shell) finishes. Extended mode only."
+    payload_fields:
+      - name: "type"
+        type: "string (='exec_command_end')"
+        required: true
+        analysis_use: "Event discriminator"
+      - name: "call_id"
+        type: "string"
+        required: true
+        analysis_use: "Correlate with exec_command_begin (not persisted in Limited mode)"
+      - name: "turn_id"
+        type: "string"
+        required: true
+        analysis_use: "Turn identity"
+      - name: "command"
+        type: "array of strings"
+        required: true
+        analysis_use: "Exact command that was executed (split into argv)"
+      - name: "cwd"
+        type: "string (path)"
+        required: true
+        analysis_use: "Working directory for this command execution"
+      - name: "stdout"
+        type: "string"
+        required: true
+        analysis_use: "Captured standard output"
+      - name: "stderr"
+        type: "string"
+        required: true
+        analysis_use: "Captured standard error — primary failure signal"
+      - name: "exit_code"
+        type: "integer"
+        required: true
+        analysis_use: "Explicit exit code — 0=success, nonzero=failure. Much more reliable than stderr heuristics."
+      - name: "duration"
+        type: "Duration (serialized)"
+        required: true
+        analysis_use: "Exact execution duration for performance tracking"
+      - name: "status"
+        type: "string (enum: completed/failed/declined)"
+        required: true
+        analysis_use: "Execution status — distinguishes completed/failed/declined tool calls"
+    limitations: >
+      CRITICAL LIMITATION: exec_command_end is persisted in EXTENDED mode only.
+      The default CLI uses Limited mode. Most users will NOT have this event in JSONL.
+      SecondSight must either: (a) configure Extended persistence mode, or (b) fall back
+      to function_call_output which has less structured output (no exit_code field).
+      ExecCommandBegin is NOT persisted even in Extended mode — no per-call start timestamp.
+
+  - name: "event_msg/patch_apply_end (JSONL)"
+    trigger: "Written when apply_patch finishes. Extended mode only."
+    payload_fields:
+      - name: "type"
+        type: "string (='patch_apply_end')"
+        required: true
+        analysis_use: "Event discriminator"
+      - name: "call_id"
+        type: "string"
+        required: true
+        analysis_use: "Correlate with apply_patch function_call"
+      - name: "turn_id"
+        type: "string"
+        required: true
+        analysis_use: "Turn identity"
+      - name: "stdout"
+        type: "string"
+        required: true
+        analysis_use: "Patch application summary"
+      - name: "stderr"
+        type: "string"
+        required: true
+        analysis_use: "Patch errors"
+      - name: "success"
+        type: "boolean"
+        required: true
+        analysis_use: "Explicit success/failure — no exit code parsing needed"
+      - name: "changes"
+        type: "map of {path: FileChange}"
+        required: false
+        analysis_use: "Structured file changes — lists files modified/created/deleted"
+      - name: "status"
+        type: "string (enum: completed/failed/declined)"
+        required: true
+        analysis_use: "Patch status"
+    limitations: >
+      Same as exec_command_end: Extended mode only. Most deployments use Limited mode.
+      The 'changes' field gives structured file-change data, but requires Extended mode.
+      In Limited mode, file changes are only inferrable from function_call_output content.
+
+  - name: "event_msg/user_message (JSONL)"
+    trigger: "Written to signal user message event (Limited mode). Lightweight — no payload text."
+    payload_fields:
+      - name: "type"
+        type: "string (='user_message')"
+        required: true
+        analysis_use: "Session lifecycle: user input timing signal"
+      - name: "message"
+        type: "string"
+        required: true
+        analysis_use: "User message text. Full text available here AND in response_item/message."
+    limitations: >
+      Redundant with response_item/message. The actual prompt content is already in
+      the response_item/message entry. Use response_item/message as the canonical source.
+
+  - name: "event_msg/agent_message (JSONL)"
+    trigger: "Written when agent produces a response message (Limited mode)."
+    payload_fields:
+      - name: "type"
+        type: "string (='agent_message')"
+        required: true
+        analysis_use: "Session lifecycle: agent response timing signal"
+      - name: "message"
+        type: "string"
+        required: true
+        analysis_use: "Agent response text. Full text also in response_item/message with role=assistant."
+    limitations: >
+      Redundant with response_item/message (role=assistant). Use response_item/message
+      for consistency. agent_message may be truncated in compacted sessions.
+
+  # =========================================================================
+  # SURFACE 2: HOOK CALLBACKS (config.toml registration, stdin JSON payload)
+  # =========================================================================
+
+  - name: "pre_tool_use (hook callback)"
+    trigger: "Fires before each tool call executes. Sync handlers can block execution."
+    payload_fields:
+      - name: "session_id"
+        type: "string (UUID)"
+        required: true
+        analysis_use: "Session correlation — same as JSONL session_meta.id"
+      - name: "cwd"
+        type: "string (path)"
+        required: true
+        analysis_use: "Working directory context"
+      - name: "triggered_at"
+        type: "string (RFC3339)"
+        required: true
+        analysis_use: "Exact hook firing time (second precision)"
+      - name: "hook_event.event_type"
+        type: "string (='before_tool_use' — note: hooks crate uses AfterToolUse)"
+        required: true
+        analysis_use: "Discriminator — distinguish pre vs post hook events"
+      - name: "hook_event.tool_name"
+        type: "string"
+        required: true
+        analysis_use: "Tool type classification (exec_command, apply_patch, etc.)"
+      - name: "hook_event.tool_input"
+        type: "object (variant: Function|LocalShell|Mcp|Custom)"
+        required: true
+        analysis_use: >
+          Tool arguments. For LocalShell: {command: [...], workdir, timeout_ms}.
+          For Function: {arguments: string}. For Mcp: {server, tool, arguments}.
+          This is the pre-execution view of arguments.
+    limitations: >
+      Hook callback payloads are delivered to a SUBPROCESS via stdin JSON. The subprocess
+      must be registered in ~/.codex/config.toml [hooks] section.
+      IMPORTANT: The hooks crate only defines AfterToolUse (post) and AfterAgent events
+      in its public types.rs. PreToolUse may be named differently internally or may
+      correspond to 'permission_request' for sync approval flows. Exact pre-execution
+      hook callback structure requires verification against official config.toml docs.
+      Hook callbacks do NOT provide tool call RESULTS (that comes from post_tool_use).
+
+  - name: "post_tool_use (hook callback)"
+    trigger: "Fires after each tool call completes. Cannot block execution."
+    payload_fields:
+      - name: "session_id"
+        type: "string (UUID)"
+        required: true
+        analysis_use: "Session correlation"
+      - name: "cwd"
+        type: "string (path)"
+        required: true
+        analysis_use: "Working directory context"
+      - name: "triggered_at"
+        type: "string (RFC3339)"
+        required: true
+        analysis_use: "Hook firing time"
+      - name: "hook_event.event_type"
+        type: "string (='after_tool_use')"
+        required: true
+        analysis_use: "Event discriminator"
+      - name: "hook_event.turn_id"
+        type: "string"
+        required: true
+        analysis_use: "Turn identity — correlate with JSONL turn_context"
+      - name: "hook_event.call_id"
+        type: "string"
+        required: true
+        analysis_use: "Tool call identity — correlate pre/post hook events"
+      - name: "hook_event.tool_name"
+        type: "string"
+        required: true
+        analysis_use: "Tool type classification"
+      - name: "hook_event.tool_kind"
+        type: "string (enum: function/custom/local_shell/mcp)"
+        required: true
+        analysis_use: "Tool category — useful for MCP vs built-in distinction"
+      - name: "hook_event.tool_input"
+        type: "object"
+        required: true
+        analysis_use: "Tool arguments (same as pre_tool_use payload)"
+      - name: "hook_event.executed"
+        type: "boolean"
+        required: true
+        analysis_use: "Whether the tool actually ran (false=blocked/declined)"
+      - name: "hook_event.success"
+        type: "boolean"
+        required: true
+        analysis_use: "Tool execution outcome — explicit success/failure flag"
+      - name: "hook_event.duration_ms"
+        type: "integer"
+        required: true
+        analysis_use: "Precise per-call duration in milliseconds"
+      - name: "hook_event.mutating"
+        type: "boolean"
+        required: true
+        analysis_use: "Whether tool modified filesystem state — useful for write classification"
+      - name: "hook_event.sandbox"
+        type: "string"
+        required: true
+        analysis_use: "Sandbox enforcement context for this call"
+      - name: "hook_event.output_preview"
+        type: "string"
+        required: true
+        analysis_use: "Preview of tool output — TRUNCATED, not full output. For monitoring only."
+    limitations: >
+      output_preview is explicitly truncated — not suitable for full output analysis.
+      For full output, the JSONL function_call_output entry must be used.
+      Hook callbacks are per-process invocations: each tool call spawns a subprocess.
+      High-frequency tool calls can cause significant overhead.
+      Hook callbacks are registered globally in config.toml — cannot be session-scoped.
+
+  - name: "session_start (hook callback)"
+    trigger: "Fires when a new Codex CLI session begins."
+    payload_fields:
+      - name: "session_id"
+        type: "string (UUID)"
+        required: true
+        analysis_use: "Session identity — same as JSONL session_meta.id"
+      - name: "cwd"
+        type: "string (path)"
+        required: true
+        analysis_use: "Session working directory"
+      - name: "triggered_at"
+        type: "string (RFC3339)"
+        required: true
+        analysis_use: "Session start time"
+    limitations: >
+      SessionStart hook payload is from SessionStartRequest type (hooks/src/events/session_start.rs).
+      Exact payload fields confirmed from source code structure (session_id, cwd, triggered_at).
+      Does NOT carry the full session_meta context (CLI version, model, source).
+      For full session context, the JSONL session_meta line is more complete.
+
+  - name: "user_prompt_submit (hook callback)"
+    trigger: "Fires when user submits a prompt (before agent processing begins)."
+    payload_fields:
+      - name: "session_id"
+        type: "string (UUID)"
+        required: true
+        analysis_use: "Session correlation"
+      - name: "cwd"
+        type: "string (path)"
+        required: true
+        analysis_use: "Working directory at time of prompt submission"
+      - name: "triggered_at"
+        type: "string (RFC3339)"
+        required: true
+        analysis_use: "Prompt submission timestamp"
+    limitations: >
+      UNVERIFIED: Whether prompt text is included in the user_prompt_submit hook payload.
+      UserPromptSubmitRequest source file (hooks/src/events/user_prompt_submit.rs) not
+      inspected directly. The payload may be a timing signal only, without prompt content.
+      For reliable prompt text capture, use the JSONL response_item/message (role=user) entry.
+
+  - name: "stop (hook callback)"
+    trigger: "Fires when the agent completes a turn (task_complete equivalent)."
+    payload_fields:
+      - name: "session_id"
+        type: "string (UUID)"
+        required: true
+        analysis_use: "Session correlation"
+      - name: "cwd"
+        type: "string (path)"
+        required: true
+        analysis_use: "Working directory"
+      - name: "triggered_at"
+        type: "string (RFC3339)"
+        required: true
+        analysis_use: "Turn completion time"
+    limitations: >
+      UNVERIFIED: Whether last_agent_message is in the stop hook payload.
+      StopRequest source file (hooks/src/events/stop.rs) not inspected directly.
+      For reliable turn completion data, use event_msg/task_complete JSONL entry.
+
+coverage:
+  needed_event_types: 8
+  # SecondSight needs: (1) session_start, (2) session_end, (3) turn_start,
+  # (4) turn_end, (5) tool_call_type+args, (6) tool_call_result,
+  # (7) token_usage, (8) sub_agent_spawning
+  available_event_types: 13
+  # Available from JSONL: session_meta, turn_context, response_item/message,
+  #   response_item/function_call, response_item/function_call_output,
+  #   event_msg/task_started, event_msg/task_complete, event_msg/token_count,
+  #   event_msg/exec_command_end (Extended only), event_msg/patch_apply_end (Extended only),
+  #   user_message, agent_message
+  # Available from hooks: post_tool_use (with per-call duration + success/failure)
+  sufficient_field_event_types: 7
+  # Sufficient means: the event is available in default (Limited) mode AND
+  # contains the fields SecondSight needs for that event type.
+  # session_start: session_meta (JSONL) ✓
+  # session_end: event_msg/task_complete (JSONL) ✓ (limited - no explicit session end)
+  # turn_start: event_msg/task_started (JSONL) ✓
+  # turn_end: event_msg/task_complete (JSONL) ✓
+  # tool_call_type+args: response_item/function_call (JSONL) ✓
+  # tool_call_result: response_item/function_call_output (JSONL) ✓
+  # token_usage: event_msg/token_count (JSONL, cumulative not per-call) ✓ (partial)
+  # sub_agent_spawning: NOT AVAILABLE in Limited mode JSONL ✗
+  coverage_rate: 87.5
+  # 7 of 8 needed types have sufficient field coverage in default mode.
+  # Note: token_usage is counted as sufficient because it IS available
+  # (session-cumulative via delta), even though it's not per-call.
+  # Cross-task note: Claude Code (Task 1) does NOT count token_usage as
+  # sufficient via hooks alone (requires JSONL). This difference reflects
+  # architecture: Codex JSONL is the primary surface (always available),
+  # while Claude Code JSONL is secondary (internal format).
+  # Sub-agent spawning is the only hard gap.
+
+risks:
+  - >
+    CRITICAL — Extended mode not default: exec_command_end and patch_apply_end
+    (which contain exit_code, stdout, stderr, explicit success/failure) are only
+    persisted in Extended mode. Default CLI uses Limited mode. SecondSight must either
+    configure Extended persistence (requires user action or codex config change)
+    or fall back to parsing unstructured function_call_output.output strings.
+
+  - >
+    CRITICAL — Sub-agent spawning not observable: When Codex CLI spawns a sub-agent
+    (ThreadSpawn), the parent session's JSONL does NOT receive a spawning event.
+    The sub-agent creates its own JSONL file with source='subagent'. SecondSight
+    must discover sub-agent sessions by scanning all JSONL files and matching
+    session_meta.source fields — not through a spawning event in the parent.
+    This means sub-agent topology cannot be determined in real-time.
+
+  - >
+    HIGH — Token usage is session-cumulative, not per-call: event_msg/token_count
+    provides total_token_usage (cumulative) and last_token_usage (last turn).
+    Per-tool-call token usage is not available anywhere in the JSONL.
+    Cost attribution to specific tool calls requires heuristics or estimation.
+
+  - >
+    HIGH — Hook callback registration requires config.toml modification:
+    Unlike Claude Code (settings.json hooks are per-user), Codex CLI hooks require
+    explicit registration in ~/.codex/config.toml. If SecondSight cannot modify
+    this file (enterprise managed installs, MDM config), hook callbacks are unavailable.
+    However, JSONL file observation requires no config changes.
+
+  - >
+    MEDIUM — JSONL format stability: Codex CLI is actively developed (Rust rewrite).
+    The wire format (field names, event type names) may change between releases.
+    Breaking changes in session_meta, response_item, or EventMsg types would silently
+    break SecondSight's JSONL parser. Version tracking via cli_version field is available.
+
+  - >
+    MEDIUM — Hook callback payload completeness unverified for session_start/stop/user_prompt_submit:
+    Only AfterToolUse (post_tool_use) hook payload was confirmed from source code (types.rs).
+    SessionStartRequest, StopRequest, UserPromptSubmitRequest payloads were not directly verified.
+    These may carry less data than assumed.
+
+  - >
+    LOW — apply_patch is the primary file-write tool in Codex CLI (vs. direct file writes):
+    Codex CLI uses apply_patch (unified diff format) for file modifications, NOT direct
+    write calls. SecondSight must handle apply_patch function_call entries to observe
+    file writes. Tools like Read/Write don't exist as separate tools.
+
+  - >
+    LOW — Compaction truncates JSONL content: The lazyagent compact tool (and Codex's own
+    compaction) truncates function_call_output.output and response_item/function_call.arguments
+    for large sessions. SecondSight processing compacted sessions will see truncated tool
+    arguments and outputs, degrading analysis quality silently.
+
+missing:
+  - >
+    Per-call token usage: No event type provides token consumption for an individual
+    tool call. Only session-level and per-turn cumulative counts are available.
+
+  - >
+    Sub-agent spawning events in parent session: When a sub-agent is spawned, the
+    parent session's JSONL has no 'spawn' event. Sub-agent discovery requires scanning
+    all JSONL files. Real-time sub-agent topology is not observable.
+
+  - >
+    Exact session termination event: There is no explicit 'session_ended' event in
+    the JSONL format. Session end is inferred from the last JSONL entry's timestamp
+    and the absence of subsequent entries (polling-based detection).
+
+  - >
+    Exit codes in Limited mode: exec_command_end (which has exit_code) requires
+    Extended persistence mode. In Limited mode, exit codes must be extracted
+    from function_call_output.output via string parsing.
+
+  - >
+    Pre-execution blocking for SecondSight: SecondSight's goal is monitoring/analysis,
+    not blocking. Pre_tool_use hook's blocking capability is not needed, but the
+    post_tool_use hook with real-time output_preview is useful for streaming dashboards.
+
+  - >
+    User prompt text in hook payload: user_prompt_submit hook payload likely does not
+    carry prompt text (unverified). User prompts must be read from JSONL.

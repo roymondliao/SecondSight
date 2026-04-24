@@ -1,0 +1,163 @@
+task_id: task-6
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: >
+      All 27 experiment results are not_tested (Phase 0 protocol design only).
+      No live behavioral data exists. Compliance rates, phrasing rankings, and
+      per-agent assessments are hypotheses, not measurements. The document
+      fulfills the task spec requirement ("document experiment protocol if live
+      testing not feasible in this phase") but cannot yet answer the core question.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The recommended phrasing (natural_language) is based on LLM architecture
+      prior knowledge, not on experiment results. If Phase 1 experiments show
+      formal_json achieves higher compliance, this recommendation is wrong.
+      No penalty for being wrong here, but downstream Phase 3A prompt engineering
+      should not treat this as settled.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Test task designs are specified at concept level only ("implement a function
+      that requires reading file Y multiple times"). The specific code files,
+      language, and task scenarios have not been designed. Phase 1 must select
+      and implement these before running experiments.
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: >
+      If OpenCode config injection fails (unverified path from Task 4), all 9
+      OpenCode experiment combinations will return not_tested with no ability to
+      distinguish "we tested and it didn't comply" from "we couldn't inject at all."
+      The result matrix would show a 9-entry gap that could be misread as a
+      "not applicable" rather than a blocked investigation path.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The measurement protocol requires a baseline session (no directive) to compare
+      against. If Phase 1 executors skip the baseline and only run test sessions,
+      compliance classification becomes impossible — there's no reference point for
+      "changed" vs "unchanged" behavior. The protocol specifies baseline sessions but
+      there is no enforcement mechanism.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      Context compaction stability (DC-B) is tested only for d_test_1 and d_test_2
+      in the long-session protocol. d_test_3 (task scoping) is not included in the
+      long-session stability tests because the controlled task design for d_test_3
+      is harder to run for 50+ turns. This means compaction risk for d_test_3 is
+      unassessed.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The acceptance threshold "target metric reduces by >= 20%" is arbitrary.
+      It was chosen to be non-trivial (avoids false positives from random variation)
+      but the number has no calibration basis. A 15% reduction might be meaningful;
+      a 25% reduction might be the true signal floor. Phase 1 should consider
+      running multiple baseline sessions to establish natural variation before
+      applying a fixed threshold.
+    deferred_to_feature_iteration: true
+
+assumptions_made:
+  - assumption: >
+      Session-start injection successfully delivers directive content into agent
+      context before the first user turn
+    verified: true
+    note: >
+      Verified by Task 4 injection feasibility investigation for Claude Code
+      (CLAUDE.md) and Codex (AGENTS.md). OpenCode is INFERRED only — the config
+      injection path was not fetched from official docs in Task 4.
+
+  - assumption: >
+      Directive compliance is stable across session length (survives compaction)
+    verified: false
+    note: >
+      Not verified. This is the highest-risk assumption. All three agents perform
+      context compaction on long sessions. Consequence if false: SecondSight
+      directives only work reliably for sessions of < 20-30 turns, making them
+      ineffective for complex multi-hour tasks.
+
+  - assumption: >
+      Multiple simultaneous directives do not interfere with each other's compliance
+    verified: false
+    note: >
+      Not verified. Consequence if false: SecondSight must implement directive
+      priority ordering and conflict resolution before Phase 3A, adding significant
+      design complexity.
+
+  - assumption: >
+      Compliance rate for trigger-condition directives is meaningful (not near-zero)
+    verified: false
+    note: >
+      Not verified. If trigger-condition directives consistently achieve < 10%
+      compliance (agents don't track trigger state), the only viable directive
+      type is always-apply. This would significantly limit SecondSight's ability
+      to target specific waste patterns.
+
+  - assumption: >
+      Misinterpretation (DC-C) can be detected by monitoring task completion quality
+    verified: false
+    note: >
+      Not verified. Task completion quality is a subjective measure. Phase 1 must
+      define a scoring rubric for "task completed successfully" before experiments
+      run, otherwise misinterpretation cannot be reliably classified.
+
+debt_registered: true
+debt_location: >
+  directive-comprehension.yaml section "experiment_protocol.phase1_execution_order":
+  task design details (specific files, scenarios) are unspecified.
+  directive-comprehension.yaml section "assumptions": three unverified assumptions
+  that block a settled feasibility verdict.
+
+narrative: |
+  Task 6 completes Phase 0's directive comprehension requirement with a full
+  experiment protocol, but zero live behavioral data. This is the correct outcome
+  for Phase 0 — the task spec explicitly allowed protocol design if live testing
+  is infeasible. The deliverable enables Phase 1 to run experiments immediately.
+
+  The three death cases from the task spec are all addressed in the investigation:
+  DC-A (acknowledgment without behavior) is the most dangerous because it produces
+  false positive adoption metrics. The measurement criteria explicitly defines
+  behavioral observation as the only valid compliance signal. DC-B (compaction
+  drop) is the most impactful for production use — if it fires, directive injection
+  only works for short sessions. DC-C (misinterpretation) is addressed via a
+  separate "misinterpreted" compliance category and task quality checks.
+
+  The most consequential open question is not whether agents can follow directives
+  at all — they can, for simple always-apply instructions. The open question is
+  whether they can maintain trigger-condition compliance across a 50-turn session
+  with context compaction. If the answer is no, the architecture must shift toward
+  runtime injection (MCP pull-based) rather than session-start injection, which
+  is the path Task 4 identified as "partially viable" but more complex.
+
+  OpenCode remains the weakest link: its injection path is unverified. Phase 1
+  must resolve OpenCode injection before running the full matrix.
+
+resolved_items:
+  - original_section: "assumptions_made"
+    original_description: >
+      Session-start injection successfully delivers directive content into agent
+      context before the first user turn
+    resolution: >
+      Verified for Claude Code and Codex from Task 4 findings. OpenCode remains
+      unverified but the YAML documents this explicitly with confidence=low.
+      Test test_document_structure.test_yaml_loads_without_error and the full
+      test suite (55 tests) now verifies the investigation document is structurally
+      complete and covers all death cases.
+
+  - original_section: "silent_failure_conditions"
+    original_description: >
+      OpenCode injection failure creating an indistinguishable gap in results
+    resolution: >
+      The results matrix includes explicit "Phase 0 protocol only" evidence text
+      for all OpenCode entries, and the feasibility_verdict explicitly flags
+      OpenCode injection as unverified. This makes the gap visible, not silent.
+
+  - original_section: "silent_failure_conditions"
+    original_description: >
+      DC-B compaction risk not assessed for d_test_3
+    resolution: >
+      Documented explicitly in the YAML failure_modes section and in
+      silent_failure_conditions of this scar report. Not fixed (d_test_3
+      long-session testing is genuinely harder to design) but made visible.

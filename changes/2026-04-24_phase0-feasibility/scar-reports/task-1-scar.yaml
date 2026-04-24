@@ -1,0 +1,205 @@
+task_id: task-1
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: >
+      Official documentation at https://code.claude.com/docs/en/overview was not fetched
+      via WebFetch. The investigation used evidence from live settings.json, live JSONL
+      transcript files, and reference implementations instead. This is arguably higher-quality
+      evidence (actual runtime behavior > documentation), but the official docs may document
+      additional hook types, stability guarantees, or payload field names that differ from
+      what was inferred from reference code.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      PostToolUseFailure and UserPromptSubmit payload schemas were not verified from live
+      inspection or official docs. Field names were INFERRED from hook purpose and PostToolUse
+      pattern. The investigation documents these explicitly as unverified — but the YAML report
+      still includes field entries for them, which could create false confidence if the reader
+      doesn't notice the "limitations" caveats.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Token usage per call was documented as "JSONL only" without testing whether
+      UserPromptSubmit or any other hook might provide a subset of usage data.
+      The conclusion is correct based on evidence, but not exhaustively verified.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      JSONL format change: Claude Code ships a version that changes transcript field names
+      (e.g., renames 'toolUseResult' to 'tool_result', or changes message.usage nesting).
+      SecondSight's Tier 2 (JSONL reading) silently produces empty or wrong data.
+      First discoverer: Phase 1 engineer when cost tracking shows zero or the session
+      analysis layer gets None for tool results.
+      Damage before discovery: multiple sessions of cost tracking data lost; Phase 2
+      analysis features built on wrong field assumptions.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Hook matcher filtering: SecondSight registers PreToolUse hook with a specific
+      tool name matcher (e.g., for a performance optimization). Non-matching tools
+      silently produce no events. Coverage appears 100% in testing (test tools all match)
+      but production sessions using other tools are invisible.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      UserPromptSubmit payload lacks prompt content: Hook fires as a timing signal only
+      (no prompt text in payload). SecondSight assumes prompt content is available in the
+      hook payload and designs Phase 2 prompt analysis around it. Investigation correctly
+      flags this as UNVERIFIED but if Phase 1 implementation doesn't verify before
+      committing to the pattern, the gap propagates silently.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      PostToolUseFailure version compatibility: This hook may not exist in older Claude Code
+      versions (exact version support unknown). If user's Claude Code is older, failure events
+      are silently lost and only PostToolUse+stderr heuristic provides failure signals.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      JSONL streaming deduplication missed: If Phase 1 processes JSONL without deduplication
+      by message.id, all intermediate streaming chunks are counted as separate API calls.
+      Cost tracking overestimates by 3-10x. Correct output_token counts are only on the
+      LAST record per message.id.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      PreToolUse.tool_input contains full tool arguments (including file paths, commands, etc.)
+      with no truncation.
+    verified: true
+    note: >
+      VERIFIED: Confirmed from observagent relay.py which reads tool_input at line 91-111
+      for tool names including Bash (extracts 'command'), Read/Write/Edit (extracts 'file_path'),
+      Task (extracts 'description'), etc. Also confirmed that 'tool_input' is the exact field
+      name in the payload (not 'input' or 'arguments').
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      PostToolUse.tool_response contains tool execution output with meaningful content
+      for all tool types.
+    verified: false
+    note: >
+      PARTIALLY VERIFIED: Confirmed that tool_response is present and contains stderr/stdout
+      for Bash tool. NOT VERIFIED for file operation tools (Read, Write, Edit) — tool_response
+      content structure may be different or minimal for these. Observagent relay.py only
+      extracts exit_status from Bash tool, returning None for all others.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      Claude Code hook mechanism is officially documented and stable (not experimental).
+    verified: false
+    note: >
+      PARTIALLY VERIFIED: Hooks are clearly used in production (settings.json, both reference
+      projects, the user's own system). However, official docs could not be accessed. The
+      hook API appears stable (observagent uses it in a published npm package), but stability
+      guarantee is not confirmed from official documentation.
+      CONSEQUENCE IF FALSE: Hooks could be deprecated or changed in a major Claude Code update,
+      breaking SecondSight's entire observation layer.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      Sub-agent events (SubagentStart/SubagentStop) are visible through the same hook mechanism
+      as tool events (same settings.json hook registration).
+    verified: true
+    note: >
+      VERIFIED: Confirmed from observagent cmd-init.js which registers all four hooks
+      (PreToolUse, PostToolUse, SubagentStart, SubagentStop) using the same relay.py script.
+      SubagentStart payload confirmed to include agent_id and agent_transcript_path.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      Hook commands receive the full event payload via stdin as JSON.
+    verified: true
+    note: >
+      VERIFIED: observagent relay.py reads from sys.stdin.read() and parses JSON.
+      Pattern is consistent across both reference projects.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      JSONL transcript file at transcript_path contains all message history for the session,
+      not just the current turn.
+    verified: true
+    note: >
+      VERIFIED: Langfuse-template reads the full transcript and uses state tracking (last_line
+      counter) to process only new messages since last run. Transcript grows incrementally
+      with all messages appended. Confirmed from live file inspection showing sequential
+      messages from a single session.
+    deferred_to_feature_iteration: false
+
+debt_registered: true
+debt_location: >
+  Multiple items:
+  1. claude-code-hooks.yaml: PostToolUseFailure and UserPromptSubmit payload schemas are marked
+     as unverified — require live payload capture in Phase 1 implementation to confirm.
+  2. claude-code-hooks.yaml: tool_response content structure for non-Bash tools (Read/Write/Edit)
+     is unverified. Phase 1 must capture and document these.
+  3. changes/2026-04-24_phase0-feasibility/investigations/claude-code-hooks.md: "Official
+     documentation not accessed" note — should be revisited if docs become accessible.
+
+narrative: >
+  The investigation found that Claude Code's hook mechanism is more complete than the reference
+  projects suggest. Both reference projects (langfuse-template, observagent) use only 4-5 of
+  8 confirmed hook types, missing UserPromptSubmit, PostToolUseFailure, and PermissionRequest.
+  These were discovered by reading the user's production settings.json — evidence that would
+  have been missed if the investigation had relied only on reference code.
+
+  The verdict is PARTIALLY_FEASIBLE rather than FEASIBLE because two critical gaps exist:
+  (1) token usage data is not in hook payloads — requires JSONL transcript reading, which
+  is an internal format; (2) PostToolUse lacks explicit exit_status for non-Bash tools.
+
+  The two-tier pattern (hooks for real-time classification + JSONL for rich post-turn data)
+  is proven by both reference projects shipping production systems on this approach. The
+  technical risk is real but manageable if JSONL format changes are monitored.
+
+  DC-1 (shallow feasibility) was the primary death risk for this investigation. The report
+  correctly avoids it by: documenting payload fields per hook (not just hook names),
+  distinguishing 5 sufficient-coverage hooks from 8 available hooks, and explicitly
+  listing token_usage and agent_response as missing from hooks.
+
+resolved_items:
+  - original_section: assumptions_made
+    original_description: "Hook commands receive payload via stdin as JSON"
+    resolution: >
+      Verified from observagent relay.py source code: sys.stdin.read() + json.loads().
+      Pattern consistent across both reference projects.
+
+  - original_section: assumptions_made
+    original_description: "Sub-agent events visible through same hook mechanism"
+    resolution: >
+      Verified from observagent cmd-init.js: SubagentStart and SubagentStop are registered
+      alongside PreToolUse/PostToolUse in the same settings.json hooks object.
+      SubagentStart payload confirmed to include agent_id and agent_transcript_path.
+
+  - original_section: assumptions_made
+    original_description: "JSONL transcript contains full session history"
+    resolution: >
+      Verified from live file inspection (cb27db96....jsonl) and langfuse-template's
+      incremental state tracking pattern. Transcript grows by appending, confirmed from
+      sequential message chain in live file.
+
+  - original_section: assumptions_made
+    original_description: "PreToolUse.tool_input contains full tool arguments"
+    resolution: >
+      Verified from observagent relay.py _build_tool_summary() function which extracts
+      specific fields from tool_input per tool type. Field names confirmed for all major
+      tools (Bash.command, Read/Write/Edit.file_path, Task.description, etc.).
+
+  - original_section: known_shortcuts
+    original_description: >
+      PostToolUseFailure and UserPromptSubmit payload schemas not verified — inferred from pattern
+    resolution: >
+      Added explicit 'verified: false' notes to these hook entries and added
+      'UNVERIFIED' warnings in the limitations fields. Cannot verify without live payload
+      capture — marked as Phase 1 debt. Silent failure condition added for UserPromptSubmit
+      gap propagation risk.
+
+  - original_section: silent_failure_conditions
+    original_description: "JSONL streaming deduplication missed"
+    resolution: >
+      Added explicit documentation in both YAML report and markdown report:
+      'Claude Code emits MULTIPLE assistant records per message ID during streaming.
+      Deduplication by message.id keeping last occurrence is mandatory.'
+      This is documented prominently in both the jsonl_transcript section of the YAML
+      and the markdown report's JSONL section.

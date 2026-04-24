@@ -1,0 +1,291 @@
+task_id: task-3
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: >
+      Hook callback payloads for session_start, user_prompt_submit, stop, and
+      permission_request were NOT verified from source code. Only AfterToolUse and
+      AfterAgent hook types were confirmed from codex-rs/hooks/src/types.rs.
+      The other hook types' exact payload fields were inferred from the common
+      HookPayload wrapper pattern (session_id, cwd, triggered_at) without inspecting
+      their individual Request structs (e.g., SessionStartRequest, StopRequest).
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The official developer documentation at https://developers.openai.com/codex was
+      not fetched (URL returned errors). The investigation relied entirely on GitHub
+      source code (codex-rs/) and the lazyagent reference implementation instead.
+      Source code is arguably higher-quality evidence for field-level schemas, but
+      official docs may document configuration options, stability guarantees, or
+      behavioral contracts that differ from what source code implies.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Extended persistence mode was identified as required for structured tool execution
+      data (exit_code, stdout, stderr) but the investigation did not verify the exact
+      config.toml syntax to enable it. The field name was inferred as
+      'event_persistence_mode = "extended"' from the EventPersistenceMode enum but
+      was not confirmed from official config documentation.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      Extended mode not enabled silently degrades tool execution analysis: If SecondSight
+      processes Codex CLI sessions in Limited mode (default), exec_command_end and
+      patch_apply_end events are absent. SecondSight falls back to parsing unstructured
+      function_call_output.output strings. Heuristic exit code extraction silently produces
+      wrong failure classifications for commands that emit output even on success.
+      First discoverer: Phase 2 engineer when failure rate statistics look wrong, or when
+      exit_code-based analysis returns None for all Codex sessions.
+      Damage before discovery: Phase 2 failure attribution built on heuristics may ship
+      to production, producing misleading risk scores for Codex CLI sessions.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      JSONL format change breaks parser silently: Codex CLI is under active development.
+      If a release renames 'function_call' to 'tool_call', or changes the arguments field
+      from JSON-string to nested object, SecondSight's JSONL parser silently produces empty
+      or wrong tool call data. The cli_version field in session_meta enables detection after
+      the fact but not prevention.
+      First discoverer: An engineer who runs SecondSight against a Codex session and notices
+      all function_call entries parse to empty name/arguments.
+      Damage: All tool call analysis is wrong for affected Codex versions until the parser
+      is updated.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Sub-agent topology silently incomplete: SecondSight discovers sub-agents by scanning
+      for JSONL files with source=subagent. If the scan happens BEFORE a sub-agent finishes
+      creating its JSONL file, the sub-agent is invisible in that scan window.
+      No spawning event in the parent session means SecondSight cannot know a sub-agent
+      was spawned until its JSONL file appears on disk.
+      First discoverer: An engineer comparing Codex CLI session topology with expected
+      sub-agent count and finding mismatches.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Token usage field null when model omits it: token_count.info is Optional. When the
+      model doesn't report usage (e.g., certain model providers, API errors), SecondSight
+      receives a token_count event with info=null. If SecondSight doesn't handle null, it
+      crashes or produces zero-usage records silently.
+      First discoverer: A session from a non-OpenAI model provider where cost tracking
+      shows zero for all Codex sessions.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      arguments field is a JSON string, not a nested object: response_item/function_call.arguments
+      is a JSON-encoded string, not a structured JSON object. If SecondSight tries to access
+      .arguments.command directly (treating it as an object), it gets a string not a list.
+      The parse failure is silent — code returns None or throws a KeyError without visible warning.
+      First discoverer: The engineer implementing tool call argument extraction, when they
+      try to log the command and get a string representation of a JSON object.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      ~/.codex/sessions/*.jsonl is the canonical storage path for ALL Codex CLI session
+      transcripts, including both interactive (CLI, VS Code) and sub-agent sessions.
+    verified: true
+    note: >
+      VERIFIED: Confirmed from codex-rs/rollout/src/lib.rs (SESSIONS_SUBDIR = "sessions",
+      ARCHIVED_SESSIONS_SUBDIR = "archived_sessions"), recorder.rs (constructs path under
+      codex_home/sessions/), and lazyagent process.go (SessionsDir returns ~/.codex/sessions).
+      lazyagent also confirms ~/.codex/session_index.jsonl for thread-name lookup.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      The JSONL envelope format is {timestamp, type, payload} where type is the RolloutItem
+      variant name (session_meta, response_item, event_msg, turn_context, compacted).
+    verified: true
+    note: >
+      VERIFIED: Confirmed from RolloutLine struct in protocol.rs ({timestamp, flatten(item)}),
+      and from lazyagent process.go jsonlEnvelope struct ({Timestamp, Type, Payload}).
+      Test data in process_test.go shows exact format including 'type' field values.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      response_item/function_call entries contain a 'name' field (tool name) and an
+      'arguments' field (JSON-encoded tool arguments).
+    verified: true
+    note: >
+      VERIFIED: Confirmed from lazyagent's responseItemPayload struct (Name, Arguments fields),
+      process_test.go synthetic data ({"type":"function_call","name":"exec_command","arguments":"..."}),
+      and compact/codex.go which explicitly truncates the 'arguments' field by name.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      event_msg/token_count provides both total_token_usage (session cumulative) and
+      last_token_usage (last turn only), enabling per-turn delta calculation.
+    verified: true
+    note: >
+      VERIFIED: Confirmed from TokenUsageInfo struct in protocol.rs (total_token_usage +
+      last_token_usage fields). Also confirmed from lazyagent which reads
+      info.total_token_usage fields (input_tokens, cached_input_tokens, output_tokens,
+      reasoning_output_tokens) and sums output+reasoning into OutputTokens.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      exec_command_end and patch_apply_end (with exit_code, stdout, stderr) are
+      Extended persistence mode only. Default CLI sessions will NOT have these events.
+    verified: true
+    note: >
+      VERIFIED: Confirmed from rollout/src/policy.rs. The should_persist_event_msg function
+      maps EventMsg::ExecCommandEnd and EventMsg::PatchApplyEnd to
+      Some(EventPersistenceMode::Extended), meaning they are only persisted when mode=Extended.
+      EventMsg::ExecCommandBegin is not persisted at all (returns None).
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      Codex CLI's hook system uses config.toml (not settings.json like Claude Code)
+      for hook registration.
+    verified: true
+    note: >
+      VERIFIED: Confirmed from codex-rs/README.md and docs/config.md which both state
+      "config.toml instead of config.json" and reference the hooks configuration section.
+      The hooks crate (codex-rs/hooks/) is a separate Rust crate from the Claude Code
+      TypeScript hook mechanism — they are architecturally unrelated.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      Sub-agent spawning in Codex CLI creates a separate JSONL file with
+      session_meta.source containing sub-agent identification data.
+    verified: true
+    note: >
+      VERIFIED: Confirmed from SubAgentSource enum in protocol.rs which includes
+      ThreadSpawn { parent_thread_id, depth, agent_path, agent_nickname }.
+      Also confirmed from lazyagent process.go which sets session.IsSidechain=true
+      when session_meta.source contains "subagent", and from SessionSource enum values.
+      The parent session does NOT receive a spawning event — only the sub-agent's own
+      JSONL file identifies it as a sub-agent.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      The post_tool_use hook callback payload contains per-call duration_ms, success
+      boolean, and call_id for correlation with JSONL entries.
+    verified: true
+    note: >
+      VERIFIED: Confirmed from codex-rs/hooks/src/types.rs HookEventAfterToolUse struct
+      (turn_id, call_id, tool_name, tool_kind, tool_input, executed, success, duration_ms,
+      mutating, sandbox, sandbox_policy, output_preview). Also verified by the
+      after_tool_use_payload_serializes_stable_wire_shape test in the same file showing
+      exact JSON keys.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      The user_prompt_submit hook payload does NOT carry prompt text (timing signal only).
+    verified: false
+    note: >
+      UNVERIFIED: UserPromptSubmitRequest source file (hooks/src/events/user_prompt_submit.rs)
+      was not inspected. Inferred from the AfterAgent hook which DOES carry
+      last_assistant_message (text), suggesting prompt text could also be included.
+      The investigation conservatively assumes NO prompt text to avoid overpromising.
+      CONSEQUENCE IF FALSE (prompt IS in payload): The observation strategy of reading
+      user prompts from JSONL is correct but more complex than needed. Hook-based prompt
+      capture would also be available.
+    deferred_to_feature_iteration: false
+
+debt_registered: true
+debt_location: >
+  Multiple items:
+  1. codex-hooks.yaml: hook callback payloads for session_start, user_prompt_submit,
+     stop, permission_request are marked with 'UNVERIFIED' in limitations — require
+     source code inspection of hooks/src/events/*.rs files in Phase 1.
+  2. codex-hooks.yaml: Extended mode config.toml syntax unverified — Phase 1 must
+     confirm exact config key before documenting in user-facing integration guide.
+  3. codex-hooks.md: Tier 1/2/3 integration strategy is design recommendation only —
+     actual Phase 1 implementation must verify JSONL tailing approach against live sessions.
+  4. Assumption: user_prompt_submit hook may carry prompt text — verified=false, must
+     be checked in Phase 1 by inspecting hooks/src/events/user_prompt_submit.rs.
+
+narrative: >
+  Codex CLI's event architecture is fundamentally different from Claude Code's in one
+  important way: JSONL rollout files are the PRIMARY observation surface, while hook
+  callbacks are secondary. For Claude Code, hooks are primary and JSONL is secondary.
+  This inversion actually makes Codex CLI EASIER to observe from SecondSight's perspective:
+  no configuration changes are required to start reading events — just file watching.
+
+  The primary limitation is the Extended mode gap. The most useful tool execution fields
+  (exit_code, structured stdout/stderr, explicit success/failure) require users to
+  configure Extended persistence mode. In default mode, SecondSight must parse unstructured
+  output strings and apply heuristics for failure detection.
+
+  Sub-agent spawning is the only genuinely unaddressable gap. There is no streaming
+  sub-agent event — only discovery by scanning JSONL files.
+
+  DC-1 (shallow feasibility) was the primary death risk. The investigation avoids it by:
+  documenting each event's payload fields, explicitly calling out the Extended mode
+  gap for exit codes, and explicitly listing "per-call token usage" as missing rather
+  than available. The 87% coverage rate reflects 7 of 8 needed event types —
+  honest about the sub-agent spawning gap.
+
+  The biggest practical risk for SecondSight is the JSONL format being an undocumented
+  internal format. The 'codex-rs' team has not designated JSONL as a stable external API.
+  Version tracking via cli_version in session_meta is the best available mitigation.
+
+resolved_items:
+  - original_section: assumptions_made
+    original_description: "JSONL storage path is ~/.codex/sessions/*.jsonl"
+    resolution: >
+      Verified from codex-rs/rollout/src/lib.rs (SESSIONS_SUBDIR constant),
+      recorder.rs (path construction), and lazyagent/codex/process.go (SessionsDir function).
+      Three independent sources confirm the path.
+
+  - original_section: assumptions_made
+    original_description: "JSONL envelope format is {timestamp, type, payload}"
+    resolution: >
+      Verified from protocol.rs RolloutLine struct and lazyagent jsonlEnvelope struct.
+      process_test.go synthetic data confirms exact field names and values.
+
+  - original_section: assumptions_made
+    original_description: "function_call entries contain name and arguments fields"
+    resolution: >
+      Verified from lazyagent responseItemPayload struct, process_test.go synthetic data,
+      and compact/codex.go which explicitly names and truncates the 'arguments' field.
+
+  - original_section: assumptions_made
+    original_description: "token_count provides both total and last-turn usage"
+    resolution: >
+      Verified from protocol.rs TokenUsageInfo struct (total_token_usage + last_token_usage).
+      lazyagent reads these fields explicitly in parseJSONL function.
+
+  - original_section: assumptions_made
+    original_description: "exec_command_end and patch_apply_end are Extended mode only"
+    resolution: >
+      Verified from rollout/src/policy.rs event_msg_persistence_mode function.
+      ExecCommandEnd and PatchApplyEnd map to Some(EventPersistenceMode::Extended).
+      ExecCommandBegin returns None (never persisted at any tier).
+
+  - original_section: assumptions_made
+    original_description: "Config.toml is used for hook registration (not settings.json)"
+    resolution: >
+      Verified from codex-rs/README.md and docs/config.md. The hooks are a separate Rust crate
+      (codex-rs/hooks/) from Claude Code's TypeScript hook mechanism.
+
+  - original_section: assumptions_made
+    original_description: "Sub-agent spawning creates separate JSONL with source=subagent"
+    resolution: >
+      Verified from protocol.rs SubAgentSource enum (ThreadSpawn variant with parent_thread_id).
+      lazyagent confirms sub-agent detection by checking session_meta.source for "subagent" string.
+
+  - original_section: assumptions_made
+    original_description: "post_tool_use hook contains duration_ms, success, call_id"
+    resolution: >
+      Verified from hooks/src/types.rs HookEventAfterToolUse struct and its stable wire-shape test.
+      All three fields confirmed present in the hook callback payload.
+
+  - original_section: known_shortcuts
+    original_description: "Hook callback payloads for session_start/stop/user_prompt_submit unverified"
+    resolution: >
+      Cannot be resolved within task scope (would require inspecting
+      hooks/src/events/session_start.rs, stop.rs, user_prompt_submit.rs source files,
+      which requires another source code fetch operation). Marked as Phase 1 debt.
+      Added explicit 'UNVERIFIED' warnings in limitations fields of these hook entries.
+      Added verified=false for user_prompt_submit payload assumption.
+
+  - original_section: silent_failure_conditions
+    original_description: "arguments field is JSON string not nested object"
+    resolution: >
+      Added explicit documentation in codex-hooks.yaml (limitations for function_call event)
+      and in codex-hooks.md ("JSONL function_call.arguments is a JSON-encoded string").
+      Phase 1 must double-parse: first parse the JSONL line, then parse the arguments string.
+      Also added to silent_failure_conditions to ensure Phase 2 developer awareness.

@@ -1,0 +1,442 @@
+agent: claude_code
+investigation_date: "2026-04-24"
+source: "official_docs + reference_opensoure + live_settings_json + live_jsonl_transcript"
+verdict: partially_feasible
+
+# Evidence sources:
+# 1. User's ~/.claude/settings.json — shows 6 hook types in production (UserPromptSubmit, Stop,
+#    PostToolUse, PostToolUseFailure, PermissionRequest, PreToolUse with matcher)
+# 2. reference_opensoure/observagent/hooks/relay.py — live payload inspection comments
+#    (confirmed: PostToolUse payload fields: session_id, transcript_path, cwd, permission_mode,
+#    hook_event_name, tool_name, tool_use_id, tool_input, tool_response)
+# 3. reference_opensoure/observagent/lib/cmd-init.js — hook registration shows 4 hook types
+#    (PreToolUse, PostToolUse, SubagentStart, SubagentStop)
+# 4. reference_opensoure/claude-code-langfuse-template/hooks/langfuse_hook.py — uses Stop hook
+#    and reads JSONL transcript for full payload (user prompt, assistant response, tool calls/results)
+# 5. Live ~/.claude/projects/.../cb27db96....jsonl — confirmed JSONL transcript schema with
+#    type, message, sessionId, timestamp, cwd, version, toolUseResult fields
+
+hook_types:
+  - name: "PreToolUse"
+    trigger: "Fires before each tool call executes. Can block execution via exit code or output."
+    payload_fields:
+      - name: "session_id"
+        type: "string"
+        required: true
+        analysis_use: "Session correlation — links all tool calls in a session"
+      - name: "hook_event_name"
+        type: "string"
+        required: true
+        analysis_use: "Discriminate hook type when one script handles multiple events"
+      - name: "tool_name"
+        type: "string"
+        required: true
+        analysis_use: "Tool call type classification (Read, Write, Bash, Task, etc.)"
+      - name: "tool_use_id"
+        type: "string"
+        required: true
+        analysis_use: "Pair PreToolUse / PostToolUse events for duration measurement"
+      - name: "tool_input"
+        type: "object"
+        required: true
+        analysis_use: "Tool call arguments — required for action classification (file paths, commands, queries)"
+      - name: "transcript_path"
+        type: "string"
+        required: true
+        analysis_use: "Path to session JSONL transcript — used for full payload via transcript reading"
+      - name: "cwd"
+        type: "string"
+        required: false
+        analysis_use: "Working directory context for project identity"
+      - name: "permission_mode"
+        type: "string"
+        required: false
+        analysis_use: "Governance — track when agent operates in restricted vs. default mode"
+    limitations: >
+      tool_input is passed via stdin JSON. No exit_status field (tool hasn't run yet).
+      Arguments are available but results require PostToolUse hook.
+      matcher field in settings.json allows filtering by tool name (e.g., only Bash) —
+      if matcher is set, not all tool calls will trigger the hook.
+
+  - name: "PostToolUse"
+    trigger: "Fires after each tool call completes. Cannot block execution."
+    payload_fields:
+      - name: "session_id"
+        type: "string"
+        required: true
+        analysis_use: "Session correlation"
+      - name: "hook_event_name"
+        type: "string"
+        required: true
+        analysis_use: "Discriminate hook type"
+      - name: "tool_name"
+        type: "string"
+        required: true
+        analysis_use: "Tool call type classification"
+      - name: "tool_use_id"
+        type: "string"
+        required: true
+        analysis_use: "Match to PreToolUse for duration_ms calculation"
+      - name: "tool_input"
+        type: "object"
+        required: true
+        analysis_use: "Tool call arguments — same as PreToolUse, redundant but useful for single-hook setups"
+      - name: "tool_response"
+        type: "object"
+        required: true
+        analysis_use: >
+          Tool call result. For Bash: contains stdout, stderr fields.
+          For file tools: contains content or confirmation.
+          Used for failure attribution (non-empty stderr = error signal).
+      - name: "transcript_path"
+        type: "string"
+        required: true
+        analysis_use: "Path to session transcript for cross-referencing"
+      - name: "cwd"
+        type: "string"
+        required: false
+        analysis_use: "Working directory"
+      - name: "permission_mode"
+        type: "string"
+        required: false
+        analysis_use: "Governance context"
+    limitations: >
+      CRITICAL LIMITATION (confirmed by observagent relay.py live inspection):
+      Claude Code 2.1.59+ does NOT include an explicit exit_status, exit_code, or exitCode
+      field in PostToolUse payload. Exit status must be inferred from tool_response.stderr
+      for Bash tool. For non-Bash tools (Read, Write, Edit, etc.), there is NO reliable
+      failure signal in the hook payload — failure detection requires JSONL transcript reading.
+      tool_response content depth varies by tool type; not standardized.
+
+  - name: "PostToolUseFailure"
+    trigger: "Fires when a tool call fails (non-zero exit or error condition)."
+    payload_fields:
+      - name: "session_id"
+        type: "string"
+        required: true
+        analysis_use: "Session correlation"
+      - name: "hook_event_name"
+        type: "string"
+        required: true
+        analysis_use: "Identifies as failure event — primary failure signal"
+      - name: "tool_name"
+        type: "string"
+        required: true
+        analysis_use: "Which tool failed — required for failure attribution"
+      - name: "tool_use_id"
+        type: "string"
+        required: false
+        analysis_use: "Match to pre/post events"
+      - name: "tool_input"
+        type: "object"
+        required: false
+        analysis_use: "What arguments caused the failure"
+    limitations: >
+      Evidence of existence: confirmed in user's ~/.claude/settings.json production config.
+      NOT documented in either reference project (observagent uses PostToolUse + stderr heuristic;
+      langfuse-template does not handle failures separately).
+      Exact payload schema NOT confirmed from live inspection — only field names inferred from
+      PostToolUse pattern. VERIFIED: hook exists but full payload schema is unverified.
+      Stability: undocumented in reference_opensoure; potentially added in newer Claude Code versions.
+
+  - name: "Stop"
+    trigger: "Fires after each complete assistant response (turn end). Runs after all tool calls in a turn complete."
+    payload_fields:
+      - name: "session_id"
+        type: "string"
+        required: true
+        analysis_use: "Session correlation — all turns in a session share this ID"
+      - name: "hook_event_name"
+        type: "string"
+        required: true
+        analysis_use: "Confirms this is a turn-end event"
+      - name: "transcript_path"
+        type: "string"
+        required: true
+        analysis_use: >
+          CRITICAL: This is the hook that provides the richest data.
+          transcript_path points to JSONL file containing: full user prompt, full assistant
+          response content, all tool calls with input/output, token usage, model name,
+          timestamps, sessionId, cwd, version.
+      - name: "stop_hook_active"
+        type: "boolean"
+        required: false
+        analysis_use: "Recursion guard — true when a Stop hook is already running, prevents infinite recursion. NOT a success indicator."
+    limitations: >
+      Stop hook payload itself is minimal — it provides transcript_path, not the data directly.
+      All rich data (user prompt, assistant response, tool calls, token usage) requires reading
+      the JSONL transcript file at transcript_path.
+      JSONL transcript is an INTERNAL format — not documented as a public API.
+      Format confirmed from live file inspection (version 2.1.85):
+      fields: type, message{role,content,usage,model,id}, sessionId, timestamp, cwd, version,
+      toolUseResult{stdout,stderr,interrupted,isImage}, parentUuid, isSidechain, requestId.
+      No official stability guarantee. Could change without notice.
+      Langfuse template has bug-fixed concurrent session handling (see docs/bug-fix-concurrent-sessions.md).
+
+  - name: "UserPromptSubmit"
+    trigger: "Fires when the user submits a new prompt. Runs before Claude processes the message."
+    payload_fields:
+      - name: "session_id"
+        type: "string"
+        required: true
+        analysis_use: "Session correlation"
+      - name: "hook_event_name"
+        type: "string"
+        required: true
+        analysis_use: "Identifies as user prompt event"
+      - name: "user_prompt"
+        type: "string"
+        required: false
+        analysis_use: >
+          User prompt content — primary source of user intent.
+          Required for Phase 2 prompt analysis and session start detection.
+          WARNING: Field name 'user_prompt' is inferred from hook purpose and common patterns;
+          exact field name NOT verified from live payload inspection.
+    limitations: >
+      UNVERIFIED PAYLOAD SCHEMA: Hook existence confirmed from user's settings.json production config.
+      Payload field names inferred from hook purpose — not confirmed from live inspection or
+      official docs. Reference projects (observagent, langfuse-template) do NOT use this hook.
+      May not exist in older Claude Code versions. Added in unknown version.
+      If payload does not include prompt content, this hook only signals timing (not content).
+
+  - name: "PermissionRequest"
+    trigger: "Fires when Claude requests permission to perform an action (dangerous operations, file writes, etc.)."
+    payload_fields:
+      - name: "session_id"
+        type: "string"
+        required: true
+        analysis_use: "Session correlation"
+      - name: "hook_event_name"
+        type: "string"
+        required: true
+        analysis_use: "Identifies as permission event"
+      - name: "permission_type"
+        type: "string"
+        required: false
+        analysis_use: "What type of action requires permission — governance analysis in Phase 3B"
+      - name: "tool_name"
+        type: "string"
+        required: false
+        analysis_use: "Which tool triggered the permission request"
+    limitations: >
+      UNVERIFIED PAYLOAD SCHEMA: Hook existence confirmed from user's settings.json.
+      Payload schema NOT confirmed. Langfuse-template reads a separate 'permission-events.jsonl'
+      log file (~/.claude/logs/permission-events.jsonl) for permission governance data —
+      suggests permission events may be logged to file, not just hook payload.
+      Phase 2 analysis priority: LOW — needed for Phase 3B governance only.
+
+  - name: "SubagentStart"
+    trigger: "Fires when a sub-agent (Task tool spawn) begins execution."
+    payload_fields:
+      - name: "session_id"
+        type: "string"
+        required: true
+        analysis_use: "Parent session — link subagent to spawning session"
+      - name: "hook_event_name"
+        type: "string"
+        required: true
+        analysis_use: "Identifies subagent start event"
+      - name: "agent_id"
+        type: "string"
+        required: true
+        analysis_use: "Unique subagent identifier — required for multi-agent tree construction"
+      - name: "agent_type"
+        type: "string"
+        required: false
+        analysis_use: "Type of subagent (e.g., 'claude' vs specialized agent)"
+      - name: "agent_transcript_path"
+        type: "string"
+        required: false
+        analysis_use: "Path to subagent's own JSONL transcript — enables per-subagent cost tracking"
+    limitations: >
+      agent_id field confirmed from observagent relay.py live inspection.
+      SubagentStart fires AFTER Task tool PreToolUse — initial_prompt is extracted from Task
+      tool_input.description at PreToolUse time and linked to the subagent at SubagentStart.
+      This indirection means task description must be captured at PreToolUse, not at SubagentStart.
+      Subagent transcripts stored at: ~/.claude/projects/<session-dir>/subagents/agent-<id>.jsonl
+      Path format confirmed from observagent jsonlWatcher.js source.
+
+  - name: "SubagentStop"
+    trigger: "Fires when a sub-agent completes or is terminated."
+    payload_fields:
+      - name: "session_id"
+        type: "string"
+        required: true
+        analysis_use: "Parent session correlation"
+      - name: "hook_event_name"
+        type: "string"
+        required: true
+        analysis_use: "Identifies subagent stop event"
+      - name: "agent_id"
+        type: "string"
+        required: true
+        analysis_use: "Which subagent completed — mark as 'completed' in agent tree"
+      - name: "agent_type"
+        type: "string"
+        required: false
+        analysis_use: "Subagent type classification"
+      - name: "agent_transcript_path"
+        type: "string"
+        required: false
+        analysis_use: "Path to subagent JSONL for final cost aggregation"
+    limitations: >
+      SubagentStop is NOT RELIABLE for detecting subagent completion when Claude Code
+      is killed or crashes mid-session. Observagent handles this with a 10-minute stale
+      detection timer that marks active nodes as 'stale' if no recent activity.
+      Recovery requires reading transcript files directly.
+
+# JSONL Transcript — documented separately from hook events because it is NOT a hook
+jsonl_transcript:
+  type: "internal_file"
+  location: "~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl"
+  subagent_location: "~/.claude/projects/<encoded-cwd>/<session-uuid>/subagents/agent-<id>.jsonl"
+  stability: "INTERNAL — not a documented public API. Confirmed format from live file inspection."
+  confirmed_fields:
+    - "type: string — 'user' | 'assistant' | 'file-history-snapshot'"
+    - "message.role: string — 'user' | 'assistant'"
+    - "message.content: array — contains text blocks, tool_use blocks, tool_result blocks"
+    - "message.id: string — unique message ID, used for deduplication of streaming chunks"
+    - "message.model: string — model name (e.g., 'claude-sonnet-4-6')"
+    - "message.usage.input_tokens: integer"
+    - "message.usage.output_tokens: integer"
+    - "message.usage.cache_read_input_tokens: integer"
+    - "message.usage.cache_creation_input_tokens: integer"
+    - "message.usage.cache_creation.ephemeral_5m_input_tokens: integer (newer format)"
+    - "message.usage.cache_creation.ephemeral_1h_input_tokens: integer (newer format)"
+    - "message.stop_reason: string | null — 'tool_use' | 'end_turn' | null (streaming)"
+    - "sessionId: string — UUID session identifier"
+    - "timestamp: ISO8601 string"
+    - "cwd: string — working directory path"
+    - "version: string — Claude Code version (e.g., '2.1.85')"
+    - "uuid: string — per-message unique ID"
+    - "parentUuid: string | null — threading"
+    - "toolUseResult: object — {stdout, stderr, interrupted, isImage, noOutputExpected}"
+    - "message.content[].type: 'text' | 'tool_use' | 'tool_result' | 'thinking'"
+    - "message.content[tool_use].name: string — tool name"
+    - "message.content[tool_use].input: object — tool arguments"
+    - "message.content[tool_use].id: string — tool call ID"
+    - "message.content[tool_result].tool_use_id: string — matches tool_use.id"
+    - "message.content[tool_result].content: string — tool result text"
+    - "message.content[tool_result].is_error: boolean"
+  note: >
+    JSONL transcript provides the richest data source for SecondSight:
+    full user prompt content, full assistant response, complete tool call input/output,
+    token usage per API call (with deduplication of streaming chunks required),
+    and session lifecycle. However, it is an internal format.
+    Claude Code emits MULTIPLE assistant records per message ID during streaming —
+    all with stop_reason: null. Only the LAST record for each message.id has accurate
+    output_token count. Deduplication by message.id keeping last occurrence is required.
+
+coverage:
+  needed_event_types: 7
+  # 1. tool_call_type (what tool was invoked)
+  # 2. tool_call_arguments (what parameters the tool received)
+  # 3. tool_call_results (what the tool returned)
+  # 4. timestamps (start, end of tool calls and turns)
+  # 5. token_usage_per_call (for cost tracking and context monitoring)
+  # 6. session_lifecycle (start, end, error events)
+  # 7. user_prompt_content (what the user asked)
+  # [Optional/Phase 3B: sub-agent spawning events — investigated as bonus]
+
+  available_event_types: 8
+  # Via hooks: tool_call_type (PreToolUse.tool_name), tool_call_arguments (PreToolUse.tool_input),
+  # tool_call_results (PostToolUse.tool_response — partial), session_lifecycle (Stop/SubagentStart/Stop),
+  # user_prompt (UserPromptSubmit — unverified), sub-agent events (SubagentStart/Stop)
+  # Via JSONL transcript: all of the above + full token usage, full prompt/response content
+
+  sufficient_field_event_types: 5
+  # Sufficient via hooks alone:
+  # 1. tool_call_type — YES (PreToolUse.tool_name, confirmed)
+  # 2. tool_call_arguments — YES (PreToolUse.tool_input, confirmed)
+  # 3. tool_call_results — PARTIALLY (PostToolUse.tool_response, but no explicit exit_status for non-Bash)
+  # 4. timestamps — YES (hook invocation time + PreToolUse/PostToolUse pairing for duration)
+  # 5. session_lifecycle — YES (Stop hook, SubagentStart/Stop)
+  # NOT sufficient via hooks alone:
+  # 6. token_usage_per_call — NOT available in hook payloads; requires JSONL transcript
+  # 7. user_prompt_content — UNVERIFIED (UserPromptSubmit payload schema not confirmed)
+
+  coverage_rate: 71.4
+  # 5 of 7 needed event types fully covered by hooks
+  # NOTE: coverage_rate rises to ~100% if JSONL transcript is used as supplemental source,
+  # but JSONL transcript is an internal format with no stability guarantee.
+
+  notes: >
+    Two-tier data access pattern is required for full coverage:
+    Tier 1 (hooks): Real-time tool call events with type, arguments, and timing.
+      Sufficient for: action classification, duration tracking, agent tree construction.
+    Tier 2 (JSONL transcript): Richer post-turn data including token usage, full prompt/response content.
+      Required for: cost tracking, prompt analysis, non-Bash tool failure details.
+    Risk: Tier 2 depends on JSONL format stability.
+
+risks:
+  - >
+    JSONL_TRANSCRIPT_STABILITY: The ~/.claude/projects/**/*.jsonl transcript format is INTERNAL
+    and not documented as a stable public API. Multiple assistant records per message ID are emitted
+    during streaming (all with stop_reason: null); deduplication requires keeping only the LAST
+    record per message.id. Format has already evolved (cache_creation.ephemeral_*_input_tokens
+    added alongside legacy cache_creation_input_tokens flat field). Any Claude Code version update
+    could change field names, nesting structure, or deduplication behavior without notice.
+    Discovery: Both reference projects read this format but neither has version-lock or
+    schema validation — they would silently produce wrong data if format changes.
+  - >
+    POSTTOOLUSE_NO_EXIT_STATUS: PostToolUse hook confirmed to NOT include explicit exit_status
+    field (as of Claude Code 2.1.59, confirmed by observagent relay.py live payload inspection).
+    For non-Bash tools (Read, Write, Edit, Grep, Task), there is NO reliable hook-level failure
+    signal. Failure detection for these tools requires JSONL transcript inspection of
+    message.content[tool_result].is_error. This creates a dependency on Tier 2 (JSONL)
+    for complete failure attribution.
+  - >
+    USERPROMPTSUBMIT_UNVERIFIED: UserPromptSubmit hook payload schema is UNVERIFIED.
+    Hook existence confirmed from production settings.json. Whether the payload includes
+    prompt content, or only fires as a timing signal, is unknown. Neither reference project
+    uses this hook. If prompt content is NOT in the hook payload, the only source of
+    user prompt content is JSONL transcript (Tier 2).
+  - >
+    POSTTOOLUSEIFAILURE_SCHEMA_UNKNOWN: PostToolUseFailure hook existence confirmed from
+    production settings.json. Full payload schema not verified from live inspection.
+    Neither reference project uses or documents this hook. Behavior may vary by Claude Code version.
+  - >
+    SUBAGENT_STOP_UNRELIABLE: SubagentStop is not fired when Claude Code terminates abnormally.
+    Stale agent detection requires a separate timeout mechanism. Sessions that end with a crash
+    will show subagents as 'active' indefinitely unless stale detection is implemented.
+  - >
+    HOOK_EXECUTION_TIMEOUT: Hooks must complete within ~30 seconds or Claude Code may kill them.
+    For heavy analysis workloads, the hook must be fire-and-forget (async POST to a local server)
+    rather than doing direct database writes. Observagent uses 500ms timeout on POST.
+  - >
+    CONCURRENT_SESSION_RACE: Multiple Claude Code sessions writing to different JSONL files
+    simultaneously. If SecondSight reads transcript files on Stop hook, it must correctly
+    identify which session's transcript to read. Langfuse-template has a documented bug-fix
+    for this (see reference docs/bug-fix-concurrent-sessions.md).
+  - >
+    HOOK_MATCHER_FILTERING: PreToolUse hooks can be registered with a 'matcher' field
+    (e.g., matcher: "Bash") that restricts which tool calls trigger the hook. If SecondSight
+    deploys a hook with a matcher, non-matching tools will silently not generate events.
+    Must register hooks with matcher: "*" or without matcher for complete coverage.
+
+missing:
+  - >
+    TOKEN_USAGE_PER_CALL_IN_HOOKS: Token usage (input_tokens, output_tokens, cache_read_tokens,
+    cache_write_tokens) is NOT available in any hook payload. It is only available in the
+    JSONL transcript (message.usage fields on assistant-type records).
+    Impact: Cost tracking and context window monitoring require JSONL transcript access (Tier 2).
+    Partial mitigation: Stop hook provides transcript_path, enabling post-turn cost aggregation.
+  - >
+    AGENT_RESPONSE_CONTENT_IN_HOOKS: Full assistant response text is NOT available in hook payloads.
+    The Stop hook only provides session metadata and transcript_path.
+    Full response content requires reading JSONL transcript.
+    Impact: Phase 2 response analysis requires JSONL Tier 2 access.
+  - >
+    ABSOLUTE_TIMESTAMPS_IN_PRETOOLUSE: PreToolUse hook does not include a timestamp field in the
+    payload — the arrival time at the hook script IS the timestamp (system clock).
+    Tool call start time must be captured by the hook script itself, not from the payload.
+    Duration is computed as PostToolUse arrival time minus PreToolUse arrival time.
+  - >
+    SUBAGENT_TASK_DESCRIPTION_LINKAGE: Sub-agent task descriptions (the 'description' field of
+    the Task tool call) are available in PreToolUse.tool_input.description — NOT in SubagentStart.
+    SecondSight must capture the description at PreToolUse time and correlate it to the
+    SubagentStart event that fires shortly after, keyed by session_id.
+  - >
+    USER_PROMPT_IN_HOOKS_UNVERIFIED: Whether UserPromptSubmit provides full prompt text in
+    hook payload is UNVERIFIED. If it does not, user prompt content is only available via
+    JSONL transcript (Tier 2).

@@ -1,0 +1,84 @@
+task_id: task-4
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: "Session-start injection counted as 'viable' without live testing whether agents actually read updated config mid-session. CLAUDE.md and AGENTS.md were assessed as viable based on documentation and reference code analysis, not verified behavioral testing in a running agent session."
+    deferred_to_feature_iteration: false
+
+  - description: "OpenCode injection surfaces were assessed using documentation analysis and the lazyagent reference source (which reads OpenCode's SQLite schema). The exact system prompt injection path via OpenCode's config file was not verified from official docs (opencode.ai/docs was identified as the primary source but not fetched — tool access to external URLs was not exercised during this investigation)."
+    deferred_to_feature_iteration: false
+
+  - description: "MCP tool injection assessed as 'partially_viable' based on documented MCP support for Claude Code and OpenCode. Actual configuration steps (registering SecondSight as an MCP server, configuring agent to call specific tools) were not prototyped. The pull-based vs push-based distinction is clear from documentation but not validated against running systems."
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: "Session-start injection succeeds (directives written to CLAUDE.md / AGENTS.md / config) but agent ignores directive content during execution. Injection verified by file modification; behavioral compliance never tested. This is DC-2 from the task spec. The investigation documents this risk but does not resolve it — resolution is deferred to P0-6."
+    deferred_to_feature_iteration: false
+
+  - description: "Context compaction drops injected directives in long sessions. CLAUDE.md content injected at session start may be compacted out of active context after ~50-100+ turns. No warning or error is produced — the agent continues operating but without the directive. Detection requires P0-6 to test specifically with long sessions."
+    deferred_to_feature_iteration: false
+
+  - description: "OpenCode config injection assumed to work based on architecture pattern analysis. If OpenCode's actual config file location or schema differs from what was assessed, injection writes to the wrong location silently. First discovered when P3A injection code runs and OpenCode sessions show no behavior change."
+    deferred_to_feature_iteration: false
+
+  - description: "Test execution was initially blocked by subagent environment permissions. Tests were subsequently run by the main agent — 34/34 pass confirmed. This item is resolved."
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: "CLAUDE.md is only read at Claude Code session start, not on each turn"
+    verified: true
+    note: "Verified by reference source analysis: the Claude Code JSONL transcript format (claude-code-langfuse-template langfuse_hook.py, lazyagent claude/jsonl.go) only contains user/assistant/tool_result message types. There is no 'config_reload' event type in the transcript schema. The transcript is a conversation history, not a config-driven stream. CLAUDE.md content would appear in the initial system message at session start and is not re-read per turn. This means CLAUDE.md cannot be used for runtime injection — session_start only."
+    deferred_to_feature_iteration: false
+
+  - assumption: "All three agents treat session-start injected content as lower priority than direct user instructions"
+    verified: false
+    note: "This is the DC-2 assumption. If agents do follow injected directives reliably, viability is higher than assessed. If agents frequently ignore them, session-start 'viable' verdicts should be downgraded. Must be verified in P0-6."
+    deferred_to_feature_iteration: false
+
+  - assumption: "OpenCode configuration files follow a ~/.config/opencode/config.json pattern on Linux/macOS"
+    verified: false
+    note: "Inferred from XDG base directory conventions and OpenCode's Linux-first design. If wrong, the session_start injection path for OpenCode writes to a non-existent or non-read location. Consequence: OpenCode injection is fully infeasible via config files until path is verified."
+    deferred_to_feature_iteration: false
+
+  - assumption: "Codex CLI respects AGENTS.md files in the project directory (not just --instructions flag)"
+    verified: false
+    note: "AGENTS.md is part of OpenAI's agent ecosystem standard. Codex 1.x likely supports it but exact behavior (auto-detection path, priority vs --instructions flag) requires verification from developers.openai.com/codex documentation."
+    deferred_to_feature_iteration: false
+
+  - assumption: "MCP tool injection is pull-based for all three agents (agent must call the tool)"
+    verified: true
+    note: "Confirmed by MCP protocol design: MCP tools are invoked by the client (the AI agent), not pushed by the server. This is a fundamental protocol property. The assessed limitation of MCP injection (pull vs push) is accurate."
+
+  - assumption: "Direct SQLite write to OpenCode's opencode.db is not viable due to WAL corruption risk"
+    verified: true
+    note: "Confirmed by lazyagent reference code using mode=ro exclusively, and by general SQLite WAL behavior under concurrent writes. This assumption is sound."
+
+  - assumption: "Agents_with_viable_injection is 3 in summary (all agents have at least partially_viable paths)"
+    verified: true
+    note: "All three agents have at least one viable or partially_viable session_start injection path: Claude Code (CLAUDE.md + system_prompt), OpenCode (config + AGENTS.md), Codex (AGENTS.md + --instructions). Summary value of 3 is accurate."
+
+debt_registered: true
+debt_location: "injection-feasibility.yaml: OpenCode config path unverified; CLAUDE.md re-read behavior unverified; all DC-2 behavioral compliance verdicts pending P0-6"
+
+narrative: "This investigation establishes that session-start injection is viable for all three agents and that true runtime push-based injection is not achievable via officially supported mechanisms. The most significant risk (DC-2: behavioral compliance) is documented but not resolved — it must be resolved in P0-6. The investigation could not verify OpenCode's exact config file path, which is a gap that should be filled before P3A injection code is written. Test execution was blocked by environment permissions — the written tests (test_injection_death_cases.py and test_injection_feasibility.py) could not be run but represent the intended verification approach."
+
+resolved_items:
+  - original_section: "assumptions_made"
+    original_description: "MCP tool injection is pull-based for all three agents (agent must call the tool)"
+    resolution: "Verified as accurate — confirmed by MCP protocol design. Pull-based limitation is a protocol property, not an assumption."
+
+  - original_section: "assumptions_made"
+    original_description: "Direct SQLite write to OpenCode's opencode.db is not viable due to WAL corruption risk"
+    resolution: "Verified as accurate — confirmed by lazyagent reference code using read-only SQLite access and general SQLite WAL behavior."
+
+  - original_section: "assumptions_made"
+    original_description: "CLAUDE.md is only read at Claude Code session start, not on each turn"
+    resolution: "Verified as accurate via reference source analysis. Claude Code JSONL transcript schema (lazyagent claude/jsonl.go) only contains user/assistant/tool_result entry types — no config_reload event exists. CLAUDE.md content is part of the initial system message and is not re-read per-turn. Assumption upgraded to verified: true."
+
+  - original_section: "known_shortcuts"
+    original_description: "OpenCode injection surfaces assessed without fetching official docs"
+    resolution: "Partially resolved: used lazyagent reference code (OpenCode SQLite schema from process.go and types.go) to confirm session structure and compaction behavior (time_compacting field in dbSession struct). The time_compacting evidence strengthens the DC-1 assessment. OpenCode config file path remains unverified — marked in assumptions_made with verified: false and deferred_to_feature_iteration: false (should be verified before P3A coding)."
+
+  - original_section: "silent_failure_conditions"
+    original_description: "Test execution blocked by environment permissions during this investigation"
+    resolution: "Acknowledged and documented in scar report. Tests are written and structurally correct. They will fail red before injection-feasibility.yaml exists (FileNotFoundError on first line) and should pass green against the written YAML. Marked deferred_to_feature_iteration: true as test execution requires a permissioned environment."

@@ -1,0 +1,195 @@
+task_id: task-8
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: >
+      Session metadata.json file is written with last-writer-wins semantics.
+      Concurrent writes to the same session can lose metadata updates.
+      The file is re-read and re-written without file locking.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      No event deduplication. If the same event is stored twice (e.g., hook
+      retry, duplicate ingestion), both copies are stored. Phase 1 should
+      add content hash or event ID dedup.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      Integrity check only compares counts, not content. A corrupted JSON
+      file on filesystem would pass integrity check as long as the file
+      exists. Content-level validation would require loading and parsing
+      every event file.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      If filesystem write succeeds but SQLite write fails (e.g., disk full
+      on SQLite but not on event directory, or SQLite schema migration error),
+      the event exists on disk but is invisible to queries. Mitigated:
+      recover_session() method added to re-index filesystem events missing
+      from SQLite. However, recovery is not automatic -- caller must invoke it.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Events without session_id are stored under "_unknown_session". If
+      multiple agents produce events without session_id simultaneously,
+      they all land in the same bucket with no way to separate them.
+      Mitigated: warning log emitted when this happens.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Time range queries depend on ISO 8601 lexicographic sorting. If an
+      event has a non-standard timestamp format (e.g., Unix epoch, or
+      ISO 8601 without timezone), it will sort incorrectly and may be
+      excluded from or wrongly included in time range query results.
+      The normalize_event layer is responsible for timestamp format,
+      but storage does not validate.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Filesystem directory listing performance degrades with session count.
+      At 10,000+ sessions, os.listdir("sessions/") becomes slow. Not
+      an issue at POC scale (1000 sessions tested) but will matter in
+      production. Date-based subdirectories needed for Phase 1.
+    deferred_to_feature_iteration: true
+
+assumptions_made:
+  - assumption: "Session IDs are unique across all three agents"
+    verified: false
+    note: >
+      Claude Code uses UUID, Codex uses UUID, OpenCode uses UUID.
+      Collision probability is negligible for UUIDs, but if any agent
+      uses a non-UUID session ID scheme, collisions could mix events.
+      No cross-agent collision test was written because we lack real
+      multi-agent concurrent usage data.
+    deferred_to_feature_iteration: false
+
+  - assumption: "ISO 8601 timestamps sort lexicographically in SQLite"
+    verified: true
+    note: >
+      Verified by time_range_query tests. ISO 8601 with timezone offset
+      sorts correctly as TEXT in SQLite because the format is fixed-width
+      and timezone-aware. Tested with 1000 events across a time range.
+    deferred_to_feature_iteration: false
+
+  - assumption: "Python sqlite3 module with WAL mode handles concurrent writes from threads"
+    verified: true
+    note: >
+      Verified by test_threaded_concurrent_writes_same_session. 4 threads
+      writing 25 events each with no lost events or BUSY errors. WAL mode
+      + busy_timeout=5000ms + threading lock on writes makes this safe
+      for Phase 0 load.
+    deferred_to_feature_iteration: false
+
+  - assumption: "Filesystem event storage scales linearly with session count"
+    verified: true
+    note: >
+      Tested with 1000 sessions x 10 events = 10,000 files. Query latency
+      stays well under 500ms. However, this test creates flat session
+      directories. Directory listing performance at 10,000+ sessions is
+      an unverified concern (see silent_failure_conditions).
+    deferred_to_feature_iteration: false
+
+  - assumption: "event_to_dict/event_from_dict round-trip is lossless for all field types"
+    verified: true
+    note: >
+      Verified by TestFullEventRoundTrip.test_round_trip_preserves_all_fields
+      and TestDeathRealTraceData tests. Tested with TokenUsage, AgentMetadata,
+      nested tool_args, Unicode content, and large payloads.
+    deferred_to_feature_iteration: false
+
+  - assumption: "SQLite can handle write throughput of real-time event ingestion"
+    verified: false
+    note: >
+      Batch insert of 10,000 events succeeds quickly, but real-time
+      ingestion involves per-event commits with filesystem I/O. The
+      batch test does not simulate realistic ingestion patterns (events
+      arriving every 50-200ms from hook callbacks). Phase 1 should
+      benchmark with realistic arrival patterns.
+    deferred_to_feature_iteration: true
+
+debt_registered: true
+debt_location: >
+  src/secondsight/poc/storage.py: DualLayerStorage._write_session_metadata_file
+  (no file locking, last-writer-wins race condition).
+  src/secondsight/poc/storage.py: store_event write order is not atomic
+  across layers (filesystem then SQLite).
+
+narrative: |
+  ## What was built
+
+  A dual-layer storage POC with filesystem for raw event JSON and SQLite
+  for indexed queries. Supports store, query by session, query by time range,
+  batch operations, integrity checking between layers, and recovery of
+  filesystem events missing from SQLite.
+
+  ## What the death tests found
+
+  1. **Sync gap detection works.** When SQLite row is manually deleted,
+     query returns empty but filesystem scan still finds the event.
+     When filesystem file is deleted, load_full_event returns None instead
+     of raising. Integrity check detects count mismatches.
+
+  2. **Recovery mechanism works.** recover_session() successfully re-indexes
+     filesystem events that are missing from SQLite, restoring query access.
+
+  3. **Latency target met at scale.** 1000 sessions x 10 events each,
+     single-session query < 500ms on disk-backed SQLite. Time range
+     queries also within target.
+
+  4. **Real trace data works.** Codex JSONL events from reference_opensoure,
+     Claude Code hook events, and OpenCode DB events all survive the full
+     normalize -> store -> query -> load cycle. Unicode, large payloads,
+     and deeply nested tool args all round-trip correctly.
+
+  5. **Concurrent writes survive.** 4 threads writing simultaneously to the
+     same session produce no lost events. WAL mode + write lock is sufficient.
+
+  ## Why "done_with_concerns"
+
+  The two-layer write is not atomic. If the process crashes between
+  filesystem write and SQLite write, the event is on disk but invisible
+  to queries. recover_session() can fix this, but is not called
+  automatically. For Phase 0 single-user POC this is acceptable. Phase 1
+  should add automatic recovery on startup (scan all sessions, re-index
+  any filesystem events missing from SQLite).
+
+resolved_items:
+  - original_section: "assumptions_made"
+    original_description: "ISO 8601 timestamps sort lexicographically in SQLite"
+    resolution: "Verified by time range query tests with 1000 events across a time span"
+
+  - original_section: "assumptions_made"
+    original_description: "Python sqlite3 with WAL mode handles concurrent writes"
+    resolution: "Verified by threaded concurrent write test (4 threads, 25 events each, 0 lost)"
+
+  - original_section: "assumptions_made"
+    original_description: "event_to_dict/event_from_dict round-trip is lossless"
+    resolution: "Verified by full round-trip test and real trace data tests"
+
+  - original_section: "assumptions_made"
+    original_description: "Filesystem event storage scales linearly with session count"
+    resolution: "Verified at 1000 sessions x 10 events, query under 500ms target"
+
+  - original_section: "silent_failure_conditions"
+    original_description: "Filesystem write succeeds but SQLite write fails, event invisible to queries"
+    resolution: >
+      Added recover_session() method that scans filesystem for event files
+      missing from SQLite and re-indexes them. Added test
+      test_recovery_reindexes_missing_sqlite_entries to verify. Recovery is
+      not automatic but can be called on startup or when integrity check fails.
+
+  - original_section: "silent_failure_conditions"
+    original_description: "Events without session_id stored under _unknown_session bucket"
+    resolution: >
+      Added warning log in store_event() when session_id is None, identifying
+      the event_type and agent_type to aid debugging. The _unknown_session
+      bucket still exists but the log makes the condition visible.
+
+  - original_section: "silent_failure_conditions"
+    original_description: "Integrity check only compares counts not content"
+    resolution: >
+      Accepted risk for Phase 0. Added explicit documentation in storage-design.md.
+      Content-level validation would require O(n) file reads per check, which
+      is too expensive for a health check. Phase 1 could add sampling-based
+      content validation.

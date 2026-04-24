@@ -1,0 +1,57 @@
+task_id: task-5
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: "Path normalization logic described conceptually but not implemented as code. Ambiguity in Claude Code dash-encoding (paths with literal dashes) documented but not tested with real examples."
+    deferred_to_feature_iteration: true
+  - description: "Per-agent session ID stability assessment based on reference_opensoure analysis and lazyagent's approach, not on official stability guarantees from agent vendors."
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: "Claude Code cwd field in JSONL may differ from the directory-name-encoded path. Design recommends using cwd field, but if cwd field is missing in some events, the fallback to directory name decoding could silently produce wrong project_id."
+    deferred_to_feature_iteration: false
+  - description: "OpenCode SQLite locking — reading opencode.db while OpenCode is writing could cause SQLITE_BUSY errors. Design mentions WAL mode but doesn't specify error handling. Silent failure: ingestion silently skips sessions during contention."
+    deferred_to_feature_iteration: true
+  - description: "Cross-agent linking assumes all agents expose cwd in their first event. If any agent delays cwd reporting to a later event, the session will be initially created with degradation_level=2 and may not be upgraded."
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: "All three agents use UUID format for session IDs"
+    verified: true
+    note: "Confirmed from reference_opensoure analysis: Claude Code JSONL sessionId, OpenCode SQLite session.id, Codex session_meta.id — all UUID format"
+  - assumption: "Working directory (cwd) is available at session start for all three agents"
+    verified: true
+    note: "Confirmed: Claude Code includes cwd in first JSONL entry, OpenCode stores directory in session table, Codex includes cwd in session_meta event"
+  - assumption: "Agent session IDs are persistent and survive process restarts"
+    verified: true
+    note: "Confirmed from lazyagent: all three agents support session resumption with original ID"
+  - assumption: "Claude Code dash-encoded directory names can be reliably decoded"
+    verified: false
+    note: "Theoretically lossy for paths with literal dashes. Mitigated by using cwd field from JSONL content, but if cwd field is absent, decoding is ambiguous."
+    deferred_to_feature_iteration: true
+
+debt_registered: true
+debt_location: "session-identity-design.md section 8 'Known Risks': path normalization ambiguity for Claude Code dash-encoded paths not resolved with code. Also: OpenCode SQLite locking strategy deferred to Phase 1 implementation."
+
+narrative: >
+  The session identity design is the only Wave 1 output that produces a Phase 1
+  implementation specification (SQL schema, normalization module, identity service).
+  The primary risk is that the design references field names from Tasks 1-3 (isSidechain,
+  parent_id, session_meta.source) which were confirmed in those investigations but could
+  change if agent formats evolve. The design mitigates this with the ss_session_id surrogate
+  key — agent-native ID format changes only affect the adapter mapping layer, not the
+  identity system. The biggest unresolved risk is path normalization for Claude Code's
+  dash-encoded directory names — theoretically lossy for paths with literal dashes. The
+  design correctly recommends using the cwd field from JSONL content rather than decoding
+  directory names, but this creates a dependency on JSONL availability.
+
+resolved_items:
+  - original_section: "assumptions_made"
+    original_description: "All three agents use UUID format for session IDs"
+    resolution: "Verified from reference_opensoure codebase analysis — all three use UUIDs"
+  - original_section: "assumptions_made"
+    original_description: "Working directory (cwd) is available at session start for all three agents"
+    resolution: "Verified from each agent's storage format — cwd present in first event/record"
+  - original_section: "assumptions_made"
+    original_description: "Agent session IDs are persistent and survive process restarts"
+    resolution: "Verified from lazyagent resume command support for all three agents"

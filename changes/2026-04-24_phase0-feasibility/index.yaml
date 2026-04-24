@@ -1,0 +1,114 @@
+feature: phase0-feasibility-validation
+status: done
+
+tasks:
+  # --- Wave 1: Parallel investigations (no dependencies) --- COMPLETE
+  - id: task-1
+    title: "Hook mechanism investigation — Claude Code"
+    status: done_with_concerns
+    scar_count: 14
+    unresolved_assumptions: 1
+    depends_on: []
+    plan_ref: "P0-1"
+    wave: 1
+    review: "yin: PASS_WITH_CONCERNS, quality: PASS_WITH_CONCERNS"
+    tests: "21/21"
+    verdict: "partially_feasible — 8 hook types, ~71% coverage via hooks, ~100% with JSONL"
+
+  - id: task-2
+    title: "Hook mechanism investigation — OpenCode"
+    status: done_with_concerns
+    scar_count: 12
+    unresolved_assumptions: 0
+    depends_on: []
+    plan_ref: "P0-2"
+    wave: 1
+    review: "yin: PASS_WITH_CONCERNS, quality: PASS_WITH_CONCERNS"
+    tests: "22/22"
+    verdict: "partially_feasible — plugin API (Bun/JS) 75%, with DB polling 100%"
+
+  - id: task-3
+    title: "Hook mechanism investigation — Codex"
+    status: done_with_concerns
+    scar_count: 18
+    unresolved_assumptions: 1
+    depends_on: []
+    plan_ref: "P0-3"
+    wave: 1
+    review: "yin: PASS_WITH_CONCERNS, quality: PASS_WITH_CONCERNS"
+    tests: "24/24"
+    verdict: "partially_feasible — JSONL primary 87.5%, Extended mode for rich data"
+
+  - id: task-4
+    title: "Runtime injection feasibility test"
+    status: done_with_concerns
+    scar_count: 14
+    unresolved_assumptions: 3
+    depends_on: []
+    plan_ref: "P0-5"
+    wave: 1
+    review: "yin: PASS_WITH_CONCERNS, quality: PASS_WITH_CONCERNS"
+    tests: "34/34"
+    verdict: "partially_feasible — runtime push NOT viable, session-start viable, MCP pull partial"
+
+  - id: task-5
+    title: "Session identity linking design"
+    status: done_with_concerns
+    scar_count: 9
+    unresolved_assumptions: 1
+    depends_on: []
+    plan_ref: "P0-15"
+    wave: 1
+    review: "yin: PASS_WITH_CONCERNS, quality: PASS_WITH_CONCERNS"
+    tests: "28/28"
+    verdict: "feasible_with_caveats — UUID IDs all agents, path normalization as cross-agent anchor"
+
+  # --- Wave 2: Depends on Wave 1 findings --- COMPLETE
+  - id: task-6
+    title: "Directive comprehension experiment"
+    status: done_with_concerns
+    scar_count: 10
+    unresolved_assumptions: 4
+    depends_on: [task-4]
+    plan_ref: "P0-6"
+    wave: 2
+    review: "yin: PASS_WITH_CONCERNS, quality: PASS_WITH_CONCERNS"
+    tests: "55/55"
+    verdict: "partially_feasible — protocol designed, all 27 results not_tested (Phase 0 scope)"
+
+  - id: task-7
+    title: "Unified event schema POC"
+    status: done_with_concerns
+    scar_count: 12
+    unresolved_assumptions: 2
+    depends_on: [task-1, task-2, task-3]
+    plan_ref: "P0-12"
+    wave: 2
+    review: "yin: FAIL→fixed→PASS_WITH_CONCERNS, quality: PASS_WITH_CONCERNS"
+    tests: "37/37"
+    verdict: "feasible — SecondSightEvent dataclass, 14 typed fields, >=50% typed per agent"
+
+  # --- Wave 3: Depends on Wave 2 --- COMPLETE
+  - id: task-8
+    title: "Storage architecture POC"
+    status: done_with_concerns
+    scar_count: 11
+    unresolved_assumptions: 3
+    depends_on: [task-7]
+    plan_ref: "P0-13"
+    wave: 3
+    review: "yin: FAIL→fixed→PASS_WITH_CONCERNS, quality: PASS_WITH_CONCERNS"
+    tests: "33/33"
+    verdict: "feasible — DualLayerStorage (filesystem + SQLite), integrity checks, batch writes"
+
+  - id: task-9
+    title: "Fallback design"
+    status: done_with_concerns
+    scar_count: 12
+    unresolved_assumptions: 5
+    depends_on: [task-4, task-6]
+    plan_ref: "P0-8"
+    wave: 3
+    review: "yin: PASS_WITH_CONCERNS, quality: FAIL→fixed→PASS_WITH_CONCERNS"
+    tests: "30/30"
+    verdict: "feasible — FB-2 baseline viable, FB-1 aspirational, FB-3 loses differentiation"
