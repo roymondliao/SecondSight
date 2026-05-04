@@ -38,6 +38,7 @@ scar_items:
       unusable for any real workflow." Acceptable per the issue's "stub now,
       extend after GUR-98 lands" phasing.
     resolution_trigger: "GUR-98 lands; smoke test extended to cover `init`/`serve`/`status` which exercise imports + deps"
+    tracked_by: GUR-113  # Phase 4-3 — filed by board so this scar survives GUR-112 closing
 
 files_changed:
   - pyproject.toml                              # added [project.scripts] entry
