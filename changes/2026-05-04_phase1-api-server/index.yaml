@@ -1,0 +1,89 @@
+feature: phase1-api-server
+status: ready_for_iteration
+parent_issue: GUR-96
+plan_ref_doc: docs/plan_v2.md §1.2
+design_ref_doc: docs/system_design.md §3.9, §3.9.1, §3.9.2, §3.7.5, §8.3
+
+tasks:
+  # --- Wave 1: Independent foundations (no inter-task deps) ---
+  - id: task-1
+    title: "FastAPI server scaffold + per-project registry + daemon control"
+    status: done
+    scar_count: 13
+    unresolved_assumptions: 0
+    deferred_items: 5
+    depends_on: []
+    plan_ref: "P1-5"
+    wave: 1
+    sd_ref: ["8.3", "3.9"]
+    tests: "19/19 (8 death + 11 unit); full suite 351/351"
+    review:
+      yin: "PASS (round 2; round 1 PASS_WITH_CONCERNS with 2 Criticals fixed)"
+      quality: "PASS (round 2; round 1 PASS_WITH_CONCERNS with 3 Importants fixed)"
+      open_suggestions:
+        - "_do_stop: no exhaustive-match else guard — silent no-op on future StopOutcome additions (cosmetic)"
+        - "server.py: app.state.server_state key is stringly-typed — extract _STATE_KEY constant (cosmetic)"
+
+  - id: task-2
+    title: "SessionTracker — in-memory, DB-warm-started"
+    status: done
+    scar_count: 13
+    unresolved_assumptions: 0
+    deferred_items: 3
+    depends_on: []
+    plan_ref: "P1-7"
+    wave: 1
+    sd_ref: ["3.7.5", "3.9"]
+    tests: "16/16 (6 death + 10 unit); full suite 367/367"
+    review:
+      yin: "PASS (round 2; round 1 PASS_WITH_CONCERNS, F1+F5+S1+S2 VERIFIED)"
+      quality: "PASS (round 2; round 1 PASS_WITH_CONCERNS, F2+F3+F4 VERIFIED)"
+      open_suggestions:
+        - "tests/observation/test_tracker.py: prime-bind comment in DT-4 to aid triage if cold-start regresses"
+
+  # --- Wave 2: Hook endpoints (depend on scaffold + tracker) ---
+  - id: task-3
+    title: "Hook endpoints — POST /hook/{type} → normalize → tracker → async ingest"
+    status: done
+    scar_count: 16
+    unresolved_assumptions: 0
+    deferred_items: 6
+    depends_on: [task-1, task-2]
+    plan_ref: "P1-6"
+    wave: 2
+    sd_ref: ["3.9", "3.9.1"]
+    tests: "21/21 (12 death + 9 unit); full suite 388/388"
+    review:
+      yin: "PASS (round 2; round 1 PASS_WITH_CONCERNS, all 5 Importants + 2 referrals VERIFIED)"
+      quality: "PASS (round 2; round 1 FAIL on 1 Critical, both Important + Critical VERIFIED)"
+      open_suggestions:
+        - "test_death_inflight_set_tracks_tasks_and_drains: add gc.collect() between add and snapshot for WeakSet-regression hardening (cosmetic)"
+        - "_LazyCacheWithLocking[K, V] consolidation across registry/tracker/AppState — deferred to samsara:iteration"
+
+  # --- Wave 3: Hook script + fallback (depends on endpoints existing) ---
+  - id: task-4
+    title: "Fallback hook script with curl --connect-timeout + JSONL append"
+    status: done
+    scar_count: 19
+    unresolved_assumptions: 0
+    deferred_items: 7
+    depends_on: [task-3]
+    plan_ref: "P1-8"
+    wave: 3
+    sd_ref: ["3.9.2"]
+    tests: "19/19 (10 death + 9 unit, incl. real-server UT-1 + concurrent-100 UT-1b); full suite 407/407"
+    review:
+      yin: "PASS_WITH_CONCERNS r3: 4 Criticals (round 1) all closed; round-3 NI items closed via direct main-agent edits"
+      quality: "PASS_WITH_CONCERNS r3: 0 Critical; round-3 comment/scar honesty items closed"
+      open_suggestions:
+        - "curl-errors.log has no rotation; comment now reflects this — operators rotate externally"
+        - "Positional delegation in _ClaudeCodeNormalizer test fixture — risk documented inline"
+
+exit_criteria:
+  - "POST /hook/{type} with valid envelope → response in <50ms (test fixture) → ingest task observably writes filesystem + DB"
+  - "Server not running → hook script writes structured envelope to ~/.secondsight/fallback_events.jsonl AND exits 0"
+  - "secondsight serve --daemon writes PID file; --stop SIGTERMs and verifies process gone; status reports {running, pid, uptime, version}"
+  - "SessionTracker resumes segment_index from DB after process restart — no overwrite of prior segment indices"
+  - "Per-project registry race test: 50 concurrent first-events for 2 new projects produce exactly 2 DBEngines"
+  - "Hook script shellcheck-clean and exits 0 even on fallback path (never destructive to agent tool call)"
+  - "All death tests from overview.md §Death Cases Summary pass"

@@ -109,15 +109,16 @@ class RawTraceStore:
             suffix=".json",
             dir=str(target.parent),
         )
+        _needs_cleanup = True
         try:
             with os.fdopen(tmp_fd, "wb") as fh:
                 fh.write(payload)
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(tmp_path, target)
-            tmp_path = None  # ownership transferred
+            _needs_cleanup = False  # ownership transferred
         finally:
-            if tmp_path is not None and os.path.exists(tmp_path):
+            if _needs_cleanup and os.path.exists(tmp_path):
                 try:
                     os.unlink(tmp_path)
                 except OSError:  # pragma: no cover — best-effort cleanup

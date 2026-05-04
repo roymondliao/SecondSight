@@ -1,0 +1,290 @@
+"""FastAPI application factory for the SecondSight server (P1-5).
+
+Design assumptions:
+- create_app() is called ONCE per process.  If called multiple times,
+  each call returns a fresh app with its own lifespan/registry.
+- secondsight_home must be absolute.  Validated at create_app() time.
+- The registry is injectable for tests (pass a pre-built ProjectRegistry).
+  In production, pass None and the factory creates one.
+- AppState is a mutable dataclass (not frozen) because inflight_tasks is a
+  set that is mutated by route handlers throughout the server's lifetime.
+  All other fields are written once at startup and read-only thereafter.
+
+Silent failure conditions:
+- If lifespan startup raises, uvicorn will shut the app down but the
+  caller may not see a clear error in the log unless loguru is configured.
+  This is acceptable for Phase 1; structured startup logging is deferred.
+- The bounded drain timeout (1s) at shutdown is arbitrary. A burst of slow
+  ingests right before shutdown will be cancelled. Acceptable for Phase 1:
+  raw trace is already on disk (FS-first contract in ObservationPipeline).
+- Per-project SessionTracker cache duplicates the two-level locking pattern
+  from ProjectRegistry and tracker.py. Changes to locking logic must be
+  applied to all three sites until consolidated (Phase 2 / feature-iteration).
+  Cross-reference: see NOTE comments in registry.py:84 and tracker.py:156.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import AsyncGenerator
+
+from fastapi import FastAPI
+from loguru import logger
+
+from secondsight.api.normalizer import IdentityNormalizer, NormalizerRegistry
+from secondsight.api.registry import ProjectRegistry, ProjectResources
+from secondsight.observation.tracker import SessionTracker
+
+_VERSION = "0.1.0"
+
+# Bounded drain timeout at shutdown (seconds).
+# In-flight ingest tasks that do not complete within this window are cancelled.
+# The raw trace is already on disk (FS-first) so cancellation is safe.
+_SHUTDOWN_DRAIN_TIMEOUT_S = 1.0
+
+
+class ServerConfig:
+    """Runtime configuration for the server.  All fields have defaults."""
+
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 8420,
+    ) -> None:
+        self.host = host
+        self.port = port
+
+
+class AppState:
+    """Typed contract for app.state assigned during lifespan startup.
+
+    All scalar fields are written exactly once (at startup).
+    inflight_tasks is a strong-reference set mutated by route handlers.
+    Each task adds itself on creation and removes itself via a done_callback
+    (discard), so the set never accumulates completed tasks.
+    per_project_trackers is a cache mutated lazily by get_or_create_tracker().
+
+    Route handlers access via ``request.app.state.server_state.<field>``.
+
+    NOTE: This class is not frozen (unlike the original dataclass) because
+    inflight_tasks (set) and the tracker cache must be mutated at runtime.
+    The startup_time, registry, secondsight_home, config, and
+    normalizer_registry fields are write-once and should not be reassigned
+    after startup.
+    """
+
+    def __init__(
+        self,
+        *,
+        registry: ProjectRegistry,
+        startup_time: float,
+        secondsight_home: Path,
+        config: ServerConfig,
+        normalizer_registry: NormalizerRegistry,
+    ) -> None:
+        self.registry = registry
+        self.startup_time = startup_time
+        self.secondsight_home = secondsight_home
+        self.config = config
+        self.normalizer_registry = normalizer_registry
+        # Strong-reference set: prevents GC from collecting tasks before shutdown
+        # drain can enumerate them. Each task registers a discard done_callback
+        # so completed tasks are removed and the set does not grow unboundedly.
+        # Using WeakSet here would let completed tasks be GC'd and disappear from
+        # the set before the shutdown drain snapshot — the drain would then report
+        # 0 pending tasks even if tasks had been abandoned silently.
+        self.inflight_tasks: set[asyncio.Task[None]] = set()
+
+        # Per-project SessionTracker cache.
+        # Keyed by project_id → SessionTracker.
+        # Access pattern mirrors ProjectRegistry: fast-path dict read (GIL-safe),
+        # slow-path creation under per-project lock.
+        # NOTE: this two-level locking pattern is duplicated at:
+        #   - api/registry.py:84 (ProjectRegistry.get)
+        #   - observation/tracker.py:156 (SessionTracker._get_or_create_state)
+        # Phase 2 / iteration will consolidate into a shared _LazyCacheWithLocking utility.
+        # Until then: changes to the locking logic MUST be applied to ALL THREE sites.
+        self._tracker_cache: dict[str, SessionTracker] = {}
+        self._tracker_locks: dict[str, asyncio.Lock] = {}
+        self._tracker_locks_guard: asyncio.Lock = asyncio.Lock()
+
+    async def get_or_create_tracker(
+        self,
+        project_id: str,
+        resources: ProjectResources,
+    ) -> SessionTracker:
+        """Return cached SessionTracker for project_id, creating on first use.
+
+        The WarmStart closure closes over `resources.events_repository` so
+        each project's tracker warm-starts from that project's DB.
+
+        Thread-safety: same two-level locking as ProjectRegistry.get().
+        Fast path is safe: single event loop + CPython GIL atomicity on
+        dict.__contains__. See registry.py module docstring for assumptions.
+        """
+        # Fast path
+        if project_id in self._tracker_cache:
+            return self._tracker_cache[project_id]
+
+        # Slow path: first call for this project_id.
+        async with self._tracker_locks_guard:
+            if project_id not in self._tracker_locks:
+                self._tracker_locks[project_id] = asyncio.Lock()
+        project_lock = self._tracker_locks[project_id]
+
+        async with project_lock:
+            # Double-check inside lock
+            if project_id in self._tracker_cache:
+                return self._tracker_cache[project_id]
+
+            repo = resources.events_repository
+
+            async def warm_start(session_id: str) -> int | None:
+                """Async warm_start closure over this project's events_repository."""
+                return await asyncio.to_thread(
+                    repo.get_max_segment_index, session_id
+                )
+
+            tracker = SessionTracker(warm_start=warm_start)
+            self._tracker_cache[project_id] = tracker
+            return tracker
+
+
+def create_app(
+    *,
+    secondsight_home: Path,
+    config: ServerConfig | None = None,
+    registry: ProjectRegistry | None = None,
+) -> FastAPI:
+    """Build a FastAPI app bound to the given SecondSight home directory.
+
+    Args:
+        secondsight_home: Absolute path to the SecondSight home dir
+            (~/.secondsight in production).
+        config: Optional ServerConfig; defaults to localhost:8420.
+        registry: Injectable ProjectRegistry for tests.  If None, a new
+            registry is created bound to secondsight_home.
+
+    Returns:
+        A fully configured FastAPI application.  Lifespan is wired; call
+        startup before serving requests (TestClient does this automatically).
+    """
+    from secondsight.api.hooks import router as hooks_router
+
+    home = Path(secondsight_home)
+    if not home.is_absolute():
+        raise ValueError(
+            f"secondsight_home must be an absolute path, got: {home!r}"
+        )
+
+    cfg = config or ServerConfig()
+    reg = registry or ProjectRegistry(secondsight_home=home)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+        # --- Startup ---
+        startup_time = time.monotonic()
+        logger.info(
+            "SecondSight server starting up "
+            "(home={home}, host={host}, port={port})",
+            home=home,
+            host=cfg.host,
+            port=cfg.port,
+        )
+
+        # Build normalizer registry: IdentityNormalizer for agent="test" baseline.
+        # Real adapters (P1-9..P1-11) register themselves here.
+        norm_registry = NormalizerRegistry()
+        norm_registry.register(IdentityNormalizer())
+
+        # Assign the typed state contract once; inflight_tasks is initialized
+        # as an empty strong-reference set inside AppState.__init__.
+        app.state.server_state = AppState(
+            registry=reg,
+            startup_time=startup_time,
+            secondsight_home=home,
+            config=cfg,
+            normalizer_registry=norm_registry,
+        )
+
+        logger.info("SecondSight server ready.")
+        yield
+        # --- Shutdown ---
+        logger.info("SecondSight server shutting down...")
+
+        # Drain in-flight ingest tasks with bounded timeout.
+        # Snapshot the set now — completed tasks have already been discarded via
+        # their done_callbacks, so only truly in-flight tasks remain here.
+        pending = list(app.state.server_state.inflight_tasks)
+        if pending:
+            logger.info(
+                "Draining {n} in-flight ingest task(s) "
+                "(timeout={t}s)...",
+                n=len(pending),
+                t=_SHUTDOWN_DRAIN_TIMEOUT_S,
+            )
+            done, still_pending = await asyncio.wait(
+                pending,
+                timeout=_SHUTDOWN_DRAIN_TIMEOUT_S,
+            )
+            if still_pending:
+                logger.warning(
+                    "{n} ingest task(s) did not complete within "
+                    "{t}s; cancelling.",
+                    n=len(still_pending),
+                    t=_SHUTDOWN_DRAIN_TIMEOUT_S,
+                )
+                for task in still_pending:
+                    task.cancel()
+                # Brief wait for cancellation to propagate
+                await asyncio.gather(*still_pending, return_exceptions=True)
+                logger.info(
+                    "Cancelled {n} ingest task(s).",
+                    n=len(still_pending),
+                )
+            else:
+                logger.info("All in-flight ingest tasks completed.")
+
+        await reg.aclose()
+        logger.info("SecondSight server stopped.")
+
+    app = FastAPI(
+        title="SecondSight",
+        version=_VERSION,
+        lifespan=lifespan,
+    )
+
+    # Mount the hooks router
+    app.include_router(hooks_router)
+
+    # -----------------------------------------------------------------------
+    # Routes
+    # -----------------------------------------------------------------------
+
+    @app.get("/health")
+    async def health() -> dict:
+        """Return server liveness status.
+
+        This is a liveness probe: the server process is up and lifespan
+        has completed.  It is NOT a readiness probe (per-project DBs are
+        NOT checked here — deferred to Phase 2).
+
+        Returns 200 with {liveness, version, uptime_s} after startup.
+        FastAPI's lifespan contract guarantees this route is not reachable
+        until the lifespan startup has completed, so we never return 200
+        with uninitialized state.
+        """
+        uptime = time.monotonic() - app.state.server_state.startup_time
+        return {
+            "liveness": "alive",
+            "version": _VERSION,
+            "uptime_s": round(uptime, 3),
+        }
+
+    return app
+
+
+__all__ = ["AppState", "ServerConfig", "create_app"]

@@ -224,3 +224,6 @@ output/
 
 # Stale root-level scar-reports (correct location is changes/*/scar-reports/)
 /scar-reports/
+# Quota-guard handoff metadata (transient session state; contains user paths)
+docs/handoff/
+

@@ -34,4 +34,8 @@ line-length = 100
 target-version = "py314"
 
 [tool.uv]
-dev-dependencies = ["pytest>=8.0", "pyyaml>=6.0"]
+dev-dependencies = [
+    "mypy>=1.20.2",
+    "pytest>=8.0",
+    "pyyaml>=6.0",
+]

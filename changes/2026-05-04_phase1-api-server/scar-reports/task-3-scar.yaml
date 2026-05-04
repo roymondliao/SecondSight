@@ -1,0 +1,478 @@
+task_id: task-3
+title: "Hook Endpoint — POST /hook/{event_type}, Normalizer, HookEnvelope, SessionTracker wiring"
+plan_ref: GUR-96
+sd_refs: ["3.1", "3.7.2", "3.7.5", "3.9"]
+completion_status: done
+iteration: 2
+
+tests:
+  death: 12/12  # +DT-C1 (inflight set/discard), +DT-I8 (normalizer ValueError→422)
+  unit: 9/9     # +test_unit_is_safe_id_rejects_control_characters (I6 hardening)
+  total: 21/21  # 18 original + 3 new fix-pass tests (C1 death + I8 death + I6 unit)
+  full_suite: 388/388  # post-fix-pass count (was 385 pre-fix, +3 net new tests)
+
+step0_prerequisite_questions:
+  - q: "Most-wanted impl path to NOT take?"
+    a: >
+      A single global SessionTracker with a complex WarmStart closure that
+      dynamically looks up the per-project EventsRepository on every cold-start
+      call. Avoided — instead: a per-project SessionTracker cache in AppState
+      (get_or_create_tracker()), mirroring ProjectRegistry's two-level locking
+      pattern. Each tracker's WarmStart closure closes over the specific project's
+      events_repository at creation time, keeping the warm_start signature as
+      (session_id) -> int | None without needing project_id.
+
+  - q: "When should this NOT be implemented?"
+    a: >
+      If the EventType enum were open (i.e., adapters could define new event types
+      not in the closed enum), then validating event_type against the enum would
+      block real adapters. This implementation should NOT be deployed before P1-9..P1-11
+      adapters land if those adapters use event types outside the current enum.
+      Currently the enum is closed (11 values, SD §3.7.2) and the 422 on unknown
+      types is correct behavior. If a future adapter needs a new event type, the
+      enum must be extended BEFORE the adapter is deployed.
+
+  - q: "If silent failure occurs, who discovers it and when?"
+    a: >
+      Three critical silent-failure paths:
+      (1) add_done_callback missing or swallowing exceptions: pipeline.ingest fails
+      (FS write error, disk full), nobody knows. The user's session is processed
+      but events aren't stored. Discovery: user runs Phase 2 analysis and finds
+      missing events. Damage: weeks of lost observation data before anyone checks
+      logs. Mitigation: done_callback is wired and tested by DT-3.
+      (2) Per-project SessionTracker cache races: two parallel cold-start requests
+      for the same project get different trackers, both call warm_start independently,
+      and independently increment segment_index. Result: non-monotonic segment_index
+      in DB silently. Discovery: Phase 2 analysis finds duplicate segment_index values.
+      Damage: permanent data quality loss. Mitigation: two-level locking in
+      get_or_create_tracker() (same pattern as ProjectRegistry.get()).
+      (3) Bounded drain timeout at shutdown: if an ingest task takes >1s, it is
+      cancelled. The FS write (Step 1 of pipeline) is always done before the DB write
+      (Step 2), so the raw trace exists. The DB row may be missing. Discovery:
+      the next sync (P1-13) would attempt backfill, but if the cancelled task was
+      mid-DB-write, the sync_log may not have recorded the failure. Mitigation:
+      the 1s timeout is documented; FS-first contract limits damage to DB-only loss.
+
+known_shortcuts:
+  - id: KS-1
+    description: >
+      IdentityNormalizer is the only registered normalizer. Without P1-9..P1-11
+      adapters, the server can only ingest pre-normalized payloads with agent="test".
+      Any hook from a real claude-code agent will get 422 (NoNormalizerError).
+    deferred_to_feature_iteration: true
+    rationale: >
+      P1-9..P1-11 are separate changes. IdentityNormalizer is explicitly documented
+      as a baseline/test stub. The 422 is the correct failure mode — it surfaces
+      the missing adapter rather than silently dropping or mangling the event.
+
+  - id: KS-2
+    description: >
+      Per-project SessionTracker cache (AppState._tracker_cache) duplicates the
+      two-level locking pattern from ProjectRegistry.get() and
+      SessionTracker._get_or_create_state(). Three sites now share the same
+      pattern without a shared utility. Changes to locking logic must be applied
+      to all three sites.
+    deferred_to_feature_iteration: true
+    rationale: >
+      Phase 2 / feature-iteration consolidation into _LazyCacheWithLocking[K, V]
+      per the cross-reference comments already in registry.py:84 and tracker.py:156.
+      Cross-reference comment added at AppState.get_or_create_tracker() as the
+      third site.
+
+  - id: KS-3
+    description: >
+      AppState is no longer a frozen dataclass (changed from task-1's frozen
+      dataclass to a mutable class). The inflight_tasks set and tracker cache
+      must be mutated at runtime. The scalar fields (registry, startup_time,
+      etc.) are write-once by convention, not by enforcement.
+      Note: the prior WeakSet was replaced with a strong-reference set + discard
+      callback in fix-pass iteration-2 (C1).
+    deferred_to_feature_iteration: false
+    rationale: >
+      Accepted as correct. The original frozen dataclass was incompatible with
+      set mutation. The write-once convention is documented in the class
+      docstring. Mypy + dataclass slots would enforce it, but that's Phase 2.
+
+  - id: KS-4
+    description: >
+      _is_safe_id() allows dots in project_id/session_id (except pure-dot sequences
+      like '.' and '..'). An attacker could still use dots to create directories
+      like 'a.b.c' which is technically a valid path component. The check prevents
+      directory traversal but not all possible path-injection scenarios.
+    deferred_to_feature_iteration: true
+    rationale: >
+      Phase 1 is localhost-only (no auth surface). The check prevents the primary
+      traversal risk (/ and ..). Stricter validation (e.g. hostname-style characters
+      only) is a security hardening item for Phase 2 security review.
+
+silent_failure_conditions:
+  - id: SF-1
+    description: >
+      Bounded-drain timeout (1s) at shutdown is arbitrary. A burst of slow ingests
+      right before shutdown (e.g. writing large payloads to a slow FS) will be
+      cancelled. The cancelled task's done_callback logs a CancelledError (not ERROR).
+      The raw trace file may not exist if the FS write was mid-flight when cancelled.
+    severity: medium
+    mitigation: >
+      FS-first contract: ObservationPipeline.ingest() does the FS write in Step 1
+      before DB INSERT in Step 2. If the FS write completes before cancellation,
+      the raw trace is safe and backfill (P1-13) recovers the DB row. If FS write
+      is cancelled mid-flight, the atomic-write contract in RawTraceStore ensures
+      no partial file exists (tmpfile is unlinked on error). Acceptable for Phase 1.
+    deferred_to_feature_iteration: true
+
+  - id: SF-2
+    description: >
+      ON CONFLICT DO NOTHING on event_id silently drops duplicate-id ingests at
+      the storage layer. This is correct for retry idempotency, but masks a buggy
+      adapter that reuses the same event_id for different events. The
+      UNIQUE(session_id, sequence_number) constraint catches the sequence_number
+      reuse case, but same-id-same-sequence events are silently deduplicated.
+    severity: low
+    mitigation: >
+      Documented in module docstring and test DT-8. The storage layer contract
+      (insert idempotent on id) is the correct behavior. A buggy adapter reusing
+      event_ids with the same sequence_number would be caught by
+      UNIQUE(session_id, sequence_number). If sequence_number also matches, the
+      second event is identical by ID and silently dropped — acceptable.
+    deferred_to_feature_iteration: false
+
+  - id: SF-3
+    description: >
+      request.client.host is not validated against 127.0.0.1. The overview says
+      localhost-only bind (uvicorn enforces), but a misconfigured reverse proxy
+      forwarding external traffic would bypass this. No defense-in-depth check.
+    severity: low
+    mitigation: >
+      Uvicorn's host binding is the enforcement layer. Defense-in-depth host
+      validation deferred to Phase 2 security review per task spec.
+    deferred_to_feature_iteration: true
+
+  - id: SF-4
+    description: >
+      If AppState.get_or_create_tracker() is called concurrently for the same
+      new project_id from multiple coroutines before the tracker is cached,
+      the two-level lock prevents double-creation. However, if the asyncio event
+      loop switches between the lock-guard and the per-project-lock acquisition,
+      a third coroutine could arrive and observe an inconsistent state during
+      the narrow window before _tracker_cache is populated. CPython's GIL
+      makes dict.__contains__ atomic, mitigating this, but the assumption is the
+      same as ProjectRegistry (single event loop + CPython GIL).
+    severity: low
+    mitigation: >
+      Same mitigation as ProjectRegistry: single event loop (workers=1 explicit),
+      CPython GIL, and two-level locking with double-check inside the per-project
+      lock. Death test for concurrent tracker creation was considered but scoped
+      out (it would mirror test_death_concurrent_init_race_single_dbengine from
+      task-1). Accepted given the same assumptions as registry.
+    deferred_to_feature_iteration: false
+
+  - id: SF-5
+    description: >
+      The loguru-to-caplog bridge in propagate_loguru_to_caplog fixture adds a
+      loguru sink and logs to the root stdlib logger. In a test that runs loguru
+      from a background thread (via asyncio.to_thread), the caplog fixture may
+      not capture records emitted after the test's caplog context is torn down.
+      DT-3 and DT-6 use time.sleep() to give background tasks time to complete;
+      this is a timing heuristic, not a guarantee.
+    severity: low
+    mitigation: >
+      Tests use time.sleep(0.15-0.2s) which is 100-200x longer than typical
+      ingest latency in CI. Acceptable for Phase 1. Phase 2 tests could use
+      asyncio.Event-based synchronization for deterministic capture.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - id: A-1
+    description: >
+      body.agent is the canonical agent identifier; any X-SecondSight-Agent
+      header is ignored. When both are present, body wins.
+    verified: true
+    verification_method: >
+      Route handler only reads envelope.agent (from request body). No header
+      parsing. This is the documented decision in the overview.md. Unit test
+      test_unit_missing_agent_field_returns_422 verifies 422 when body.agent
+      is missing (header would not substitute).
+
+  - id: A-2
+    description: >
+      SessionTracker.bind() signature: tracker is per-project (one tracker per
+      project_id, shared across all sessions of that project). The WarmStart
+      closure closes over the per-project EventsRepository at tracker-creation
+      time, so warm_start(session_id) correctly queries the right project's DB.
+    verified: true
+    verification_method: >
+      get_or_create_tracker() builds the WarmStart closure inside the slow-path
+      creation block, after `resources.events_repository` is available. The closure
+      captures `repo` by reference (local variable in the outer scope of the
+      async function, which is stable). Verified by happy-path test: event stored
+      in the correct project's DB after tracker bind + ingest.
+
+  - id: A-3
+    description: >
+      EventType enum is closed (11 values in SD §3.7.2). Unknown event_type strings
+      return 422. P1-9..P1-11 adapters will use existing enum values.
+    verified: true
+    verification_method: >
+      event.py defines EventType with 11 values. handle_hook() uses EventType(event_type)
+      and catches ValueError → 422. DT-2 (test_death_unknown_event_type_returns_422)
+      verifies 422 for unknown event_types. DT-4 verifies 404/422 for path traversal.
+
+  - id: A-4
+    description: >
+      asyncio.create_task() is called inside an async handler running on a live
+      event loop. The task is scheduled on the same loop. asyncio.wait() in the
+      shutdown drain correctly awaits these tasks (they share the loop).
+    verified: true
+    verification_method: >
+      DT-7 (test_death_shutdown_drains_inflight_tasks) verifies the drain works:
+      a slow ingest (0.2s) is started, the app shuts down, and either completed_flag
+      or cancelled_flag is set — never both empty (never silently abandoned).
+
+  - id: A-5
+    description: >
+      TestClient (starlette's synchronous ASGI test client) runs the ASGI app in
+      a thread with its own event loop. asyncio.create_task() inside the handler
+      schedules tasks on that thread's event loop. The TestClient's context manager
+      exit (lifespan shutdown) runs on the same loop, so asyncio.wait() for
+      inflight_tasks can correctly await those tasks.
+    verified: true
+    verification_method: >
+      DT-7 passes. DT-1 passes (blocking pipeline: response returns before ingest
+      completes). The asyncio.wait() in lifespan shutdown successfully awaits
+      tasks that were created by handlers running on the test client's loop.
+
+  - id: A-6
+    description: >
+      strong-reference set[asyncio.Task] correctly tracks in-flight tasks.
+      Each task registers a discard done_callback so completed tasks are removed
+      automatically; the set never accumulates completed tasks. This replaced the
+      prior WeakSet implementation (fix-pass iteration-2: C1).
+    verified: true
+    verification_method: >
+      DT-C1 (test_death_inflight_set_tracks_tasks_and_drains): POSTs 5 events
+      against a gated pipeline, snapshots len(state.inflight_tasks)=5 before
+      gate release, then asserts len=0 after tasks complete. This catches both
+      halves: strong-reference (snapshot=5) and discard callback (drain=0).
+      DT-7 validates the shutdown drain still works with the strong-reference set.
+
+debt_registered:
+  - "KS-1: IdentityNormalizer only; real adapters land in P1-9..P1-11"
+  - "KS-2: Three-site duplication of two-level locking (Phase 2 consolidation)"
+  - "KS-4: project_id/session_id character allowlist is permissive (dots allowed)"
+  - "SF-1: Bounded drain timeout at shutdown (1s arbitrary)"
+  - "SF-3: request.client.host not validated (Phase 2 security review)"
+
+debt_location:
+  - "src/secondsight/api/server.py: AppState.get_or_create_tracker — third site of two-level locking pattern"
+  - "src/secondsight/api/hooks.py: _is_safe_id() allows dots; stricter allowlist deferred"
+  - "src/secondsight/api/server.py: _SHUTDOWN_DRAIN_TIMEOUT_S = 1.0 is arbitrary"
+
+narrative: >
+  The core structural risk in this task was the latency contract: the handler
+  must return before ingest completes. Death test DT-1 makes this structurally
+  inspectable via a blocking pipeline — if create_task is replaced with await,
+  the test deadlocks. The done_callback (DT-3) catches the other half: asyncio
+  silently swallows task exceptions on GC without it.
+
+  The per-project SessionTracker cache design was chosen over a single-tracker
+  design to keep WarmStart signatures clean: each tracker's WarmStart closes over
+  its project's EventsRepository, so warm_start(session_id) queries the correct
+  project's DB without needing project_id as an argument. The cost is a third
+  site of the two-level locking pattern (cross-referenced in all three locations).
+
+  AppState was converted from a frozen dataclass to a regular class because
+  WeakSet mutation requires mutability. The write-once convention for scalar
+  fields is documented but not enforced by the type system (KS-3 — accepted).
+
+  The loguru-to-caplog bridge in the propagate_loguru_to_caplog fixture was
+  non-trivial: loguru does not propagate to stdlib logging by default. The
+  fixture adds a loguru sink that logs to the named stdlib loggers, which caplog
+  then intercepts via the root logger. This allows DT-3 and DT-6 to assert on
+  loguru error output via caplog.
+
+  project_id path-safety validation (_is_safe_id) was added to handle the
+  debt carried from task-1 (A-3: registry.get() accepts any project_id as
+  a directory name). The check prevents '/', '..', '\\', and null bytes.
+  Dots are allowed (to support IDs like 'com.company.project'). This is
+  documented as KS-4 (permissive allowlist).
+
+resolved_items:
+  - >
+    Self-iteration A-1 (body.agent vs header): verified that the handler reads
+    only envelope.agent. Added comment in module docstring ("body wins").
+    test_unit_missing_agent_field_returns_422 confirms 422 when body.agent is absent.
+
+  - >
+    Self-iteration A-3 (project_id path traversal from task-1 debt DEFERRED-2):
+    Added _is_safe_id() validation in handle_hook() before calling registry.get().
+    Rejects '/', '\\', null bytes, and pure-dot sequences. DT-4 path-traversal
+    death tests verify 404 or 422 (never 200). This resolves task-1 debt items
+    A-3 and DEFERRED-2.
+
+  - >
+    Self-iteration ruff cleanup: removed unused imports (weakref from hooks.py,
+    Event from hooks.py, WarmStart from server.py, asyncio from test_hooks_endpoint.py,
+    AsyncMock and logger from test_latency_contract.py). Removed unused variable
+    all_messages in test_latency_contract.py. All ruff checks pass.
+
+  - >
+    Self-iteration TYPE_CHECKING import: removed empty `if TYPE_CHECKING: pass`
+    block from hooks.py after removing the unused WarmStart/Event imports.
+
+  - >
+    Self-iteration happy-path test redesign: removed asyncio.get_event_loop()
+    from sync test context (raises RuntimeError on Python 3.14). Changed DB
+    inspection to use sqlite3 directly (after TestClient context manager exits
+    and registry is closed). Changed raw trace assertion to use the correct
+    path pattern (sessions/{sid}/events/*.json, not raw_traces/**/*.json).
+
+  # --- Fix-pass iteration-2 resolved items ---
+
+  - >
+    Fix-pass C1 (WeakSet → strong-reference set + discard callback):
+    server.py: removed `weakref` import, removed `inflight_tasks` from AppState.__init__
+    parameters (now initialized as `set()` internally). hooks.py: added
+    `task.add_done_callback(state.inflight_tasks.discard)` immediately after
+    `state.inflight_tasks.add(task)`. Death test DT-C1
+    (test_death_inflight_set_tracks_tasks_and_drains) verifies: 5 gated tasks
+    show len=5 before gate release, len=0 after completion. A-6 assumption updated
+    from WeakSet to strong-reference set. KS-3 updated to reflect the change.
+
+  - >
+    Fix-pass I1 (stale cross-reference comments): Updated all three sites to name
+    ALL THREE sites and say "ALL THREE sites" instead of "BOTH sites".
+    registry.py:84 now lists tracker.py:156 and api/server.py.
+    tracker.py:156 now lists api/registry.py:84 and api/server.py.
+    server.py already listed registry.py and tracker.py; updated format to match.
+
+  - >
+    Fix-pass I2 (scar report full_suite count): Corrected from 171/171 to 388/388
+    (post-fix-pass count). The 171 figure was stale from a pre-full-suite run;
+    385 was the pre-fix count validated by the quality reviewer. Fix-pass added
+    3 net new tests: DT-C1, DT-I8, and the I6 unit test.
+
+  - >
+    Fix-pass I3 (dishonest test name): Renamed
+    test_death_sequence_number_reuse_logged_via_done_callback to
+    test_death_sequence_number_reuse_logged_via_pipeline_warning.
+    Updated docstring to accurately describe the mechanism:
+    ObservationPipeline._record_db_failure → loguru.warning (pipeline handles
+    IntegrityError internally; the done_callback does not see an exception).
+
+  - >
+    Fix-pass I4 (latency timeout 500ms → documented 200ms): Changed
+    asyncio.wait_for(..., timeout=0.5) to timeout=0.2 in DT-1. Added detailed
+    rationale comment: spec requires 50ms; TestClient ASGI bridge adds 50-80ms
+    cold-start overhead on CI; 200ms is the lowest non-flaky bound. The structural
+    property (deadlock vs timeout) is the primary assertion regardless of timeout.
+
+  - >
+    Fix-pass I5 (dead event_type_in_body parameter): Removed the unused
+    `event_type_in_body: str | None = None` parameter from _make_valid_payload()
+    in tests/api/test_hooks_endpoint.py. No callers used it.
+
+  - >
+    Fix-pass I6 (control chars comment vs implementation gap): Tightened
+    _is_safe_id() in hooks.py to reject ASCII control chars (\x00-\x1f, \x7f)
+    and whitespace (\t, \n, \r) in addition to the prior /, \\, null, pure-dot
+    rejections. Updated _UNSAFE_ID_CHARS frozenset and docstring. Added unit test
+    test_unit_is_safe_id_rejects_control_characters verifying all new rejection
+    patterns and confirming valid IDs still pass.
+
+  - >
+    Fix-pass I7 (hooks.py typing via cast): Added `from typing import TYPE_CHECKING,
+    cast` and `if TYPE_CHECKING: from secondsight.api.server import AppState`.
+    Changed `state = request.app.state.server_state` to
+    `state = cast("AppState", request.app.state.server_state)`. Added comment
+    explaining the four-field dependency and TYPE_CHECKING guard pattern.
+
+  - >
+    Fix-pass I8 (ValueError from normalize → 500): Wrapped
+    `normalizer.normalize(envelope, ...)` in `except ValueError as exc:
+    raise HTTPException(status_code=422, ...)`. Added death test
+    DT-I8 (test_death_normalizer_valueerror_returns_422) that injects an
+    _ErrorNormalizer always raising ValueError and asserts response is 422 with
+    the error message in detail (not 500).
+
+  - >
+    Fix-pass S1 (redundant EventType re-validation comment): Added defensive
+    comment above `EventType(event_type)` in IdentityNormalizer.normalize():
+    "defensive: re-validate in case the Normalizer is invoked outside the
+    route-handler context." Chose option B (comment) over removing the call
+    because defense-in-depth is appropriate for a documented baseline normalizer.
+
+  - >
+    Fix-pass S2 (task.exception() ordering justification): Added comment in
+    _task_done_callback explaining that `except asyncio.CancelledError` MUST
+    come before `except BaseException` because task.exception() raises
+    CancelledError for cancelled tasks, and CancelledError inherits from
+    BaseException (not Exception).
+
+deferred_items:
+  - id: DFR-1
+    description: >
+      Three-site _LazyCacheWithLocking consolidation: AppState.get_or_create_tracker,
+      ProjectRegistry.get, and SessionTracker._get_or_create_state all implement
+      the same two-level locking pattern without sharing code.
+    deferred_to_feature_iteration: true
+    rationale: >
+      Cross-cutting change touching task-1's registry.py and task-2's tracker.py.
+      Cross-reference comments added at all three sites. Phase 2 consolidation
+      per review directive from tasks 1 and 2.
+
+  - id: DFR-2
+    description: >
+      AppState scalar fields (registry, startup_time, etc.) are mutable but
+      intended write-once. Enforcement via dataclass(frozen=True) is incompatible
+      with WeakSet mutation. Could use __slots__ + __setattr__ override, or
+      a typed namedtuple for scalar fields alongside a mutable carrier.
+    deferred_to_feature_iteration: true
+    rationale: >
+      Cosmetic / enforcement concern. Phase 2 can introduce a proper frozen
+      sub-struct for scalar fields if the pattern grows.
+
+  - id: DFR-3
+    description: >
+      Strict project_id/session_id character allowlist (dots allowed, which
+      permits 'a..b' style IDs). Phase 2 security review should tighten to
+      hostname-style characters only ([A-Za-z0-9-_]).
+    deferred_to_feature_iteration: true
+    rationale: >
+      Phase 1 is localhost-only. The current check prevents primary traversal
+      risk. Stricter validation is a Phase 2 hardening item.
+
+  - id: DFR-4
+    description: >
+      test_death_latency_contract_handler_does_not_await_ingest uses
+      asyncio.wait_for(asyncio.to_thread(...), timeout=0.2) to enforce the latency
+      contract. The spec requires 50ms; 200ms is the documented bound due to
+      TestClient ASGI bridge cold-start overhead (50-80ms on CI runners).
+      pytest-timeout would enforce it unconditionally but is not a dependency.
+    deferred_to_feature_iteration: true
+    rationale: >
+      pytest-timeout is not in pyproject.toml dependencies. The timeout was
+      tightened from 500ms to 200ms in fix-pass iteration-2 (I4). Further
+      tightening to 50ms requires either pytest-timeout or a non-TestClient
+      async approach. Phase 2 hardening item.
+
+  - id: DFR-5
+    description: >
+      _LazyCacheWithLocking[K, V] shared utility: three sites (registry.py,
+      tracker.py, server.py) still duplicate the two-level locking pattern.
+      All three cross-reference comments now name all three sites.
+    deferred_to_feature_iteration: true
+    rationale: >
+      Cross-cutting change touching task-1's registry.py and task-2's tracker.py.
+      Phase 2 consolidation. Already tracked as KS-2 and DFR-1. Fix-pass I1
+      updated all three cross-reference comments to say "ALL THREE sites".
+
+  - id: DFR-6
+    description: >
+      Strict project_id/session_id character allowlist: control chars are now
+      rejected (fix-pass I6), but dots are still allowed (KS-4). Phase 2 should
+      tighten to hostname-style characters only ([A-Za-z0-9-_]).
+    deferred_to_feature_iteration: true
+    rationale: >
+      Phase 1 is localhost-only. The I6 fix hardened the boundary significantly.
+      Full allowlist tightening is a Phase 2 security review item (KS-4).
