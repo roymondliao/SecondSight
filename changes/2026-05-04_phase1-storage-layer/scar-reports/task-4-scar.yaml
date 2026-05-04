@@ -1,0 +1,84 @@
+task: task-4
+title: "Observation Pipeline — async FS + DB INSERT with sync-log fallback"
+plan_ref: P1-4
+sd_refs: ["3.4", "3.9"]
+status: done
+tests:
+  death: 6/6
+  unit: 4/4
+  total: 10/10
+
+step0_prerequisite_questions:
+  - q: "Most-wanted impl path to NOT take?"
+    a: "`try: write_fs; insert_db; except Exception: log.warning` — single try/except wrapping everything. Avoided — that swallows FS errors silently and breaks the durability contract. Used asymmetric handling: FS errors propagate (loud), DB errors get recorded to sync log (recoverable), sync-log errors propagate (loudest)."
+  - q: "When should this not be implemented?"
+    a: "If the observation rate exceeds ~50 events/sec sustained, sequential FS-then-DB writes per event become a latency bottleneck. SD documents 0.5–2 events/sec; well under threshold. Above threshold the answer is batched ingestion, not async-for-its-own-sake."
+  - q: "If a silent failure occurs, who notices first?"
+    a: "Worst case: a user 90 days later running the first analysis, finding fewer DB rows than raw traces and no sync log entries. That would mean DB errors were silently swallowed without recovery hook. The death test for this case is in place (test_death_db_failure_lands_in_sync_log)."
+  - q: "Will this still be alive in the future?"
+    a: "Yes. The asymmetric error contract is the load-bearing semantic. The contract scales unchanged; only the catch types may evolve when DB backend changes."
+
+silent_failure_paths_now_covered:
+  - id: SF-1
+    description: "DB INSERT failure silently swallowed, no recovery hook"
+    detection: "test_death_db_failure_lands_in_sync_log"
+    resolution: "explicit catch on DBAPIError/SQLAlchemyError → sync_log.record_failure + logger.warning. Raw trace exists on disk before this point."
+  - id: SF-2
+    description: "FS error masked by reordered DB-first attempt"
+    detection: "test_death_fs_failure_does_not_call_db"
+    resolution: "FS write awaited first; DB INSERT only attempted after FS returns successfully"
+  - id: SF-3
+    description: "Both DB AND sync log fail — recovery path destroyed silently"
+    detection: "test_death_sync_log_failure_propagates_loudly"
+    resolution: "exception in record_failure logged at CRITICAL and re-raised. Pipeline does not pretend success in this catastrophic case."
+  - id: SF-4
+    description: "KeyboardInterrupt during DB INSERT triggers FS rollback / partial state"
+    detection: "test_death_keyboard_interrupt_during_db_insert_keeps_raw_trace"
+    resolution: "explicit `except KeyboardInterrupt: raise` — no rollback of FS write. Raw trace is the durable record; KI is treated like any operator interrupt."
+  - id: SF-5
+    description: "Concurrent ingest under asyncio.gather drops events"
+    detection: "test_death_concurrent_ingest_no_data_loss"
+    resolution: "RawTraceStore concurrency proven in task-1; pipeline adds no shared mutable state. Test asserts 50/50 round-trip."
+  - id: SF-6
+    description: "SyncLog truncated mid-write poisons backfill iterator"
+    detection: "test_death_sync_log_entry_is_atomic_per_line"
+    resolution: "single os.write() of full line bytes (POSIX atomic for <PIPE_BUF). iter_pending() skips garbage lines via try/except json.JSONDecodeError."
+
+silent_failure_paths_remaining:
+  - id: SF-7
+    description: "Pipeline catches DBAPIError + SQLAlchemyError but not other exception classes that the upstream insert path could plausibly raise (e.g., a programmer-thrown ValueError from inside a custom hook). These would propagate, not land in sync log."
+    severity: medium
+    deferred_to_feature_iteration: true
+    reason: "Tightening the catch type was an explicit Level 1 self-iteration choice — the alternative is `except Exception` which silently masks bugs in repository internals. Trade-off documented; revisit after operating Phase 2."
+  - id: SF-8
+    description: "sync_failures.jsonl has no rotation policy. If DB is down for hours and rate is 2 events/sec, the file grows ~50MB/day."
+    severity: low
+    deferred_to_feature_iteration: true
+    reason: "Backfill (P1-13) drains the log by removing entries on success. Operator concern only if backfill fails to run."
+  - id: SF-9
+    description: "EventsRepository.insert is sync but called from an async pipeline. Currently runs on the asyncio event loop thread, blocking the loop on slow DB writes."
+    severity: medium
+    deferred_to_feature_iteration: true
+    reason: "At 0.5–2 events/sec with ~5ms SQLite write latency, this consumes < 1% of a single-core event loop. Wrap in `asyncio.to_thread` if profiling shows contention. Documented in scar so we don't forget."
+  - id: SF-10
+    description: "logger from loguru — no structured-fields enforcement. A future operator parsing logs for incidents may hit fragile string parsing."
+    severity: low
+    deferred_to_feature_iteration: true
+    reason: "Phase 1 logging is bring-up debug; structured logging (with extra={}) is a Phase 2 ops concern."
+
+assumptions_made_explicit:
+  - "POSIX atomic-write semantics for sub-PIPE_BUF writes hold on macOS APFS, Linux ext4/btrfs/xfs. Not tested on FAT32 / SMB shares."
+  - "loguru is project-default logger (already in pyproject.toml)."
+  - "DBAPIError covers OperationalError, IntegrityError, etc — all SQLAlchemy DBAPI-level errors. Verified in tests."
+
+resolved_items:
+  - "Self-iteration Level 1: tightened the broad `except Exception` originally written to `except (DBAPIError, SQLAlchemyError)`. Programmer bugs in repository code now surface loudly instead of disappearing into the sync log."
+  - "Self-iteration Level 1: added explicit `except KeyboardInterrupt: raise` so static analyzers see the intent, even though the narrowed catch above already excludes KI."
+
+design_decisions_logged:
+  - "Pipeline source file is 73 LOC including docstring and imports — under the < 100 LOC budget set in task-4.md acceptance criteria."
+  - "_record_db_failure is a private helper to keep ingest() readable; the asymmetric flow is visible at one screen height."
+  - "loguru chosen over stdlib logging — project-wide convention. Structured fields can be retrofitted later."
+
+unresolved_assumptions: 0
+deferred_items_count: 4

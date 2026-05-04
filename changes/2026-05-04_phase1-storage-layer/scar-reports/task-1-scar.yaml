@@ -1,0 +1,76 @@
+task: task-1
+title: "Raw Trace Store — filesystem-based event persistence"
+plan_ref: P1-1
+sd_refs: ["3.1", "3.7.5", "3.9"]
+status: done
+tests:
+  death: 5/5
+  unit: 9/9
+  total: 14/14
+
+step0_prerequisite_questions:
+  - q: "Most-wanted impl path to NOT take?"
+    a: "Lift the PoC `DualLayerStorage._event_filename` (counter-per-session) wholesale. Avoided — counter requires shared in-memory state across requests, which breaks under multi-process. Used `(timestamp, sequence_number)` instead — uniqueness from the data model (UNIQUE column in events table)."
+  - q: "When should this not be implemented?"
+    a: "If the agent rate exceeds ~100 events/sec, per-event file I/O becomes a bottleneck and we'd want batched JSONL append with periodic flush. SD §3.2 documents 0.5–2 events/sec — well under that threshold."
+  - q: "If a silent failure occurs, who notices first and when?"
+    a: "A user 30+ days later running `secondsight sync` for backfill, finding fewer DB rows than raw traces because of a filename collision. Damage radius: every analysis depending on those traces. Mitigation: filename embeds sequence_number (UNIQUE) and the death test for sub-millisecond collision is in the suite."
+  - q: "Will this still be alive in the future?"
+    a: "Yes. Filesystem-first durability is the load-bearing primitive of Phase 1+. The SD §3.6 future-scale path (DuckDB) explicitly preserves filesystem as source of truth."
+
+silent_failure_paths_now_covered:
+  - id: SF-1
+    description: "Sub-millisecond collisions overwrite events"
+    detection: "test_death_submillisecond_collision_does_not_swallow_events"
+    resolution: "filename includes sequence_number; uniqueness inherited from events table UNIQUE constraint (P1-3)"
+  - id: SF-2
+    description: "Partial write leaves corrupt destination on disk-full / OSError"
+    detection: "test_death_partial_write_leaves_no_corrupt_file"
+    resolution: "tmp file in same directory as target; os.replace as the single atomic step; finally-block cleans tmp"
+  - id: SF-3
+    description: "Truncated/garbage file returned silently as empty Event"
+    detection: "test_death_truncated_file_raises_typed_error"
+    resolution: "RawTraceCorruptionError raised from read() on empty/JSON/validation failures"
+  - id: SF-4
+    description: "Path traversal via session_id"
+    detection: "test_death_path_traversal_in_session_id_rejected, test_death_session_id_with_separator_rejected"
+    resolution: "_SAFE_SESSION_ID regex + resolved-path-still-under-root check in event_path()"
+  - id: SF-5
+    description: "Loss of event on KeyboardInterrupt mid-write"
+    detection: "test_write_does_not_emit_partial_file_on_keyboard_interrupt"
+    resolution: "BaseException (incl. KI) propagates; tmp cleanup in finally; destination unchanged because os.replace never ran"
+
+silent_failure_paths_remaining:
+  - id: SF-6
+    description: "os.replace is atomic only on POSIX same-filesystem. If user's project_root is bind-mounted across filesystems, atomicity is lost."
+    severity: low
+    deferred_to_feature_iteration: true
+    reason: "Phase 1 docs assume per-project DB lives under ~/.secondsight; cross-filesystem layouts are unsupported. Document in operator notes."
+  - id: SF-7
+    description: "Concurrent directory creation race for new session — two writers simultaneously call mkdir(exist_ok=True). exist_ok handles this, but a parent path that becomes a regular file mid-create would surface as a confusing error."
+    severity: low
+    deferred_to_feature_iteration: true
+    reason: "Pre-existing path collision is operator error, not an internal-correctness concern."
+  - id: SF-8
+    description: "schema_version is recorded but no migration code exists. A future Event v2 reading a v1 file would either succeed silently (extra fields permitted) or fail validation (extra=forbid is set)."
+    severity: medium
+    deferred_to_feature_iteration: true
+    reason: "Migration strategy is a feature-iteration concern (Phase 2+). Currently extra=forbid means a v2 model loading v1 files would fail loudly — acceptable for now."
+
+assumptions_made_explicit:
+  - "Pydantic v2 frozen=True + extra=forbid is enforced at construction; tests rely on this."
+  - "Microsecond-resolution timestamps are sufficient for filename ordering. `datetime` provides this."
+  - "Tests use tmp_path (pytest fixture) — a real filesystem. No mocks for the FS layer (mocks would defeat death tests SF-1, SF-2)."
+  - "session_id is supplied by the adapter layer (Phase 1.3) — by Phase-2 contract, not by user input. The path-traversal defense is depth-in-defense."
+
+resolved_items:
+  - "Self-iteration Level 1: tightened the resolved-parent check to compare against project_root.resolve() (not project_root itself) so symlinks in project_root are handled."
+  - "Self-iteration Level 1: added _SAFE_SESSION_ID regex check in iter_session() too — discovered while reviewing the API surface."
+
+design_decisions_logged:
+  - "asyncio.to_thread chosen over aiofiles. Rationale: SQLAlchemy 2.0 sync engine will use the same wrapper; one I/O model across the stack."
+  - "Filename includes sequence_number, not a per-store counter. Rationale: avoids hidden state, makes the path pure-function of the event."
+  - "Event model is frozen and extra=forbid. Rationale: events are immutable post-write; forbidding extras catches schema drift loudly."
+
+unresolved_assumptions: 0
+deferred_items_count: 3

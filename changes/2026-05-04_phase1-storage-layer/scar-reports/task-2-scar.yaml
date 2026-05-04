@@ -1,0 +1,70 @@
+task: task-2
+title: "SQLite DB Engine + PRAGMA Configuration"
+plan_ref: P1-2
+sd_refs: ["3.5"]
+status: done
+tests:
+  death: 5/5
+  unit: 6/6
+  total: 11/11
+
+step0_prerequisite_questions:
+  - q: "Most-wanted impl path to NOT take?"
+    a: "Apply PRAGMAs once at engine construction time (one-shot connect, then assume all pool connections inherit). Avoided — SQLAlchemy pool reuses raw DBAPI connections, but pragmas like cache_size are per-connection-session in some configurations. Used the `connect` event listener so every fresh connection gets the PRAGMAs."
+  - q: "When should this not be implemented?"
+    a: "If we move to a server-class DB (Postgres/DuckDB) where PRAGMA semantics don't apply, this whole module becomes a SQLite-only adapter. SD §3.6 names DuckDB as the future path; the engine factory abstraction lets us swap with bounded blast radius."
+  - q: "If a silent failure occurs, who notices first?"
+    a: "An interactive user 6 weeks in, complaining about 'random freezes during analysis' — actually WAL was downgraded to DELETE on a network home directory and writers blocked readers. Detection: verify_pragmas() runs on construction; mismatch = explicit error at startup, not silent latency at runtime."
+  - q: "Will this still be alive in the future?"
+    a: "Yes for SQLite. The contract (frozen settings + PRAGMA verification) generalizes to any DB by replacing the listener and the verifier; the public surface stays."
+
+silent_failure_paths_now_covered:
+  - id: SF-1
+    description: "WAL silently downgraded to DELETE journal (NFS / network FS)"
+    detection: "test_death_wal_mode_silently_rejected_raises"
+    resolution: "verify_pragmas reads back journal_mode and raises StoragePragmaMismatchError on mismatch"
+  - id: SF-2
+    description: "verify_pragmas returns dict but caller ignores it"
+    detection: "test_death_verify_pragmas_raises_on_mismatch"
+    resolution: "method raises on mismatch; the returned dict is informational only"
+  - id: SF-3
+    description: "Settings mutation after construction"
+    detection: "test_death_settings_is_frozen, test_death_settings_validates_cache_size_positive"
+    resolution: "frozen=True dataclass + __post_init__ validation"
+  - id: SF-4
+    description: "Engine reuse after dispose"
+    detection: "test_death_engine_after_dispose_raises"
+    resolution: "engine property raises RuntimeError when self._engine is None"
+
+silent_failure_paths_remaining:
+  - id: SF-5
+    description: "PRAGMAs applied OK on first connection but listener silently fails on subsequent reconnects (e.g., cursor.close raises). verify_pragmas only runs at __init__."
+    severity: medium
+    deferred_to_feature_iteration: true
+    reason: "Periodic re-verification belongs in an operational metric, not constructor logic. Add to monitoring scope alongside DB health checks."
+  - id: SF-6
+    description: "synchronous=NORMAL is documented as 'safe in WAL mode' — this is a probabilistic claim, not a strict guarantee. Power loss during a checkpoint could still corrupt."
+    severity: low
+    deferred_to_feature_iteration: true
+    reason: "SD §3.5 explicitly accepts this trade-off. Documenting in operator notes is sufficient."
+  - id: SF-7
+    description: "Layered configuration (defaults → file → env → CLI override) is not implemented. Today only constructor arg."
+    severity: medium
+    deferred_to_feature_iteration: true
+    reason: "Phase 1 CLI work (P1-12) introduces config layering. This module's API is config-source-agnostic — it accepts a StorageSettings instance."
+
+assumptions_made_explicit:
+  - "SQLAlchemy 2.0's `connect` event listener is invoked for every raw DBAPI connection acquired from the pool, including pre-warmed ones."
+  - "SQLite's reported integer for synchronous (1 = NORMAL) is stable across recent versions."
+  - "Negative cache_size values are correctly interpreted by SQLite as KiB rather than pages — true since SQLite 3.7.10."
+
+resolved_items:
+  - "Self-iteration Level 1: tightened the synchronous PRAGMA check to accept both '1' and 'normal' (SQLite version-dependent reporting)."
+
+design_decisions_logged:
+  - "verify_pragmas runs synchronously inside __init__ — fail fast on misconfiguration."
+  - "_HARDCODED_PRAGMAS is module-level data, not a class attribute, to make the contract auditable by file inspection."
+  - "BrokenDBEngine subclass in tests demonstrates the public extension surface — a real adapter for non-SQLite backends would do something similar."
+
+unresolved_assumptions: 0
+deferred_items_count: 3

@@ -1,0 +1,65 @@
+feature: phase1-storage-layer
+status: done
+parent_issue: GUR-93
+plan_ref_doc: docs/plan_v2.md §1.1
+design_ref_doc: docs/system_design.md §3.1, 3.4, 3.5, 3.7.5, 3.9
+total_tests: "48/48 (22 death + 26 unit)"
+
+tasks:
+  # --- Wave 1: Independent foundations (no inter-task deps) ---
+  - id: task-1
+    title: "Raw Trace Store — filesystem-based event persistence"
+    status: done
+    scar_count: 8
+    unresolved_assumptions: 0
+    deferred_items: 3
+    depends_on: []
+    plan_ref: "P1-1"
+    wave: 1
+    sd_ref: ["3.1", "3.7.5", "3.9"]
+    tests: "14/14 (5 death + 9 unit)"
+
+  - id: task-2
+    title: "SQLite DB Engine + PRAGMA configuration"
+    status: done
+    scar_count: 7
+    unresolved_assumptions: 0
+    deferred_items: 3
+    depends_on: []
+    plan_ref: "P1-2"
+    wave: 1
+    sd_ref: ["3.5"]
+    tests: "11/11 (5 death + 6 unit)"
+
+  # --- Wave 2: Events table (depends on engine) ---
+  - id: task-3
+    title: "Events Table — SQLAlchemy Core schema + repository"
+    status: done
+    scar_count: 7
+    unresolved_assumptions: 0
+    deferred_items: 2
+    depends_on: [task-2]
+    plan_ref: "P1-3"
+    wave: 2
+    sd_ref: ["3.7.5"]
+    tests: "13/13 (6 death + 7 unit)"
+
+  # --- Wave 3: Pipeline (depends on FS store + events repo) ---
+  - id: task-4
+    title: "Observation Pipeline — async FS write + DB INSERT with sync-log fallback"
+    status: done
+    scar_count: 10
+    unresolved_assumptions: 0
+    deferred_items: 4
+    depends_on: [task-1, task-3]
+    plan_ref: "P1-4"
+    wave: 3
+    sd_ref: ["3.4", "3.9"]
+    tests: "10/10 (6 death + 4 unit)"
+
+exit_criteria:
+  - "Can write events to both filesystem and DB; no data loss on either single failure"
+  - "FS write is the durability boundary — DB INSERT failures degrade gracefully"
+  - "Sync log records DB-INSERT failures so backfill (P1-13) can recover"
+  - "All four modules independently testable; no hidden coupling between layers"
+  - "WAL mode + busy_timeout PRAGMA verified active on every connection"
