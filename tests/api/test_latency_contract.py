@@ -352,32 +352,39 @@ def test_death_inflight_set_tracks_tasks_and_drains(
 # DT-I8: ValueError from normalizer.normalize() must return 422, not 500
 # ---------------------------------------------------------------------------
 
-def test_death_normalizer_valueerror_returns_422(tmp_secondsight_home: Path) -> None:
-    """DEATH TEST: normalizer.normalize() raising ValueError must produce 422.
+def test_death_adapter_valueerror_returns_422(tmp_secondsight_home: Path) -> None:
+    """DEATH TEST: adapter.normalize() raising ValueError must produce 422.
 
-    The Normalizer Protocol declares ValueError as the failure mode for missing
+    The AgentAdapter ABC declares ValueError as the failure mode for missing
     required fields. Without an explicit catch in the handler, the ValueError
     propagates as an unhandled exception and produces 500.
 
-    This test injects a normalizer that always raises ValueError and verifies
+    This test injects an adapter that always raises ValueError and verifies
     the route returns 422 (not 500).
     """
+    from secondsight.adapters import AdapterRegistry, AgentAdapter
     from secondsight.api.server import create_app
     from secondsight.api.registry import ProjectRegistry
-    from secondsight.api.normalizer import NormalizerRegistry
     from secondsight.api.schemas import HookEnvelope
+    from secondsight.event import EventType
     from secondsight.observation.tracker import PartialEvent
 
-    class _ErrorNormalizer:
+    class _ErrorAdapter(AgentAdapter):
         def supports(self, agent: str, event_type: str) -> bool:
             return agent == "test"
 
         def normalize(self, envelope: HookEnvelope, event_type: str) -> PartialEvent:
             raise ValueError("missing required field: test_field")
 
-    # Build a custom normalizer registry with our error normalizer
-    norm_registry = NormalizerRegistry()
-    norm_registry.register(_ErrorNormalizer())  # type: ignore[arg-type]
+        def supported_event_types(self) -> set[str]:
+            # DT-6 alignment: publish the event type the test exercises so the
+            # registry's consistency guard does not reject this adapter before
+            # the ValueError can propagate.
+            return {e.value for e in EventType}
+
+    # Build a custom adapter registry with our error adapter
+    adapter_registry = AdapterRegistry()
+    adapter_registry.register(_ErrorAdapter())
 
     registry = ProjectRegistry(secondsight_home=tmp_secondsight_home)
 
@@ -386,10 +393,10 @@ def test_death_normalizer_valueerror_returns_422(tmp_secondsight_home: Path) -> 
         registry=registry,
     )
 
-    # Patch the normalizer registry on the running app after startup
+    # Patch the adapter registry on the running app after startup
     with TestClient(app, raise_server_exceptions=False) as client:
-        # First, patch state's normalizer_registry after lifespan startup.
-        app.state.server_state.normalizer_registry = norm_registry
+        # First, patch state's adapter_registry after lifespan startup.
+        app.state.server_state.adapter_registry = adapter_registry
 
         response = client.post(
             "/hook/session_start",
@@ -405,12 +412,12 @@ def test_death_normalizer_valueerror_returns_422(tmp_secondsight_home: Path) -> 
         )
 
     assert response.status_code == 422, (
-        f"DEATH: Expected 422 for normalizer ValueError, got {response.status_code}. "
+        f"DEATH: Expected 422 for adapter ValueError, got {response.status_code}. "
         f"Body: {response.text}. "
         f"A 500 means the ValueError propagated unhandled."
     )
     # Verify the detail mentions the error (not a generic FastAPI 422)
     detail = response.json().get("detail", "")
-    assert "missing required field" in str(detail) or "Normalizer rejected" in str(detail), (
-        f"DEATH: 422 detail must mention the normalizer error. Got: {detail}"
+    assert "missing required field" in str(detail) or "Adapter rejected" in str(detail), (
+        f"DEATH: 422 detail must mention the adapter error. Got: {detail}"
     )

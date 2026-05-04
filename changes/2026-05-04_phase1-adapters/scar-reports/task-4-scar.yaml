@@ -1,0 +1,235 @@
+task_id: task-4
+completion_status: done
+
+known_shortcuts:
+  - description: |
+      The conftest stub `tests/scripts/conftest.py:_ClaudeCodeAdapterStub`
+      (registered for `agent="claude-code"`, kebab-case) is NOT retired in
+      this task. The real `ClaudeCodeAdapter` is registered for
+      `agent="claude_code"` (snake_case per plan §7 G3); both coexist in
+      the registry without dispatch collision because their agent strings
+      differ. Reason: retiring the stub requires (a) rewriting every
+      `agent="claude-code"` callsite in `tests/scripts/test_hook_fallback.py`
+      to `claude_code` AND (b) making each test's payload include
+      `hook_event_name` (the real adapter validates it; the stub did not).
+      That is a wider blast radius than task-4's stated file list (task-4.md
+      only modifies api/server.py, not conftest.py or test_hook_fallback.py).
+      Risk: until retired, the kebab-vs-snake split lets a future test author
+      register a new bash hook test with the wrong agent string and never
+      hit the real adapter — silently exercising the stub's pass-through
+      semantics instead of the production drop_list. Mitigation: the stub's
+      `supported_event_types()` still publishes the FULL EventType set, so
+      it does shadow ClaudeCodeAdapter's P1 floor on event-type overlap;
+      the existing `warnings.simplefilter("ignore", RuntimeWarning)` in
+      conftest.py masks the shadow warning that would otherwise alert on
+      this overlap.
+    deferred_to_feature_iteration: true  # tracked as task-3 carry-forward; close in task-5 or follow-up
+
+  - description: |
+      `_normalize_post_tool_use` derives `success` from presence/absence of
+      `tool_response.error` only. `tool_response.exit_code` is intentionally
+      NOT folded in — plan §5 lists `output_size` and `error_type` but not
+      exit_code semantics, and conflating exit_code into success would
+      change the data contract without an SD update. A PostToolUse where
+      Bash returned exit_code=1 with output but no `error` key would
+      currently report `success=True`. Reason: plan adherence over
+      ergonomics. Risk: downstream success-rate analytics may be optimistic
+      for shells that emit exit_code without an error wrapper.
+    deferred_to_feature_iteration: false  # plan-bound; revisit in Phase 2 if §5 grows
+
+silent_failure_conditions:
+  - description: |
+      `normalize()`'s `hook_event_name` cross-check raises ValueError on a
+      route/payload mismatch (e.g. POST /hook/tool_use_start carrying a
+      SessionEnd body), but does NOT log the offending request. The
+      AdapterRegistry's `for_()` already logs nothing on `NoAdapterError`
+      either — the API route handler is responsible for surfacing 422 with
+      the error message. If the route handler ever swallows ValueError into
+      a 200 response (it does not today, verified at api/hooks.py), the
+      mismatch becomes silent until pipeline-stage rejection downstream.
+    deferred_to_feature_iteration: false  # surveillance only; api/hooks.py raises on ValueError
+
+  - description: |
+      `_action_metadata` and per-event-type builders silently OMIT
+      transcript_path / cwd if the payload does not carry them. This is the
+      correct behaviour (we do NOT synthesise placeholder strings that
+      would corrupt downstream queries on path equality), but it means
+      a payload that drops transcript_path through a field-level corruption
+      would result in a PartialEvent.data missing the path without any
+      error signal. The bash hook script always populates transcript_path,
+      so production traffic hits this gap only on a script regression.
+    deferred_to_feature_iteration: false  # invariant carried by the hook script, not the adapter
+
+  - description: |
+      DT-6 (drop_list raw values absent from data) walks DROP_LIST entries
+      and asserts each raw value (string-coerced) does not appear in the
+      data JSON. Edge case: if a DROP_LIST raw value is the empty string
+      "" or a single-character string "0" that happens to also be a key in
+      data ("0" appears in `{"0": ...}` JSON), the substring check is too
+      conservative and could false-fail. The current fixtures don't
+      exercise this corner (canary string is 26 chars), but a future
+      fixture editor who plants empty-string drop-listed values would trip
+      DT-6 incorrectly. Acceptable cost: false-positive over false-negative
+      for a privacy invariant.
+    deferred_to_feature_iteration: false  # documented; structural invariant favours strict over lax
+
+  - description: |
+      `_DATA_BUILDERS` lookup uses `.get(et)` and raises ValueError on miss,
+      but DT-8 (consistency) only verifies supports() ↔ supported_event_types().
+      A future EventType added to `_HOOK_TO_EVENT_TYPE` (which feeds
+      supported_event_types) WITHOUT a corresponding `_DATA_BUILDERS` entry
+      would pass DT-8 but raise at runtime when normalize() is called.
+      Mitigation: add a startup-time consistency assert that compares
+      _HOOK_TO_EVENT_TYPE.values() against _DATA_BUILDERS.keys(). Not added
+      now to avoid module-import-time side effects; carried forward.
+    deferred_to_feature_iteration: true
+
+  - description: |
+      The `inject_hint` / `inject_convention` defaults are inherited verbatim
+      from AgentAdapter (DT-7, DT-7b verify). A subclass override that
+      forgets to call super() could `return ""` silently — this is the
+      generic ABC override risk noted in task-1 scar SF-2. Each future
+      adapter (Codex, OpenCode) needs its own DT-7 / DT-7b, copy-pasted
+      from this file's pattern.
+    deferred_to_feature_iteration: false  # task-scope already addressed; future adapters carry the pattern forward
+
+assumptions_made:
+  - assumption: |
+      `agent="claude_code"` (snake_case per plan §7 G3) is the canonical
+      identifier; aliases like `claude-code` / `Claude_Code` are rejected
+      at the dispatch seam.
+    verified: true
+    note: |
+      DT-1 explicitly probes case-variants and the kebab form. The bash
+      hook fallback tests still use kebab, but they route to the
+      conftest stub (different agent gate) — no production traffic
+      exercises the kebab path through ClaudeCodeAdapter.
+
+  - assumption: |
+      Every Claude Code hook payload carries `hook_event_name` as a top-level
+      string field per Claude Code v1.x documented schema (plan §7 G2).
+    verified: true
+    note: |
+      DT-5 enforces presence of `hook_event_name`. All 5 task-2 fixtures
+      include it. Task-5 integration (P1-9-int) exercises the round-trip
+      end-to-end against fixtures; if Claude Code v2 drops or renames this
+      field, task-5 fails red and the adapter is correctly flagged as
+      unverified for v2.
+
+  - assumption: |
+      `tool_response.error` presence is sufficient signal for `success=False`.
+    verified: false  # plan §5 silent on multi-signal success semantics
+    note: |
+      This is the most common case empirically (Bash via PreToolUse hook
+      verified locally; PostToolUse documented). If a future tool wraps
+      errors in `tool_response.output` instead of `tool_response.error`,
+      our success bit would mis-classify. Documented in
+      `_normalize_post_tool_use` docstring; revisit in Phase 2 with a
+      richer success vocabulary.
+
+  - assumption: |
+      Out-of-floor EventTypes (THINKING, SUB_AGENT_*, RESPONSE, TASK_*) do
+      not need to be supported by ClaudeCodeAdapter in P1.
+    verified: true
+    note: |
+      Plan §8 explicitly lists these as P1 non-goals. DT-2 verifies
+      supports() returns False for them. AdapterRegistry routes them to
+      NoAdapterError which the API route handler turns into 422.
+
+  - assumption: |
+      Suppressing the AdapterRegistry shadow warning in api/server.py
+      lifespan startup is benign because IdentityAdapter (agent="test") and
+      ClaudeCodeAdapter (agent="claude_code") have disjoint agent gates.
+    verified: true
+    note: |
+      Verified by the same logic as task-3 scar's conftest suppression
+      assumption. First-match-wins dispatch consults supports() first;
+      different agent gates cannot collide. Production traffic with
+      agent="claude_code" routes only to ClaudeCodeAdapter (registered
+      first). Production traffic with agent="test" routes only to
+      IdentityAdapter (registered second). The warning is benign
+      bookkeeping, not a real shadow.
+
+debt_registered: true
+debt_location: |
+  - tests/scripts/conftest.py:_ClaudeCodeAdapterStub still in place; carry
+    task-3 retirement carry-forward into task-5 or a follow-up GUR-issue.
+  - src/secondsight/adapters/claude_code.py:_normalize_post_tool_use:
+    success semantics ignore tool_response.exit_code (plan-bound).
+  - src/secondsight/adapters/claude_code.py: no startup-time
+    `_HOOK_TO_EVENT_TYPE.values() == _DATA_BUILDERS.keys()` assert; relies on
+    runtime ValueError + DT-8 to catch skew (which is not a complete cover —
+    see SF entry).
+
+resolved_items:
+  - description: |
+      Level 1 self-iteration: initial draft of `_normalize_post_tool_use`
+      conditionally added `success=True` only when `output` was present in
+      tool_response. Reviewing the post_tool_use fixture
+      (`expected_partial_event_data: {success: true, output_size: 27}`)
+      surfaced that the success bit must be reported regardless of output
+      presence (a tool that returns nothing on stdout is still success on
+      no-error). Refactored to: error → success=False; explicit success
+      key → bool coerce; otherwise → success=True. Round-trip test passed
+      after the fix.
+  - description: |
+      Level 1 self-iteration: extracted `_tool_input_metadata` helper
+      shared between PreToolUse and PostToolUse data builders. Initial
+      draft duplicated the four len() computations (command/content/
+      old_string/new_string) across both branches — DRY violation,
+      and a future drop_list addition would have required two edits. The
+      helper centralises the size-extraction logic so a new tool_input
+      field flows through both event types from one place.
+
+narrative: |
+  Task-4 is the first real production adapter — every prior task in this
+  feature was scaffolding (ABC, fixtures, migration). The death-test
+  surface centres on privacy: DT-3 (canary deep-search) and DT-6
+  (generalised drop_list assertion) are the load-bearing invariants for SD
+  §3.7.4 compliance. Each fixture's canary value is positioned at a
+  drop-listed source path, so the adapter's drop logic regression manifests
+  as a fixture fail rather than a silent leak that downstream analysis
+  would only discover after data is on disk.
+
+  Two design decisions warrant explicit recording:
+
+    1. `_AGENT_NAME = "claude_code"` (snake_case per plan §7 G3). DT-1
+       rejects kebab-case "claude-code" because it is a misconfiguration
+       trap — the existing `_ClaudeCodeAdapterStub` in conftest.py uses
+       kebab, but that stub serves a different agent contract (see
+       known_shortcut #1). Production routing uses snake_case.
+
+    2. `hook_event_name` cross-check inside normalize(). Caller dispatches
+       by `event_type` (route param), but the adapter verifies the payload
+       claims the matching hook. A misrouted POST is a typed error
+       (ValueError) rather than a structurally-valid PartialEvent with
+       wrong shape — silent failure surface SF-1.
+
+  Bundle implications:
+    - AC-4 ✅ test_supported_event_types_floor green.
+    - AC-5 ✅ all 5 fixtures round-trip; data == expected_partial_event_data
+      exactly.
+    - AC-6 ✅ DT-3 privacy canary green for all 5 fixtures.
+    - AC-7 ✅ DT-7 + DT-7b verify both inject_* defaults inherited.
+    - AC-8 ✅ mypy clean across `src/secondsight/adapters` +
+      `tests/adapters` (zero issues; new claude_code.py + test_claude_code.py
+      type-check on first run).
+    - AC-9 ✅ 488 passing tests vs baseline 457 (+31 new). Threshold ≥ 380
+      easily met. Pre-existing parallel-write flake on
+      test_hook_fallback.py::TestDeathTests::test_dt2_parallel_writes_no_truncation
+      passed under this serial run; flake classification unchanged.
+
+  Cross-task carry-forward (visible to task-5 integration):
+    - Real `ClaudeCodeAdapter()` is registered alongside `IdentityAdapter()`
+      in lifespan startup. Conftest stub for kebab `claude-code` remains.
+    - Task-5 (integration) should exercise the round-trip end-to-end via
+      a hook POST through the live FastAPI server using
+      `agent="claude_code"` and a real Claude Code-shaped payload (with
+      hook_event_name). The conftest's `real_secondsight_server` fixture
+      already starts the registry with the real adapter via the lifespan;
+      task-5 just needs to send canonical-shaped payloads.
+
+  No Level 2 (feature-level) iteration items added — the deferred items
+  above are either task-3 carry-forwards re-anchored at follow-up scope
+  (kebab stub retirement) or single-line surveillance items with no
+  task-scope action available.

@@ -1,0 +1,185 @@
+task_id: task-3
+completion_status: done
+
+known_shortcuts:
+  - description: |
+      `_ClaudeCodeAdapterStub` in tests/scripts/conftest.py is a duck-typed
+      AgentAdapter (the original `_ClaudeCodeNormalizer` upgraded with
+      `supported_event_types()` and loud-failure inject_* defaults) rather
+      than a true ABC subclass. We bypass mypy with `# type: ignore[arg-type]`
+      at register-time. Reason: subclassing AgentAdapter from this conftest
+      would either pull `secondsight.adapters` into a test-scoped import that
+      blurs the seam between adapter and observation packages, or require a
+      separate stub module. Both are heavier than the duck-cast.
+      Risk: a future signature drift in AgentAdapter (e.g. an added abstract
+      method) will not surface until runtime when `register()` accepts the
+      stub silently. Mitigation: AdapterRegistry.for_() exercises the stub on
+      every test run; any missing-method error surfaces immediately.
+    deferred_to_feature_iteration: true  # task-4 ships real ClaudeCodeAdapter; the stub goes away
+
+  - description: |
+      The `_ClaudeCodeAdapterStub.supported_event_types()` returns the FULL
+      EventType set (universal-test scope). The real ClaudeCodeAdapter
+      (task-4 / GUR-124) will publish only the P1 floor. Until then, the
+      conftest fixture suppresses the AdapterRegistry shadow warning that
+      fires on event-type overlap with IdentityAdapter. The shadow IS real
+      (both publish the full set), but agent gating prevents dispatch
+      collision. Reason for the universal set: keeping behavioural parity
+      with the prior `_ClaudeCodeNormalizer` (which had no
+      `supported_event_types()` at all and thus no overlap warning). Once
+      task-4 lands the floor, the warning suppression in the fixture should
+      be removed and the stub can publish the floor too.
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: |
+      MIG-DT-1 (the collect-time grep guard in tests/adapters/test_base.py)
+      walks every .py file under src/ but does NOT walk tests/. A test that
+      imports the legacy `secondsight.api.normalizer` path would survive
+      collection (because the module is gone, the failing import would surface
+      at test execution as an ImportError per-test rather than an aborted
+      session). Reason for the asymmetry: the AC-10 contract is explicit
+      about src/ only ("No production import of old normalizer path"). Tests
+      may keep one assertion-only import — DT-1 in test_identity.py
+      deliberately performs `import secondsight.api.normalizer` inside
+      `pytest.raises(ModuleNotFoundError)`. Walking tests/ in MIG-DT-1 would
+      flag DT-1 itself as a regression. Acceptable trade-off, but a stale
+      test-side import (not inside `pytest.raises`) would slip through this
+      guard.
+    # not deferred — the AC-10 contract intentionally excludes tests/
+
+  - description: |
+      The state field rename `normalizer_registry` → `adapter_registry`
+      relies on attribute access raising AttributeError at runtime if a
+      caller still uses the old name. mypy catches it on typed access via
+      `cast("AppState", ...)`, but a dict-style or `getattr(state,
+      "normalizer_registry", default)` call would silently get `default`.
+      No such call exists today (verified by grep), but the pattern is
+      possible.
+    deferred_to_feature_iteration: false  # surveillance only; no production code uses getattr fallback
+
+  - description: |
+      `IdentityAdapter.normalize()` re-validates `event_type` against the
+      EventType enum (defence-in-depth) but does not validate envelope-level
+      fields beyond what Pydantic enforces on HookEnvelope. A future
+      HookEnvelope schema relaxation that drops min_length=1 on `event_id`
+      or `session_id` would let IdentityAdapter produce a PartialEvent with
+      empty required fields — corrupt downstream. The AgentAdapter ABC
+      docstring carries this postcondition forward to task-4 already.
+      No regression introduced by this migration; the silent surface was
+      identical in IdentityNormalizer.
+    deferred_to_feature_iteration: false  # invariant carried by HookEnvelope, not adapter
+
+  - description: |
+      The duck-typed `_ClaudeCodeAdapterStub` in conftest.py satisfies
+      `register()` via `# type: ignore[arg-type]`. If a future
+      `AdapterRegistry.register()` adds an `isinstance(adapter, AgentAdapter)`
+      runtime guard (currently not present), this stub will fail at
+      register-time with a TypeError. The fixture would then need to subclass
+      AgentAdapter explicitly. Tracked because hardening register() is a
+      reasonable Phase 2 move.
+    deferred_to_feature_iteration: true
+
+assumptions_made:
+  - assumption: |
+      No production caller outside src/secondsight/api/{server.py,hooks.py}
+      imports the legacy `secondsight.api.normalizer` symbols.
+    verified: true
+    note: |
+      Verified by `grep -r "from secondsight.api.normalizer\\|api\\.normalizer\\|NormalizerRegistry\\|IdentityNormalizer\\|NoNormalizerError" src/ tests/`
+      before migration. Hits limited to: server.py, hooks.py (production —
+      migrated), test_hooks_endpoint.py, test_latency_contract.py,
+      tests/scripts/conftest.py (tests — migrated), changes/* (docs,
+      retained as historical record), and src/secondsight/api/normalizer.py
+      itself (deleted).
+
+  - assumption: |
+      `IdentityAdapter.supported_event_types()` returning the full EventType
+      set is correct for the test agent in perpetuity.
+    verified: true
+    note: |
+      Verified by tests/adapters/test_identity.py::test_supported_event_types_is_full_eventtype_set
+      and ::test_supports_and_supported_event_types_are_consistent. The
+      "test" agent is by contract universal. Adding a new EventType extends
+      both the supports() truth set and the published capability set
+      simultaneously (both derived from EventType enum membership) — no skew
+      possible.
+
+  - assumption: |
+      The state field rename `normalizer_registry` → `adapter_registry` does
+      not break any external consumer. AppState is internal to
+      `src/secondsight/api/` and the field is documented as write-once.
+    verified: true
+    note: |
+      Verified by grep — only the two production sites (server.py
+      assignment, hooks.py read) and three test sites (latency_contract,
+      scripts/conftest, scripts/conftest fixture body) referenced the old
+      name. All migrated in this task.
+
+  - assumption: |
+      The pre-existing flake `test_dt2_parallel_writes_no_truncation` is
+      unrelated to this migration. The task-1 scar report and index.yaml
+      both call it out as a pre-existing flake under parallel load.
+    verified: true
+    note: |
+      Confirmed by running the test in isolation post-migration — passes.
+      JSONDecodeError under parallel load is a hook-fallback concern, not
+      an adapter-layer concern. Same JSON parse error pattern as before
+      task-3.
+
+  - assumption: |
+      Suppressing the AdapterRegistry shadow warning in the conftest fixture
+      is benign because agent gating prevents dispatch collision.
+    verified: true
+    note: |
+      Tested by the existing `tests/scripts/test_hook_fallback.py` suite —
+      all 11 tests pass with agent="claude-code" routing to
+      `_ClaudeCodeAdapterStub` despite IdentityAdapter publishing the same
+      event_types under agent="test". First-match-wins dispatch consults
+      supports() before supported_event_types(), so different agent gates
+      are sufficient to prevent collision.
+
+debt_registered: true
+debt_location: |
+  - tests/scripts/conftest.py:_ClaudeCodeAdapterStub (duck-typed, will be
+    replaced by real ClaudeCodeAdapter in task-4 / GUR-124)
+  - tests/scripts/conftest.py: warnings.simplefilter("ignore", RuntimeWarning)
+    around the stub register call (remove when task-4 narrows the stub's
+    supported_event_types to the P1 floor)
+  - src/secondsight/adapters/base.py:AdapterRegistry.register (no
+    isinstance guard against duck-typed adapters — Phase 2 hardening)
+
+narrative: |
+  This task is a pure migration: behavioural parity is the contract (AC-3),
+  structural upgrade is the value (Protocol → ABC). The death-test surface
+  this task added is *deletion-shaped*:
+
+    MIG-DT-1 (test_base.py)  collect-time grep for the deleted import path
+    DT-1     (test_identity.py)  ModuleNotFoundError on legacy `import …`
+
+  Both are guards against the migration silently un-migrating — a future
+  refactor that introduces a "transitional" shim would fail collection
+  before any other test runs. This is the strongest signal we can give
+  for AC-10 / AC-1 enforcement.
+
+  No Level 1 self-iteration was performed because every scar item above is
+  either (a) accepted as documented (postcondition carried forward by ABC
+  docstring already, no task-scope action available), (b) deferred to
+  task-4 because the real adapter retires the stub, or (c) Phase-2 hardening
+  scope (isinstance guard on register).
+
+  Bundle implications:
+    - AC-1 ✅ verified by both DT-1 and AC-1's bash command
+    - AC-3 ✅ 13 tests in test_identity.py (≥ prior IdentityNormalizer count)
+    - AC-8 ✅ mypy clean across src/ (28 files) and tests/adapters (7 files)
+    - AC-9 ✅ 457 tests pass excl. 1 documented pre-existing flake
+    - AC-10 ✅ `! grep -r 'from secondsight.api.normalizer' src/` → exit 0
+    - AC-2/AC-4/AC-5/AC-6/AC-7 are bundle-level — task-4 ships them.
+
+  Cross-task carry-forward (visible to task-5 integration):
+    - The state field is now `adapter_registry`. task-5's end-to-end tests
+      that build an app with `create_app(...)` will see this name. No code
+      change needed in task-5; it just needs to not refer to the old name.
+    - `_ClaudeCodeAdapterStub` exists in tests/scripts/conftest.py.
+      task-4 will replace it with the real ClaudeCodeAdapter and remove the
+      RuntimeWarning suppression.

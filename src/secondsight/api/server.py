@@ -35,7 +35,7 @@ from fastapi import FastAPI
 from loguru import logger
 
 from secondsight._common.lazy_cache import LazyCacheWithLocking
-from secondsight.api.normalizer import IdentityNormalizer, NormalizerRegistry
+from secondsight.adapters import AdapterRegistry, ClaudeCodeAdapter, IdentityAdapter
 from secondsight.api.registry import ProjectRegistry
 from secondsight.observation.tracker import SessionTracker
 
@@ -73,7 +73,7 @@ class AppState:
     NOTE: This class is not frozen (unlike the original dataclass) because
     inflight_tasks (set) and the tracker cache must be mutated at runtime.
     The startup_time, registry, secondsight_home, config, and
-    normalizer_registry fields are write-once and should not be reassigned
+    adapter_registry fields are write-once and should not be reassigned
     after startup.
     """
 
@@ -84,13 +84,13 @@ class AppState:
         startup_time: float,
         secondsight_home: Path,
         config: ServerConfig,
-        normalizer_registry: NormalizerRegistry,
+        adapter_registry: AdapterRegistry,
     ) -> None:
         self.registry = registry
         self.startup_time = startup_time
         self.secondsight_home = secondsight_home
         self.config = config
-        self.normalizer_registry = normalizer_registry
+        self.adapter_registry = adapter_registry
         # Strong-reference set: prevents GC from collecting tasks before shutdown
         # drain can enumerate them. Each task registers a discard done_callback
         # so completed tasks are removed and the set does not grow unboundedly.
@@ -176,10 +176,32 @@ def create_app(
             port=cfg.port,
         )
 
-        # Build normalizer registry: IdentityNormalizer for agent="test" baseline.
-        # Real adapters (P1-9..P1-11) register themselves here.
-        norm_registry = NormalizerRegistry()
-        norm_registry.register(IdentityNormalizer())
+        # Build adapter registry. Order is significant for first-match-wins
+        # dispatch (plan §1 decision 5):
+        #   1. ClaudeCodeAdapter — agent="claude_code" (P1-10, GUR-124).
+        #   2. IdentityAdapter   — agent="test" baseline.
+        # ClaudeCodeAdapter precedes IdentityAdapter so that, if a future
+        # IdentityAdapter ever broadens its `supports()` to claim
+        # agent="claude_code" (it does not today, but the universal-test
+        # invariant could drift), the canonical adapter still wins dispatch.
+        # The two publish overlapping event_types (Identity = full EventType
+        # set; Claude = P1 floor subset) so registering Identity second emits
+        # a benign RuntimeWarning (different agent gates → no real shadow);
+        # we suppress it here with an explanatory comment so the warning
+        # remains load-bearing for genuine same-agent shadows. Real future
+        # adapters (Codex, OpenCode) follow the same pattern: register
+        # before IdentityAdapter.
+        import warnings
+
+        adapter_registry = AdapterRegistry()
+        adapter_registry.register(ClaudeCodeAdapter())
+        with warnings.catch_warnings():
+            # Benign overlap: IdentityAdapter publishes the full EventType set
+            # for agent="test"; ClaudeCodeAdapter publishes the P1 floor for
+            # agent="claude_code". Different agent gates prevent any dispatch
+            # collision — see AdapterRegistry.register() docstring.
+            warnings.simplefilter("ignore", RuntimeWarning)
+            adapter_registry.register(IdentityAdapter())
 
         # Assign the typed state contract once; inflight_tasks is initialized
         # as an empty strong-reference set inside AppState.__init__.
@@ -188,7 +210,7 @@ def create_app(
             startup_time=startup_time,
             secondsight_home=home,
             config=cfg,
-            normalizer_registry=norm_registry,
+            adapter_registry=adapter_registry,
         )
 
         logger.info("SecondSight server ready.")

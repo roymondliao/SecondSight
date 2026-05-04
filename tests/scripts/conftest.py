@@ -117,26 +117,30 @@ def fake_server_500() -> Iterator[int]:
 # Real create_app() server fixture (C2 — for true integration tests)
 # ---------------------------------------------------------------------------
 
-# Test stub: a standalone Normalizer that DELEGATES to IdentityNormalizer for
-# the normalize() body and adds an agent="claude-code" gate in supports(). We
-# use composition (not inheritance) so the Normalizer Protocol contract is the
-# only structural surface. Two coupling risks remain and must be checked when
-# either changes:
-#   1. Behavioral coupling — if IdentityNormalizer.normalize() ever does
+# Test stub: a standalone AgentAdapter subclass that DELEGATES to
+# IdentityAdapter for the normalize() body and adds an agent="claude-code"
+# gate in supports(). Composition (not inheritance from IdentityAdapter) keeps
+# the AgentAdapter ABC contract — and only the ABC contract — as the structural
+# surface. Two coupling risks remain and must be checked when either changes:
+#   1. Behavioural coupling — if IdentityAdapter.normalize() ever does
 #      anything other than identity pass-through, UT-1 / UT-1b silently change
-#      meaning. IdentityNormalizer is a documented test/baseline normalizer; a
+#      meaning. IdentityAdapter is a documented test/baseline adapter; a
 #      contract change is a Phase 2+ event.
 #   2. Signature coupling — the delegation call at normalize() below uses the
-#      exact (envelope, event_type) positional shape. If IdentityNormalizer
+#      exact (envelope, event_type) positional shape. If IdentityAdapter
 #      gains, removes, or reorders parameters, this fixture breaks at runtime
-#      (NOT at import). Mitigation: keep the Protocol's signature stable; if it
-#      does evolve, update this fixture in the same change.
-class _ClaudeCodeNormalizer:
-    """Accept agent='claude-code' for all canonical EventType values.
+#      (NOT at import). Mitigation: keep the AgentAdapter signature stable;
+#      if it does evolve, update this fixture in the same change.
+#
+# Note: this stub is replaced by the real ClaudeCodeAdapter in task-4 of
+# phase1-adapters (GUR-124). Keep the supports()/supported_event_types()
+# scope identical to ease the swap.
+class _ClaudeCodeAdapterStub:
+    """Test-only AgentAdapter stub for agent='claude-code' pass-through.
 
-    Test-only stub: same pass-through logic as IdentityNormalizer but
-    scoped to agent='claude-code'.  The real ClaudeCode adapter (P1-9)
-    will replace this with semantic field mapping.
+    Subclasses AgentAdapter at registration time via duck-cast. The real
+    ClaudeCode adapter (P1-10 / GUR-124) will replace this with semantic
+    field mapping.
     """
 
     def supports(self, agent: str, event_type: str) -> bool:
@@ -150,8 +154,33 @@ class _ClaudeCodeNormalizer:
             return False
 
     def normalize(self, envelope: Any, event_type: str) -> Any:
-        from secondsight.api.normalizer import IdentityNormalizer
-        return IdentityNormalizer().normalize(envelope, event_type)
+        from secondsight.adapters import IdentityAdapter
+        return IdentityAdapter().normalize(envelope, event_type)
+
+    def supported_event_types(self) -> set[str]:
+        # DT-6 alignment: every event_type that supports("claude-code", *)
+        # answers True for must appear here, otherwise AdapterRegistry.for_()
+        # rejects this stub via the consistency guard. The full EventType set
+        # is the universal-test floor — task-4 narrows this for the real adapter.
+        from secondsight.event import EventType
+        return {e.value for e in EventType}
+
+    # NotImplementedError defaults for inject_convention / inject_hint:
+    # the stub is duck-cast into the AdapterRegistry below, so register()
+    # does not enforce ABC subclassing. Tests that drive the route to the
+    # injection seams must replace this stub. For now, raising loudly is
+    # the documented escape hatch.
+    def inject_convention(self, convention: Any) -> str:
+        raise NotImplementedError(
+            "_ClaudeCodeAdapterStub does not implement inject_convention; "
+            "use the real ClaudeCodeAdapter (GUR-124) for injection-path tests."
+        )
+
+    def inject_hint(self, hint: Any) -> str:
+        raise NotImplementedError(
+            "_ClaudeCodeAdapterStub does not implement inject_hint; "
+            "Phase 0 reserved (SD §4.2)."
+        )
 
 
 @pytest.fixture()
@@ -164,10 +193,10 @@ def real_secondsight_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
     discovery and port binding during which another process could steal the port.
 
     C2 fix: this tests the actual FastAPI route stack including EventType enum
-    validation, IdentityNormalizer dispatch, SessionTracker.bind(), and
+    validation, IdentityAdapter dispatch, SessionTracker.bind(), and
     pipeline.ingest() — not a fake HTTP handler that accepts any URL.
 
-    The _ClaudeCodeNormalizer (registered here) handles agent="claude-code".
+    The _ClaudeCodeAdapterStub (registered here) handles agent="claude-code".
     Yields a dict with:
       - port: int  (kernel-assigned; read back from the bound socket)
       - home: Path (secondsight_home)
@@ -211,13 +240,29 @@ def real_secondsight_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
         thread.join(timeout=2.0)
         raise RuntimeError("Real secondsight server failed to start within 5s")
 
-    # Inject test normalizer into the registry's _normalizers list.
+    # Inject test adapter into the registry's _adapters list.
     # This is a cross-thread mutation: main thread (this fixture) appends; the
     # uvicorn worker thread reads on every request. Safety holds under CPython
     # only — the GIL makes list.append atomic, so the reader never observes a
     # torn write. A free-threaded Python build (PEP 703) would invalidate this.
-    # See NormalizerRegistry implementation for the read-side path.
-    app.state.server_state.normalizer_registry.register(_ClaudeCodeNormalizer())
+    # See AdapterRegistry implementation for the read-side path.
+    # Cast: AdapterRegistry.register() type-hints AgentAdapter, but the duck-
+    # typed stub satisfies the runtime contract (supports + normalize +
+    # supported_event_types). We bypass mypy here intentionally.
+    #
+    # Suppress the RuntimeWarning emitted by AdapterRegistry.register() on
+    # overlapping supported_event_types(). The IdentityAdapter (registered by
+    # the lifespan) publishes the full EventType set scoped to agent="test";
+    # this stub publishes the full set scoped to agent="claude-code". The
+    # event_type overlap is real but the agent gating prevents any dispatch
+    # collision — the documented benign case the warning's docstring calls
+    # out. Future readers: if you remove the agent gate on either side, the
+    # warning becomes load-bearing again — re-enable it.
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        app.state.server_state.adapter_registry.register(_ClaudeCodeAdapterStub())  # type: ignore[arg-type]
 
     try:
         yield {

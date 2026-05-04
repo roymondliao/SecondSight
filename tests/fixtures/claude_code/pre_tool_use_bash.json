@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "_source": "verified",
+    "_capture_origin": "Field path `tool_input.command` empirically verified against `~/.claude/hooks/rtk-rewrite.sh` (2026-05-04), which parses Claude Code PreToolUse stdin via `jq -r '.tool_input.command'` and writes `hookSpecificOutput.updatedInput` back. Wrapping fields (session_id, transcript_path, cwd, hook_event_name, tool_name) sourced from the documented Claude Code hooks schema; treated as documented-within-verified envelope.",
+    "_claude_code_hook_event_name": "PreToolUse",
+    "_secondsight_event_type": "tool_use_start",
+    "_privacy_canary_field": "tool_input.command"
+  },
+  "payload": {
+    "session_id": "01JBQ8XYZK7P3M5N9R2W4D6E8H",
+    "transcript_path": "/Users/example/.claude/projects/example/transcript.jsonl",
+    "cwd": "/Users/example/work/repo",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "PRIVACY_CANARY_DO_NOT_STORE && echo hi"
+    }
+  },
+  "expected_partial_event_data": {
+    "tool_name": "Bash",
+    "action_metadata": {
+      "command_length": 38,
+      "transcript_path": "/Users/example/.claude/projects/example/transcript.jsonl",
+      "cwd": "/Users/example/work/repo"
+    }
+  },
+  "privacy_canary": "PRIVACY_CANARY_DO_NOT_STORE"
+}

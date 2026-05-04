@@ -1,5 +1,11 @@
 """Death tests and unit tests for POST /hook/{event_type} endpoint (P1-5, Task-3).
 
+IdentityAdapter / AdapterRegistry behavioural unit tests live in
+`tests/adapters/test_identity.py` after the task-3 migration of phase1-adapters.
+This file now focuses on the route-level concerns (HTTP status codes, fire-
+and-forget latency, path-safety validation) that the adapter layer cannot
+exercise on its own.
+
 Death tests (must go RED before production code):
   DT-2: Unknown event_type silently routed — must return 422 (enum closed).
   DT-4: Path traversal in event_type — must return 404 or 422, never 200.
@@ -10,8 +16,6 @@ Death tests (must go RED before production code):
 
 Unit tests:
   - Happy path: valid envelope → 200 {"status": "ok"}; after settle, DB has row.
-  - IdentityNormalizer.supports() correct scope.
-  - NormalizerRegistry.for_() raises NoNormalizerError for unknown pair.
   - GET /health works after hooks router mounted.
   - Missing agent field → 422.
 """
@@ -349,64 +353,11 @@ def test_unit_happy_path_valid_envelope_returns_ok(
     assert len(raw_files) >= 1, f"Expected at least 1 raw trace file, got {raw_files}"
 
 
-# ---------------------------------------------------------------------------
-# Unit: IdentityNormalizer.supports() scope
-# ---------------------------------------------------------------------------
-
-
-def test_unit_identity_normalizer_supports_test_agent_all_event_types() -> None:
-    """Unit: IdentityNormalizer.supports() returns True for agent='test' and
-    all canonical EventType values."""
-    from secondsight.api.normalizer import IdentityNormalizer
-    from secondsight.event import EventType
-
-    normalizer = IdentityNormalizer()
-    for et in EventType:
-        assert normalizer.supports("test", et.value), (
-            f"Expected supports('test', '{et.value}') = True"
-        )
-
-
-def test_unit_identity_normalizer_supports_false_for_unknown_agent() -> None:
-    """Unit: IdentityNormalizer.supports() returns False for unknown agents."""
-    from secondsight.api.normalizer import IdentityNormalizer
-
-    normalizer = IdentityNormalizer()
-    assert not normalizer.supports("unknown-agent", "session_start"), (
-        "IdentityNormalizer should not support unknown agents"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Unit: NormalizerRegistry.for_() raises NoNormalizerError
-# ---------------------------------------------------------------------------
-
-
-def test_unit_normalizer_registry_raises_no_normalizer_error() -> None:
-    """Unit: NormalizerRegistry.for_() raises NoNormalizerError for unknown pairs."""
-    from secondsight.api.normalizer import NoNormalizerError, NormalizerRegistry
-
-    registry = NormalizerRegistry()
-    with pytest.raises(NoNormalizerError) as exc_info:
-        registry.for_("claude-code", "session_start")
-
-    msg = str(exc_info.value)
-    assert "claude-code" in msg, f"Error message must name the agent. Got: {msg}"
-    assert "session_start" in msg, (
-        f"Error message must name the event_type. Got: {msg}"
-    )
-
-
-def test_unit_normalizer_registry_register_and_retrieve() -> None:
-    """Unit: Registered normalizer is retrieved by for_()."""
-    from secondsight.api.normalizer import IdentityNormalizer, NormalizerRegistry
-
-    registry = NormalizerRegistry()
-    normalizer = IdentityNormalizer()
-    registry.register(normalizer)
-
-    result = registry.for_("test", "session_start")
-    assert result is normalizer
+# Behavioural unit tests for IdentityAdapter / AdapterRegistry now live in
+# `tests/adapters/test_identity.py` (post task-3 migration of phase1-adapters).
+# AC-3 parity: every `IdentityNormalizer` test from this file is preserved
+# there with the rename `IdentityNormalizer` → `IdentityAdapter` and the new
+# `supported_event_types()` / DT-6 alignment assertions added.
 
 
 # ---------------------------------------------------------------------------
@@ -491,32 +442,5 @@ def test_unit_is_safe_id_rejects_control_characters() -> None:
     assert _is_safe_id("A"), "Single char must be allowed"
 
 
-# ---------------------------------------------------------------------------
-# Unit: IdentityNormalizer.normalize() produces correct PartialEvent
-# ---------------------------------------------------------------------------
-
-
-def test_unit_identity_normalizer_normalize_produces_partial_event() -> None:
-    """Unit: IdentityNormalizer.normalize() produces a PartialEvent from envelope."""
-    from secondsight.api.normalizer import IdentityNormalizer
-    from secondsight.api.schemas import HookEnvelope
-    from secondsight.event import EventType
-    from secondsight.observation.tracker import PartialEvent
-
-    normalizer = IdentityNormalizer()
-    envelope = HookEnvelope(
-        project_id="proj-x",
-        session_id="sess-x",
-        agent="test",
-        event_id="evt-x-001",
-        timestamp=datetime(2026, 5, 4, 12, 0, 0, tzinfo=timezone.utc),
-        sequence_number=0,
-        payload={"some_key": "some_val"},
-    )
-    partial = normalizer.normalize(envelope, "session_start")
-    assert isinstance(partial, PartialEvent)
-    assert partial.id == "evt-x-001"
-    assert partial.session_id == "sess-x"
-    assert partial.project_id == "proj-x"
-    assert partial.event_type == EventType.SESSION_START
-    assert partial.sequence_number == 0
+# IdentityAdapter.normalize() unit tests live in tests/adapters/test_identity.py
+# (post task-3 migration of phase1-adapters).

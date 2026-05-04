@@ -3,7 +3,7 @@
 The handler performs exactly four steps in order:
   1. Validate the envelope (Pydantic; done by FastAPI before the handler runs).
      Additionally validate event_type against the closed EventType enum.
-  2. Route the payload to the right Normalizer → PartialEvent.
+  2. Route the payload to the right AgentAdapter → PartialEvent.
   3. Hand the partial to SessionTracker.bind → fully-formed Event.
   4. Schedule pipeline.ingest(event) via asyncio.create_task; return {"status": "ok"}.
 
@@ -30,9 +30,9 @@ Silent failure conditions:
   - If asyncio.create_task is called outside a running event loop, it raises
     RuntimeError. This cannot happen inside an async handler, but if a future
     refactor moves the call to a sync context, it silently changes semantics.
-  - If normalizer.normalize raises ValueError (missing required fields), we
+  - If adapter.normalize raises ValueError (missing required fields), we
     return 422. Any other exception from normalize propagates as 500 — acceptable
-    for Phase 1 (only IdentityNormalizer is registered; real adapters must handle
+    for Phase 1 (only IdentityAdapter is registered; real adapters must handle
     their own ValueError paths).
 
 This module assumes:
@@ -48,7 +48,7 @@ from typing import TYPE_CHECKING, cast
 from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 
-from secondsight.api.normalizer import NoNormalizerError
+from secondsight.adapters import NoAdapterError
 from secondsight.api.schemas import HookEnvelope
 from secondsight.event import EventType
 
@@ -151,7 +151,7 @@ async def handle_hook(
     Four-step contract (see module docstring):
       1. Validate event_type against the closed EventType enum → 422 if unknown.
       2. Validate project_id and session_id for path safety → 422 if unsafe.
-      3. Resolve normalizer → PartialEvent → tracker.bind() → Event.
+      3. Resolve adapter → PartialEvent → tracker.bind() → Event.
       4. Schedule pipeline.ingest via create_task; return {"status": "ok"}.
 
     The response is returned BEFORE ingest completes. This is the latency
@@ -186,7 +186,7 @@ async def handle_hook(
         )
 
     # --- Resolve project resources ---
-    # cast() makes the four-field dependency (registry, normalizer_registry,
+    # cast() makes the four-field dependency (registry, adapter_registry,
     # get_or_create_tracker, inflight_tasks) visible to mypy and readers without
     # a runtime circular import (TYPE_CHECKING guard in the import block above).
     state = cast("AppState", request.app.state.server_state)
@@ -195,26 +195,27 @@ async def handle_hook(
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    # --- Step 3a: Resolve normalizer and produce PartialEvent ---
+    # --- Step 3a: Resolve adapter and produce PartialEvent ---
     try:
-        normalizer = state.normalizer_registry.for_(
+        adapter = state.adapter_registry.for_(
             envelope.agent, validated_event_type.value
         )
-    except NoNormalizerError as exc:
+    except NoAdapterError as exc:
         raise HTTPException(
             status_code=422,
             detail=str(exc),
         ) from exc
 
-    # I8: wrap normalize() — the Protocol declares ValueError as the failure mode
-    # for missing required fields. Without this catch, a ValueError propagates
-    # as an unhandled 500. We surface it as 422 so the caller can fix the payload.
+    # I8: wrap normalize() — the AgentAdapter ABC declares ValueError as the
+    # failure mode for missing required fields. Without this catch, a ValueError
+    # propagates as an unhandled 500. We surface it as 422 so the caller can
+    # fix the payload.
     try:
-        partial = normalizer.normalize(envelope, validated_event_type.value)
+        partial = adapter.normalize(envelope, validated_event_type.value)
     except ValueError as exc:
         raise HTTPException(
             status_code=422,
-            detail=f"Normalizer rejected envelope: {exc}",
+            detail=f"Adapter rejected envelope: {exc}",
         ) from exc
 
     # --- Step 3b: SessionTracker.bind → fully-formed Event ---
