@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          python-version-file: ".python-version"
+
+      - name: Cache pre-commit hooks
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Ruff check
+        run: uvx ruff@0.15.5 check .
+
+      - name: Ruff format check
+        run: uvx ruff@0.15.5 format --check .
+
+      - name: Pre-commit
+        run: uvx pre-commit run --all-files --show-diff-on-failure
+
+      - name: Pytest
+        run: uv run pytest
