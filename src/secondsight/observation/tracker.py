@@ -5,26 +5,23 @@ per `session_id`. This is derived state — the durable truth lives in the
 events table — but recomputing those fields per request from SQL would
 dominate the hot-path latency budget.
 
-Design assumptions (co-located with the fast-path code they justify):
-- Single asyncio event loop / single uvicorn worker. asyncio.Lock is NOT
-  cross-process safe. Multi-worker deployments are out of scope for Phase 1.
-- The GIL makes `session_id in self._sessions` dict-lookup atomic for
-  hashable keys (CPython implementation detail). ADDITIONALLY, the GIL acts
-  as a full memory barrier between coroutines: the fast-path read at the
-  `if session_id in self._sessions` check is guaranteed to observe the
-  fully-initialized _SessionState written by the slow path. A free-threaded
-  Python build (PEP 703 / no-GIL) invalidates BOTH the atomicity and the
-  memory-ordering assumption — this code must be redesigned before running
-  under a no-GIL interpreter.
+Concurrency: per-session state is materialised by
+:class:`secondsight._common.lazy_cache.LazyCacheWithLocking` (see that
+module for the single-loop / GIL-atomicity assumptions that make the
+fast-path lookup safe). A SECOND, distinct lock lives on
+:class:`_SessionState` itself — the *mutation* lock — held during ``bind()``
+while reading/writing segment_index and the sub_agent_stack.
+
+Tracker-specific assumptions (NOT covered by the cache utility):
 - warm_start is invoked once per cold session per process lifetime.
   External DB rewrites (backfill) are not reflected in the in-memory cache.
   The cache is intentionally process-local and restart-cleared.
-- Memory grows linearly with unique session_ids. No eviction policy in Phase 1.
-  Both `_sessions` AND `_session_locks` grow unboundedly — both dicts accumulate
-  one entry per unique session_id seen since server start. Neither is evicted
-  until Phase 2 TTL/LRU (see scar report KS-1). `_session_locks` entries are
-  intentionally retained even after reset_session() to prevent split-brain
-  during concurrent reset+bind (see reset_session() docstring and KS-2).
+- Memory grows linearly with unique session_ids. No eviction policy in
+  Phase 1; both the value cache and per-session lock dict (inside
+  ``LazyCacheWithLocking``) grow unboundedly until Phase 2 TTL/LRU (scar
+  KS-1). ``reset_session()`` invalidates the value but intentionally
+  preserves the per-session lock (KS-2 — split-brain guard during
+  concurrent reset+bind).
 
 If these assumptions stop holding, the first thing to rot is:
   concurrent segment_index assignment for the same session (duplicated indices).
@@ -37,6 +34,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
 
+from secondsight._common.lazy_cache import LazyCacheWithLocking
 from secondsight.event import Event, EventType
 
 
@@ -98,9 +96,10 @@ class _SessionState:
     Lock hierarchy (two distinct lock objects per session):
     - `_SessionState.lock` (this field): the **mutation lock**, held during
       bind() while reading/writing segment_index and the sub_agent_stack.
-    - `SessionTracker._session_locks[session_id]`: the **materialisation lock**,
-      held only during the slow-path _get_or_create_state() window to prevent
-      two concurrent coroutines from both calling warm_start for the same session.
+    - The materialisation lock owned by the LazyCacheWithLocking used inside
+      SessionTracker — held only during the slow-path materialisation window
+      to prevent two concurrent coroutines from both calling warm_start for
+      the same session.
     """
 
     segment_index: int
@@ -120,15 +119,17 @@ class _SessionState:
 class SessionTracker:
     """Fast-path tracker for segment_index, sub_agent_id, depth.
 
-    Thread-safety contract: per-session asyncio.Lock for bind() serialisation.
-    The sessions dict itself is guarded by a single asyncio.Lock during the brief
-    "does this session exist?" + "insert new session state" window. After a session
-    is materialised, subsequent bind() calls hold only the per-session lock.
+    Thread-safety contract: materialisation is delegated to
+    :class:`LazyCacheWithLocking`, which provides per-session locking on
+    first init. After materialisation, ``bind()`` serialises mutations on
+    each ``_SessionState``'s own lock.
 
     Warm-start contract: on first bind() for a cold session, warm_start is called
     to recover segment_index from the events table. If warm_start raises, the
     exception propagates — we do NOT silently default to 0. (Silent default would
-    corrupt segment history: see scar report SF-1.)
+    corrupt segment history: see scar report SF-1.) The cache utility does not
+    record failed materialisations, so a transient warm_start error does not
+    poison the slot — the next bind() retries.
     """
 
     def __init__(self, *, warm_start: WarmStart) -> None:
@@ -141,59 +142,36 @@ class SessionTracker:
         """
         self._warm_start = warm_start
 
-        # session_id → _SessionState
-        # Fast-path read: dict.__contains__ is GIL-atomic (CPython).
-        # Both assumptions must hold: (1) single event loop, (2) CPython GIL.
-        self._sessions: dict[str, _SessionState] = {}
+        # Two-level lazy cache: fast-path dict read, slow-path per-session
+        # init lock. Single source of truth for the locking assumptions
+        # (see LazyCacheWithLocking module docstring).
+        self._sessions: LazyCacheWithLocking[str, _SessionState] = LazyCacheWithLocking(
+            materialiser=self._materialise_state,
+        )
 
-        # Per-session asyncio.Locks, keyed by session_id.
-        self._session_locks: dict[str, asyncio.Lock] = {}
-
-        # Single guard protecting _session_locks dict during the brief
-        # "create lock for new session" window.
-        self._locks_guard: asyncio.Lock = asyncio.Lock()
-
-    # NOTE: this two-level locking pattern is duplicated at:
-    #   - api/registry.py:84 (ProjectRegistry.get)
-    #   - api/server.py (AppState.get_or_create_tracker)
-    # Phase 2 / iteration will consolidate into a shared _LazyCacheWithLocking utility.
-    # Until then: changes to the locking logic MUST be applied to ALL THREE sites.
-    async def _get_or_create_state(self, session_id: str) -> _SessionState:
-        """Return existing state, or materialise a new one via warm_start.
+    async def _materialise_state(self, session_id: str) -> _SessionState:
+        """Cold-init materialiser for a previously-unseen session_id.
 
         IMPORTANT: warm_start errors propagate — never silently default to 0.
         This is the most critical failure path (see scar report SF-1).
         """
-        # Fast path: session already known.
-        # Safe without a lock: single event loop + CPython GIL atomicity.
-        if session_id in self._sessions:
-            return self._sessions[session_id]
+        # Call warm_start. If it raises, propagate — do NOT catch and
+        # default to 0. Silently defaulting would corrupt history.
+        resume_index = await self._warm_start(session_id)
 
-        # Slow path: first bind for this session.
-        # Ensure a per-session lock exists before acquiring it.
-        async with self._locks_guard:
-            if session_id not in self._session_locks:
-                self._session_locks[session_id] = asyncio.Lock()
-        session_lock = self._session_locks[session_id]
+        # resume_index is MAX(segment_index) from the DB.
+        # We resume from that value — non-prompt events keep it;
+        # user_prompt increments it.
+        initial_segment = resume_index if resume_index is not None else 0
+        return _SessionState(segment_index=initial_segment)
 
-        async with session_lock:
-            # Double-check inside the lock — another coroutine may have
-            # materialised state while we were waiting.
-            if session_id in self._sessions:
-                return self._sessions[session_id]
+    async def _get_or_create_state(self, session_id: str) -> _SessionState:
+        """Return existing state, or materialise a new one via warm_start.
 
-            # Call warm_start. If it raises, propagate — do NOT catch and
-            # default to 0. Silently defaulting would corrupt history.
-            resume_index = await self._warm_start(session_id)
-
-            # resume_index is MAX(segment_index) from the DB.
-            # We resume from that value — non-prompt events keep it;
-            # user_prompt increments it.
-            initial_segment = resume_index if resume_index is not None else 0
-
-            state = _SessionState(segment_index=initial_segment)
-            self._sessions[session_id] = state
-            return state
+        Thin shim over the lazy cache, retained because tests and other
+        internal callers reference this name.
+        """
+        return await self._sessions.get(session_id)
 
     async def bind(self, partial: PartialEvent) -> Event:
         """Fill in segment_index, sub_agent_id, depth on partial.
@@ -285,15 +263,14 @@ class SessionTracker:
         we just stop caching the session counters to reclaim memory.
 
         Contract: synchronous and non-locking. Any in-flight bind() that already
-        holds the per-session lock will complete normally. The next bind() after
-        reset will cold-start (calling warm_start again).
+        holds the per-session mutation lock will complete normally. The next
+        bind() after reset will cold-start (calling warm_start again).
 
-        The per-session lock object is intentionally NOT removed from
-        _session_locks. A concurrent bind() may hold it; removing and
-        re-creating it would produce two independent locks for the same session,
-        breaking mutual exclusion during the overlap window.
+        Delegates to ``LazyCacheWithLocking.invalidate``, which preserves the
+        per-session materialisation lock to prevent split-brain on concurrent
+        reset+bind (see KS-2).
         """
-        self._sessions.pop(session_id, None)
+        self._sessions.invalidate(session_id)
 
 
 __all__ = [

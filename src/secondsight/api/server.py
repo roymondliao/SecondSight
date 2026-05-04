@@ -17,10 +17,10 @@ Silent failure conditions:
 - The bounded drain timeout (1s) at shutdown is arbitrary. A burst of slow
   ingests right before shutdown will be cancelled. Acceptable for Phase 1:
   raw trace is already on disk (FS-first contract in ObservationPipeline).
-- Per-project SessionTracker cache duplicates the two-level locking pattern
-  from ProjectRegistry and tracker.py. Changes to locking logic must be
-  applied to all three sites until consolidated (Phase 2 / feature-iteration).
-  Cross-reference: see NOTE comments in registry.py:84 and tracker.py:156.
+- The per-project SessionTracker cache uses
+  :class:`secondsight._common.lazy_cache.LazyCacheWithLocking` (the same
+  utility now backing ProjectRegistry and SessionTracker). Locking
+  assumptions live there, not duplicated here.
 """
 
 from __future__ import annotations
@@ -34,8 +34,9 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from loguru import logger
 
+from secondsight._common.lazy_cache import LazyCacheWithLocking
 from secondsight.api.normalizer import IdentityNormalizer, NormalizerRegistry
-from secondsight.api.registry import ProjectRegistry, ProjectResources
+from secondsight.api.registry import ProjectRegistry
 from secondsight.observation.tracker import SessionTracker
 
 _VERSION = "0.1.0"
@@ -65,7 +66,7 @@ class AppState:
     inflight_tasks is a strong-reference set mutated by route handlers.
     Each task adds itself on creation and removes itself via a done_callback
     (discard), so the set never accumulates completed tasks.
-    per_project_trackers is a cache mutated lazily by get_or_create_tracker().
+    The per-project tracker cache is mutated lazily by get_or_create_tracker().
 
     Route handlers access via ``request.app.state.server_state.<field>``.
 
@@ -98,59 +99,39 @@ class AppState:
         # 0 pending tasks even if tasks had been abandoned silently.
         self.inflight_tasks: set[asyncio.Task[None]] = set()
 
-        # Per-project SessionTracker cache.
-        # Keyed by project_id → SessionTracker.
-        # Access pattern mirrors ProjectRegistry: fast-path dict read (GIL-safe),
-        # slow-path creation under per-project lock.
-        # NOTE: this two-level locking pattern is duplicated at:
-        #   - api/registry.py:84 (ProjectRegistry.get)
-        #   - observation/tracker.py:156 (SessionTracker._get_or_create_state)
-        # Phase 2 / iteration will consolidate into a shared _LazyCacheWithLocking utility.
-        # Until then: changes to the locking logic MUST be applied to ALL THREE sites.
-        self._tracker_cache: dict[str, SessionTracker] = {}
-        self._tracker_locks: dict[str, asyncio.Lock] = {}
-        self._tracker_locks_guard: asyncio.Lock = asyncio.Lock()
+        # Per-project SessionTracker cache. Same two-level locking pattern
+        # as ProjectRegistry, materialised through the shared utility — see
+        # :mod:`secondsight._common.lazy_cache` for the locking contract.
+        self._tracker_cache: LazyCacheWithLocking[str, SessionTracker] = (
+            LazyCacheWithLocking(materialiser=self._materialise_tracker)
+        )
 
-    async def get_or_create_tracker(
-        self,
-        project_id: str,
-        resources: ProjectResources,
-    ) -> SessionTracker:
+    async def _materialise_tracker(self, project_id: str) -> SessionTracker:
+        """Build a SessionTracker bound to ``project_id``'s events_repository.
+
+        Resources are resolved through ``self.registry`` so the materialiser
+        depends only on ``project_id`` (matching the cache contract). The
+        registry's own cache makes the inner ``get`` a fast-path dict
+        lookup once the project has been seen.
+        """
+        resources = await self.registry.get(project_id)
+        repo = resources.events_repository
+
+        async def warm_start(session_id: str) -> int | None:
+            return await asyncio.to_thread(
+                repo.get_max_segment_index, session_id
+            )
+
+        return SessionTracker(warm_start=warm_start)
+
+    async def get_or_create_tracker(self, project_id: str) -> SessionTracker:
         """Return cached SessionTracker for project_id, creating on first use.
 
-        The WarmStart closure closes over `resources.events_repository` so
-        each project's tracker warm-starts from that project's DB.
-
-        Thread-safety: same two-level locking as ProjectRegistry.get().
-        Fast path is safe: single event loop + CPython GIL atomicity on
-        dict.__contains__. See registry.py module docstring for assumptions.
+        The WarmStart closure inside the materialiser closes over the
+        project's events_repository so each project's tracker warm-starts
+        from that project's DB.
         """
-        # Fast path
-        if project_id in self._tracker_cache:
-            return self._tracker_cache[project_id]
-
-        # Slow path: first call for this project_id.
-        async with self._tracker_locks_guard:
-            if project_id not in self._tracker_locks:
-                self._tracker_locks[project_id] = asyncio.Lock()
-        project_lock = self._tracker_locks[project_id]
-
-        async with project_lock:
-            # Double-check inside lock
-            if project_id in self._tracker_cache:
-                return self._tracker_cache[project_id]
-
-            repo = resources.events_repository
-
-            async def warm_start(session_id: str) -> int | None:
-                """Async warm_start closure over this project's events_repository."""
-                return await asyncio.to_thread(
-                    repo.get_max_segment_index, session_id
-                )
-
-            tracker = SessionTracker(warm_start=warm_start)
-            self._tracker_cache[project_id] = tracker
-            return tracker
+        return await self._tracker_cache.get(project_id)
 
 
 def create_app(

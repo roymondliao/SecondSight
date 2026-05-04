@@ -218,7 +218,7 @@ async def handle_hook(
         ) from exc
 
     # --- Step 3b: SessionTracker.bind → fully-formed Event ---
-    tracker = await state.get_or_create_tracker(envelope.project_id, resources)
+    tracker = await state.get_or_create_tracker(envelope.project_id)
     try:
         event = await tracker.bind(partial)
     except Exception as exc:
