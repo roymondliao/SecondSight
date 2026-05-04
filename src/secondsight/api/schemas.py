@@ -7,9 +7,9 @@ Design assumptions:
 - All fields have explicit validation constraints (min_length, max_length, ge)
   so Pydantic returns 422 with field-level errors before any production code runs.
 - `timestamp` is adapter-supplied and must be timezone-aware; production adapters
-  always send UTC. If a naive datetime arrives, the normalizer layer is responsible
+  always send UTC. If a naive datetime arrives, the adapter layer is responsible
   for coercing it; the schema accepts both naive and aware datetimes for flexibility.
-- `agent` is the canonical identifier for which normalizer to select. It takes
+- `agent` is the canonical identifier for which adapter to select. It takes
   precedence over any X-SecondSight-Agent header; body wins.
 
 Silent failure conditions:
@@ -30,7 +30,7 @@ class HookEnvelope(BaseModel):
     """Minimum required envelope for any hook payload.
 
     Adapter-specific fields are allowed (extra="allow") and flow into the
-    normalizer's `normalize()` call. Core fields are strictly validated.
+    adapter's `normalize()` call. Core fields are strictly validated.
     """
 
     model_config = ConfigDict(extra="allow")
