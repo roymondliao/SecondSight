@@ -18,6 +18,9 @@ dependencies = [
     "typer>=0.24.2",
 ]
 
+[project.scripts]
+secondsight = "secondsight.__main__:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
