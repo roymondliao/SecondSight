@@ -137,10 +137,9 @@ quality_checklist:
   - criterion: C8 No Redundancy
     checked: true
     note: |
-      `python-version-file: .python-version` removes Python version
-      duplication between pyproject (>=3.14), .python-version (3.14), and
-      the workflow. Concurrency group keys are derived from github
-      context rather than hardcoded.
+      `python-version: "3.14"` keeps workflow Python aligned with pyproject
+      (>=3.14) and .python-version (3.14). Concurrency group keys are
+      derived from github context rather than hardcoded.
 
 deferred_validation: |
   Local pytest passes (347/349 — 2 failures in untracked code). Local ruff
@@ -156,3 +155,17 @@ next_actions:
     additional F841 hits inside changes/ that the exclude doesn't cover).
   - Create child issues for scars 1, 2, 4, and possibly 5 (Phase 1 API
     daemon test flakes) so they don't get lost.
+
+board_decision_log:
+  - at: 2026-05-05T14:22:40Z
+    by: local-board
+    decision: |
+      Deferred CI run verification until after feature implementation is
+      complete.
+    status_effect: |
+      GUR-111 remains blocked on board-triggered verification timing rather
+      than implementation work.
+    unblock_owner: local-board
+    unblock_action: |
+      Trigger or approve a no-op PR CI run when feature implementation reaches
+      the agreed checkpoint.
