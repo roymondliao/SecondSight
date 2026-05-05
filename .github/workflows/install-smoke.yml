@@ -23,7 +23,7 @@ jobs:
         uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
-          python-version-file: ".python-version"
+          python-version: "3.14"
 
       - name: Build wheel
         run: |
