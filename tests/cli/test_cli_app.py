@@ -19,8 +19,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
+from secondsight.api.registry import ProjectRegistry
 from secondsight.cli.app import app
 
 runner = CliRunner()
@@ -54,6 +56,66 @@ def test_death_main_propagates_nonzero_exit_code(tmp_path: Path) -> None:
     assert code == 1, (
         f"main() must return 1 on malformed-settings exit, got {code!r}; "
         f"a regression here would hide failures from `python -m secondsight`."
+    )
+
+
+# ---------------------------------------------------------------------------
+# DT-6 (review N2 / MUST-FIX-NOW): unknown subcommand must produce a clean
+# Click usage error (exit 2, no traceback) — not a Rich traceback with exit 1.
+#
+# Background: standalone_mode=False (DT-5 fix) made Click *return* exit codes
+# for typer.Exit but left click.ClickException uncaught — so `secondsight bogus`
+# propagates UsageError up to Python's default handler. Result: a Rich
+# traceback in the user's terminal and exit 1, which violates the GUR-112
+# install-smoke exit-code contract (usage errors == exit 2 by Click
+# convention). Phase 2 wrappers parsing exit codes would silently misread
+# "user typo" as "task failed".
+# ---------------------------------------------------------------------------
+
+
+def test_death_unknown_subcommand_exits_two_no_traceback(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from secondsight.cli.app import main as cli_main
+
+    code = cli_main(["bogus"])
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+
+    assert code == 2, (
+        f"unknown subcommand must exit 2 (Click usage-error convention), got {code!r}; "
+        f"a regression here breaks GUR-112 install-smoke and Phase 2 wrappers. "
+        f"Output was:\n{combined}"
+    )
+    assert "No such command" in combined, (
+        f"Click's standard usage message must surface to the user, got:\n{combined}"
+    )
+    assert "Traceback" not in combined, (
+        f"unknown subcommand must NOT produce a Rich/Python traceback; "
+        f"a leak here means click.ClickException is uncaught again. Got:\n{combined}"
+    )
+
+
+def test_death_unknown_flag_exits_two_no_traceback(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Sibling check: ``--no-such-flag`` is a UsageError too.
+
+    Catching ClickException at the parent level — not just UsageError —
+    means BadParameter/MissingParameter also exit cleanly.
+    """
+    from secondsight.cli.app import main as cli_main
+
+    code = cli_main(["init", "--no-such-flag"])
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+
+    assert code == 2, (
+        f"unknown flag must exit 2 (Click usage-error convention), got {code!r}; "
+        f"output:\n{combined}"
+    )
+    assert "Traceback" not in combined, (
+        f"unknown flag must not produce a traceback; got:\n{combined}"
     )
 
 
@@ -226,3 +288,75 @@ def test_death_zero_project_sync_still_archives_fallback(tmp_path: Path) -> None
     )
     # Live file moved away.
     assert not fb.exists()
+
+
+# ---------------------------------------------------------------------------
+# DT-7 (review S1 / SHOULD-FIX-NOW): multi-project mixed-failure path is
+# pinned. The S1 fix in cli/sync.py wraps each project's _build_resources()
+# and backfill.run() in try/except so one project's failure does NOT abort
+# the loop. Without this test, a Phase 2 refactor that drops the wrap
+# silently passes test_death_sync_exits_nonzero_on_failure (single-project)
+# AND test_death_zero_project_sync_still_archives_fallback (zero-project),
+# but production would lose every project listed after the first crash.
+# ---------------------------------------------------------------------------
+
+
+def test_death_sync_multi_project_failure_does_not_abort_loop(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Two projects, first one's _build_resources raises mid-loop.
+
+    The honest signal: BOTH projects must appear in the JSON `projects`
+    list — the failed one with `error != null` and `backfill == null`,
+    the healthy one with `error == null` and a populated backfill report.
+    If the per-project try/except in cli/sync.py is reverted, the second
+    project never appears (the exception bubbles out of the for-loop) and
+    this test goes RED at the `project_ids == {alpha, bravo}` assertion.
+    """
+    home = tmp_path / "ss"
+    (home / "projects" / "alpha").mkdir(parents=True)
+    (home / "projects" / "bravo").mkdir(parents=True)
+
+    real_build = ProjectRegistry._build_resources
+
+    def fake_build(self: ProjectRegistry, project_id: str):  # type: ignore[no-untyped-def]
+        if project_id == "alpha":
+            raise RuntimeError("simulated DB death for alpha")
+        return real_build(self, project_id)
+
+    monkeypatch.setattr(ProjectRegistry, "_build_resources", fake_build)
+
+    result = runner.invoke(
+        app,
+        ["sync", "--home", str(home), "--format", "json", "--no-fallback-archive"],
+    )
+
+    assert result.exit_code == 1, (
+        f"any-project failure must surface as exit 1, got {result.exit_code}; "
+        f"output={result.output}"
+    )
+    payload = json.loads(result.output)
+    project_ids = {p["project_id"] for p in payload["projects"]}
+    assert project_ids == {"alpha", "bravo"}, (
+        f"both projects MUST appear in reports — a regression that drops the "
+        f"per-project wrap would lose 'bravo' when 'alpha' crashes. "
+        f"Got project_ids={project_ids!r}, full payload={payload!r}"
+    )
+
+    by_id = {p["project_id"]: p for p in payload["projects"]}
+    alpha = by_id["alpha"]
+    bravo = by_id["bravo"]
+
+    assert alpha["backfill"] is None, f"failed project must report backfill=null, got {alpha!r}"
+    assert alpha["error"] is not None and "RuntimeError" in alpha["error"], (
+        f"failed project's error must surface RuntimeError + message; got {alpha['error']!r}"
+    )
+
+    assert bravo["error"] is None, (
+        f"healthy project must report error=null even when a sibling failed; got {bravo!r}"
+    )
+    assert bravo["backfill"] is not None, (
+        "healthy project must produce a real backfill report (proves the "
+        "loop continued past the alpha failure), got backfill=null"
+    )

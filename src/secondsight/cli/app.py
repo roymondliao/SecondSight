@@ -21,6 +21,7 @@ from __future__ import annotations
 import sys
 from importlib.metadata import PackageNotFoundError, version
 
+import click
 import typer
 
 from secondsight.cli import init as init_cmd
@@ -88,6 +89,17 @@ def main(argv: list[str] | None = None) -> int:
         result = app(args=args, standalone_mode=False)
     except typer.Exit as exc:
         return int(exc.exit_code)
+    except click.ClickException as exc:
+        # standalone_mode=False also stops Click from auto-handling its own
+        # usage errors (UsageError, BadParameter, MissingParameter, …) — they
+        # propagate as ClickException unless we catch them. Without this
+        # branch, `secondsight bogus` reaches Python's default handler and
+        # prints a Rich traceback with exit 1 instead of the standard
+        # "Error: No such command 'bogus'." with exit 2. exc.show() writes
+        # the formatted message to stderr; exc.exit_code carries Click's
+        # convention (UsageError == 2, plain ClickException == 1).
+        exc.show()
+        return exc.exit_code
     except SystemExit as exc:
         return int(exc.code) if isinstance(exc.code, int) else 1
     if isinstance(result, int):
