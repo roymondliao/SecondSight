@@ -74,13 +74,7 @@ def test_death_existing_user_hooks_preserved(tmp_path: Path) -> None:
                             ],
                         }
                     ],
-                    "Stop": [
-                        {
-                            "hooks": [
-                                {"type": "command", "command": "echo stopping"}
-                            ]
-                        }
-                    ],
+                    "Stop": [{"hooks": [{"type": "command", "command": "echo stopping"}]}],
                 }
             },
             indent=2,
@@ -95,14 +89,12 @@ def test_death_existing_user_hooks_preserved(tmp_path: Path) -> None:
     pre = written["hooks"]["PreToolUse"]
     # The user's existing entry is untouched...
     assert any(
-        e.get("hooks", [{}])[0].get("command") == "/usr/bin/my-other-hook.sh"
-        for e in pre
+        e.get("hooks", [{}])[0].get("command") == "/usr/bin/my-other-hook.sh" for e in pre
     ), f"user's existing PreToolUse entry must be preserved, got {pre!r}"
     # ...AND a SecondSight entry was added alongside it.
-    assert any(
-        SECONDSIGHT_MARKER in e.get("hooks", [{}])[0].get("command", "")
-        for e in pre
-    ), "SecondSight entry should be appended to PreToolUse list"
+    assert any(SECONDSIGHT_MARKER in e.get("hooks", [{}])[0].get("command", "") for e in pre), (
+        "SecondSight entry should be appended to PreToolUse list"
+    )
     # The Stop event the user defined is still present, unchanged.
     assert written["hooks"]["Stop"][0]["hooks"][0]["command"] == "echo stopping"
 
@@ -128,9 +120,9 @@ def test_death_apply_is_idempotent(tmp_path: Path) -> None:
     )
     assert plan_first.has_changes is True
     assert plan_second.has_changes is False
-    assert all(
-        action == "skip" for action in plan_second.actions.values()
-    ), f"second apply() should skip every event, got {plan_second.actions!r}"
+    assert all(action == "skip" for action in plan_second.actions.values()), (
+        f"second apply() should skip every event, got {plan_second.actions!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -173,8 +165,7 @@ def test_death_event_entries_wrong_type_raises(tmp_path: Path) -> None:
 def test_death_foreign_secondsight_install_detected(tmp_path: Path) -> None:
     settings_path = _settings(tmp_path)
     foreign = (
-        f"/opt/other-secondsight/hooks/pre-tool-use.sh "
-        f"{SECONDSIGHT_MARKER} event=tool_use_start"
+        f"/opt/other-secondsight/hooks/pre-tool-use.sh {SECONDSIGHT_MARKER} event=tool_use_start"
     )
     settings_path.write_text(
         json.dumps(
@@ -196,8 +187,7 @@ def test_death_foreign_secondsight_install_detected(tmp_path: Path) -> None:
         f"PreToolUse should be flagged as conflict, got {plan.actions!r}"
     )
     assert foreign in plan.foreign_secondsight_paths, (
-        f"foreign install path must surface to caller, got "
-        f"{plan.foreign_secondsight_paths!r}"
+        f"foreign install path must surface to caller, got {plan.foreign_secondsight_paths!r}"
     )
 
 

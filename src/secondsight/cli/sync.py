@@ -104,9 +104,7 @@ def sync(
             # iterating N projects would archive it N times (the 2nd-Nth
             # passes would see an empty file and no-op; harmless but noisy).
             if pid == project_ids[0]:
-                archive_report = archive_fallback_events(
-                    home_path / "fallback_events.jsonl"
-                )
+                archive_report = archive_fallback_events(home_path / "fallback_events.jsonl")
 
         if backfill_report.failures:
             any_failure = True
@@ -116,9 +114,7 @@ def sync(
                 "project_id": pid,
                 "backfill": _backfill_to_dict(backfill_report),
                 "fallback_archive": (
-                    _archive_to_dict(archive_report)
-                    if archive_report is not None
-                    else None
+                    _archive_to_dict(archive_report) if archive_report is not None else None
                 ),
             }
         )
@@ -138,9 +134,7 @@ def _select_project_ids(home: Path, requested: str) -> list[str]:
     projects_dir = home / "projects"
     if not projects_dir.is_dir():
         return []
-    return sorted(
-        child.name for child in projects_dir.iterdir() if child.is_dir()
-    )
+    return sorted(child.name for child in projects_dir.iterdir() if child.is_dir())
 
 
 def _backfill_to_dict(report: BackfillReport) -> dict[str, Any]:
@@ -150,9 +144,7 @@ def _backfill_to_dict(report: BackfillReport) -> dict[str, Any]:
 def _archive_to_dict(report: FallbackArchiveReport) -> dict[str, Any]:
     return {
         "archived": report.archived,
-        "archive_path": (
-            str(report.archive_path) if report.archive_path is not None else None
-        ),
+        "archive_path": (str(report.archive_path) if report.archive_path is not None else None),
         "line_count": report.line_count,
     }
 
@@ -181,9 +173,7 @@ def _render_text(reports: list[dict[str, Any]]) -> None:
     _console.print(table)
     for r in reports:
         if r["backfill"]["failures"]:
-            _console.print(
-                f"[yellow]{r['project_id']}: failures[/yellow]"
-            )
+            _console.print(f"[yellow]{r['project_id']}: failures[/yellow]")
             for f in r["backfill"]["failures"]:
                 _console.print(f"  - {f}")
         if r["fallback_archive"] and r["fallback_archive"]["archived"]:

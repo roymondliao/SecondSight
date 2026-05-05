@@ -165,9 +165,7 @@ def _render_text(summary: dict[str, object]) -> None:
             verb = "would register" if summary["dry_run"] else "registered"
             _console.print(f"  settings {verb}: {', '.join(sorted(adds))}")
         if skips:
-            _console.print(
-                f"  settings already-correct: {', '.join(sorted(skips))}"
-            )
+            _console.print(f"  settings already-correct: {', '.join(sorted(skips))}")
         if confs:
             _console.print(
                 f"  [yellow]settings conflict (different install path):[/yellow] "

@@ -71,9 +71,7 @@ def test_death_install_idempotent_skips_identical(tmp_path: Path) -> None:
     assert sorted(plan_first.copied) == sorted(HOOK_FILES)
 
     # Capture mtimes after first install.
-    mtimes_after_first = {
-        name: (target / name).stat().st_mtime_ns for name in HOOK_FILES
-    }
+    mtimes_after_first = {name: (target / name).stat().st_mtime_ns for name in HOOK_FILES}
     # Sleep a bit so a regression that re-wrote files would change mtime.
     time.sleep(0.05)
 
@@ -83,9 +81,7 @@ def test_death_install_idempotent_skips_identical(tmp_path: Path) -> None:
     )
     assert sorted(plan_second.skipped_identical) == sorted(HOOK_FILES)
 
-    mtimes_after_second = {
-        name: (target / name).stat().st_mtime_ns for name in HOOK_FILES
-    }
+    mtimes_after_second = {name: (target / name).stat().st_mtime_ns for name in HOOK_FILES}
     assert mtimes_after_first == mtimes_after_second, (
         "second install must not touch unchanged files (mtime should match)"
     )
@@ -102,9 +98,7 @@ def test_death_install_marks_scripts_executable(tmp_path: Path) -> None:
     HookInstaller(source_dir=src).install(target)
     for name in HOOK_FILES:
         mode = (target / name).stat().st_mode & 0o777
-        assert mode == 0o755, (
-            f"{name} must be installed with mode 0o755, got {oct(mode)}"
-        )
+        assert mode == 0o755, f"{name} must be installed with mode 0o755, got {oct(mode)}"
 
 
 # ---------------------------------------------------------------------------
@@ -148,8 +142,7 @@ def test_death_atomic_copy_no_partial_on_failure(tmp_path: Path) -> None:
 def test_death_bundled_hook_dir_finds_source_tree() -> None:
     found = bundled_hook_dir()
     assert (found / "_lib.sh").is_file(), (
-        f"bundled_hook_dir() must locate _lib.sh in dev / editable mode; "
-        f"got {found}"
+        f"bundled_hook_dir() must locate _lib.sh in dev / editable mode; got {found}"
     )
 
 

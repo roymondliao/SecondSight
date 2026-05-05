@@ -20,9 +20,7 @@ from secondsight.api.registry import ProjectRegistry
 from secondsight.cli._home import secondsight_home as resolve_secondsight_home
 from secondsight.daemon import daemon_status
 
-app = typer.Typer(
-    name="status", help="Print SecondSight daemon + project status."
-)
+app = typer.Typer(name="status", help="Print SecondSight daemon + project status.")
 _console = Console()
 
 
@@ -138,13 +136,10 @@ def _count_sessions(sessions_dir: Path) -> int:
     return sum(1 for child in sessions_dir.iterdir() if child.is_dir())
 
 
-def _render_text(
-    server: dict[str, Any], projects: list[dict[str, Any]]
-) -> None:
+def _render_text(server: dict[str, Any], projects: list[dict[str, Any]]) -> None:
     if server["running"] and server["cmdline_match"]:
         _console.print(
-            f"[green]server running[/green]  pid={server['pid']}  "
-            f"pid_file={server['pid_file']}"
+            f"[green]server running[/green]  pid={server['pid']}  pid_file={server['pid_file']}"
         )
     elif server["running"]:
         _console.print(
@@ -152,9 +147,7 @@ def _render_text(
             f"pid={server['pid']}  pid_file={server['pid_file']}"
         )
     else:
-        _console.print(
-            f"[red]server not running[/red]  pid_file={server['pid_file']}"
-        )
+        _console.print(f"[red]server not running[/red]  pid_file={server['pid_file']}")
 
     if not projects:
         _console.print("[dim]no projects under <home>/projects/[/dim]")
@@ -178,9 +171,7 @@ def _render_text(
     _console.print(table)
     for p in projects:
         if p.get("error"):
-            _console.print(
-                f"[yellow]{p['project_id']}: error[/yellow] {p['error']}"
-            )
+            _console.print(f"[yellow]{p['project_id']}: error[/yellow] {p['error']}")
 
 
 __all__ = ["app"]

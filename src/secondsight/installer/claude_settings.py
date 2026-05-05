@@ -212,9 +212,7 @@ class ClaudeSettingsPatcher:
         try:
             raw = self._settings_path.read_text(encoding="utf-8")
         except OSError as exc:
-            raise InvalidSettingsError(
-                f"{self._settings_path}: cannot read: {exc}"
-            ) from exc
+            raise InvalidSettingsError(f"{self._settings_path}: cannot read: {exc}") from exc
         if not raw.strip():
             # Empty file is treated as empty object — a common state right
             # after `touch settings.json`. Distinct from missing file.
@@ -222,13 +220,10 @@ class ClaudeSettingsPatcher:
         try:
             obj = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise InvalidSettingsError(
-                f"{self._settings_path}: invalid JSON: {exc}"
-            ) from exc
+            raise InvalidSettingsError(f"{self._settings_path}: invalid JSON: {exc}") from exc
         if not isinstance(obj, dict):
             raise InvalidSettingsError(
-                f"{self._settings_path}: top-level must be a JSON object, "
-                f"got {type(obj).__name__}"
+                f"{self._settings_path}: top-level must be a JSON object, got {type(obj).__name__}"
             )
         return obj, True
 
@@ -279,7 +274,7 @@ class ClaudeSettingsPatcher:
         # portability across machines that share a home dir mount. The
         # invariant we DO enforce is that hook_dir is a valid directory
         # the caller already validated.
-        return f'{script_path} {SECONDSIGHT_MARKER} event={event_type_value}'
+        return f"{script_path} {SECONDSIGHT_MARKER} event={event_type_value}"
 
 
 def find_existing_secondsight_paths(settings_path: Path) -> list[str]:
@@ -291,7 +286,7 @@ def find_existing_secondsight_paths(settings_path: Path) -> list[str]:
     """
     try:
         raw = settings_path.read_text(encoding="utf-8")
-    except (FileNotFoundError, OSError):
+    except FileNotFoundError, OSError:
         return []
     try:
         obj = json.loads(raw)

@@ -138,15 +138,11 @@ class FilesystemBackfill:
             except RawTraceCorruptionError as exc:
                 # Keep the entry; surface to operator. We do NOT drop it
                 # from the log because that would erase the failure record.
-                failures.append(
-                    f"sync_log: cannot replay {entry.event_id}: {exc}"
-                )
+                failures.append(f"sync_log: cannot replay {entry.event_id}: {exc}")
                 leftover.append(self._entry_to_jsonl_obj(entry))
                 continue
             except OSError as exc:
-                failures.append(
-                    f"sync_log: I/O error replaying {entry.event_id}: {exc}"
-                )
+                failures.append(f"sync_log: I/O error replaying {entry.event_id}: {exc}")
                 leftover.append(self._entry_to_jsonl_obj(entry))
                 continue
 
@@ -154,8 +150,7 @@ class FilesystemBackfill:
                 repo.insert(event)
             except Exception as exc:  # noqa: BLE001 — surface to operator
                 failures.append(
-                    f"sync_log: DB insert failed for {entry.event_id}: "
-                    f"{type(exc).__name__}: {exc}"
+                    f"sync_log: DB insert failed for {entry.event_id}: {type(exc).__name__}: {exc}"
                 )
                 leftover.append(self._entry_to_jsonl_obj(entry))
                 continue
@@ -187,9 +182,7 @@ class FilesystemBackfill:
             except FileNotFoundError:
                 pass
             return
-        body = "".join(
-            json.dumps(obj, ensure_ascii=False) + "\n" for obj in lines
-        )
+        body = "".join(json.dumps(obj, ensure_ascii=False) + "\n" for obj in lines)
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(body, encoding="utf-8")
         os.replace(tmp, path)
@@ -234,8 +227,7 @@ class FilesystemBackfill:
                     repo.insert(event)
                 except Exception as exc:  # noqa: BLE001
                     failures.append(
-                        f"filesystem: insert failed {event.id}: "
-                        f"{type(exc).__name__}: {exc}"
+                        f"filesystem: insert failed {event.id}: {type(exc).__name__}: {exc}"
                     )
                     continue
                 inserted += 1
@@ -257,9 +249,7 @@ def archive_fallback_events(fallback_path: Path) -> FallbackArchiveReport:
     Empty/missing files are left alone (no-op, archived=False).
     """
     if not fallback_path.is_file():
-        return FallbackArchiveReport(
-            archived=False, archive_path=None, line_count=0
-        )
+        return FallbackArchiveReport(archived=False, archive_path=None, line_count=0)
 
     # Count lines defensively. We tolerate trailing partial lines (matches
     # SyncLog.iter_pending policy: a process killed mid-write will leave at
@@ -269,9 +259,7 @@ def archive_fallback_events(fallback_path: Path) -> FallbackArchiveReport:
     except OSError:
         line_count = 0
     if line_count == 0:
-        return FallbackArchiveReport(
-            archived=False, archive_path=None, line_count=0
-        )
+        return FallbackArchiveReport(archived=False, archive_path=None, line_count=0)
 
     ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     archive_path = fallback_path.with_name(f"{fallback_path.name}.{ts}.bak")
@@ -281,15 +269,11 @@ def archive_fallback_events(fallback_path: Path) -> FallbackArchiveReport:
     candidate = archive_path
     while candidate.exists():
         counter += 1
-        candidate = fallback_path.with_name(
-            f"{fallback_path.name}.{ts}-{counter}.bak"
-        )
+        candidate = fallback_path.with_name(f"{fallback_path.name}.{ts}-{counter}.bak")
     archive_path = candidate
 
     os.replace(fallback_path, archive_path)
-    return FallbackArchiveReport(
-        archived=True, archive_path=archive_path, line_count=line_count
-    )
+    return FallbackArchiveReport(archived=True, archive_path=archive_path, line_count=line_count)
 
 
 __all__ = [

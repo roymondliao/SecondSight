@@ -30,9 +30,7 @@ def test_top_level_help_lists_all_subcommands() -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     for name in ("init", "serve", "status", "sync", "version"):
-        assert name in result.output, (
-            f"expected {name!r} in top-level help, got:\n{result.output}"
-        )
+        assert name in result.output, f"expected {name!r} in top-level help, got:\n{result.output}"
 
 
 def test_version_subcommand() -> None:
@@ -64,12 +62,8 @@ def test_death_init_dry_run_does_not_touch_disk(tmp_path: Path) -> None:
     assert payload["dry_run"] is True
     # Settings file is the strongest signal — even an empty dir would have
     # let a regression succeed at the filesystem level.
-    assert not (fake_claude / "settings.json").exists(), (
-        "dry-run must NOT create settings.json"
-    )
-    assert not (fake_claude / "hooks").exists(), (
-        "dry-run must NOT create the hooks/ dir"
-    )
+    assert not (fake_claude / "settings.json").exists(), "dry-run must NOT create settings.json"
+    assert not (fake_claude / "hooks").exists(), "dry-run must NOT create the hooks/ dir"
 
 
 def test_init_apply_then_idempotent(tmp_path: Path) -> None:
@@ -88,12 +82,10 @@ def test_init_apply_then_idempotent(tmp_path: Path) -> None:
     )
     assert second.exit_code == 0, second.output
     payload_second = json.loads(second.output)
-    assert payload_second["scripts_copied"] == [], (
-        "second run should be a no-op for scripts"
+    assert payload_second["scripts_copied"] == [], "second run should be a no-op for scripts"
+    assert all(action == "skip" for action in payload_second["settings_actions"].values()), (
+        f"second run should skip every settings action, got {payload_second['settings_actions']!r}"
     )
-    assert all(
-        action == "skip" for action in payload_second["settings_actions"].values()
-    ), f"second run should skip every settings action, got {payload_second['settings_actions']!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -103,9 +95,7 @@ def test_init_apply_then_idempotent(tmp_path: Path) -> None:
 
 def test_status_on_empty_home_returns_clean_json(tmp_path: Path) -> None:
     fake_home = tmp_path / "ss"
-    result = runner.invoke(
-        app, ["status", "--home", str(fake_home), "--format", "json"]
-    )
+    result = runner.invoke(app, ["status", "--home", str(fake_home), "--format", "json"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["server"]["running"] is False
