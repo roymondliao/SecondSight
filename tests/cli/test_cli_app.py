@@ -33,6 +33,30 @@ def test_top_level_help_lists_all_subcommands() -> None:
         assert name in result.output, f"expected {name!r} in top-level help, got:\n{result.output}"
 
 
+# ---------------------------------------------------------------------------
+# DT-5 (review): main() must propagate non-zero exit codes from subcommands
+# back through `python -m secondsight`. Discovered via smoke test of the
+# init pre-check fix: with standalone_mode=False, Click returns the exit
+# code rather than re-raising, so the wrapper must capture the return.
+# Without this, `secondsight init` against a malformed settings.json would
+# print the JSON error AND silently exit 0, hiding the failure from CI.
+# ---------------------------------------------------------------------------
+
+
+def test_death_main_propagates_nonzero_exit_code(tmp_path: Path) -> None:
+    from secondsight.cli.app import main as cli_main
+
+    fake_claude = tmp_path / "claude"
+    fake_claude.mkdir()
+    (fake_claude / "settings.json").write_text("{ broken", encoding="utf-8")
+
+    code = cli_main(["init", "--claude-home", str(fake_claude), "--format", "json"])
+    assert code == 1, (
+        f"main() must return 1 on malformed-settings exit, got {code!r}; "
+        f"a regression here would hide failures from `python -m secondsight`."
+    )
+
+
 def test_version_subcommand() -> None:
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
@@ -145,3 +169,60 @@ def test_death_sync_exits_nonzero_on_failure(tmp_path: Path) -> None:
     assert payload["projects"][0]["backfill"]["failures"], (
         "failures list must surface to JSON consumers"
     )
+
+
+# ---------------------------------------------------------------------------
+# DT-3 (review C1): init pre-check rejects malformed settings.json BEFORE
+# copying any hook scripts to disk.
+# ---------------------------------------------------------------------------
+
+
+def test_death_init_aborts_before_hook_copy_when_settings_malformed(
+    tmp_path: Path,
+) -> None:
+    fake_claude = tmp_path / "claude"
+    fake_claude.mkdir()
+    bad = fake_claude / "settings.json"
+    bad.write_text("{ this is not json", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["init", "--claude-home", str(fake_claude), "--format", "json"],
+    )
+    assert result.exit_code == 1, f"got {result.exit_code}, output={result.output}"
+    payload = json.loads(result.output)
+    assert payload["error"] == "settings_invalid", f"expected pre-check rejection, got {payload!r}"
+    # Critical: hooks/ directory must NOT exist. A regression that copied
+    # hooks before validating settings.json would silently leave a
+    # half-state (hooks on disk, never registered).
+    assert not (fake_claude / "hooks").exists(), (
+        "init must NOT copy hooks when settings.json is malformed"
+    )
+
+
+# ---------------------------------------------------------------------------
+# DT-4 (review C3): zero-project sync still archives a populated fallback
+# file. Without this, a fresh ~/.secondsight with accumulated fallback
+# events would silently never rotate the file.
+# ---------------------------------------------------------------------------
+
+
+def test_death_zero_project_sync_still_archives_fallback(tmp_path: Path) -> None:
+    home = tmp_path / "ss"
+    home.mkdir()
+    fb = home / "fallback_events.jsonl"
+    fb.write_text(
+        json.dumps({"agent": "claude_code", "event_type": "session_start"}) + "\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["sync", "--home", str(home), "--format", "json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["projects"] == []
+    archive = payload["fallback_archive"]
+    assert archive is not None and archive["archived"] is True, (
+        f"zero-project sync must still archive populated fallback file, got {archive!r}"
+    )
+    # Live file moved away.
+    assert not fb.exists()

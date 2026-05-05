@@ -156,7 +156,7 @@ class HookInstaller:
                 copied.append(name)
                 continue
 
-            self._atomic_copy(src_path, dst_path)
+            self._copy_via_tmp(src_path, dst_path)
             copied.append(name)
 
         return HookInstallPlan(
@@ -167,9 +167,18 @@ class HookInstaller:
         )
 
     @staticmethod
-    def _atomic_copy(src: Path, dst: Path) -> None:
-        """Copy `src` to `dst` atomically, marking the result executable."""
-        # Tmp file in the SAME directory so os.replace is single-fs.
+    def _copy_via_tmp(src: Path, dst: Path) -> None:
+        """Copy `src` to `dst`. Atomic ONLY at the os.replace step.
+
+        The fill-tmp-then-rename pattern means readers of `dst` see either
+        the OLD content (rename never happened) or the NEW content (rename
+        succeeded) — never a partial write. The path between mkstemp and
+        os.replace is NOT atomic; a crash there leaves a `.tmp_*` file in
+        the destination directory which the finally-block tries to clean
+        up. The earlier name `_atomic_copy` overstated this guarantee
+        (review-finding I1) — kept the rename-rename safety, dropped the
+        misleading name.
+        """
         tmp_fd, tmp_path = tempfile.mkstemp(
             prefix=f".tmp_{dst.name}_",
             dir=str(dst.parent),

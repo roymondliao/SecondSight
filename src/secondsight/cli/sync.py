@@ -35,7 +35,6 @@ from rich.table import Table
 from secondsight.api.registry import ProjectRegistry
 from secondsight.cli._home import secondsight_home as resolve_secondsight_home
 from secondsight.storage.filesystem_backfill import (
-    BackfillReport,
     FallbackArchiveReport,
     FilesystemBackfill,
     archive_fallback_events,
@@ -88,23 +87,42 @@ def sync(
     for pid in project_ids:
         # _build_resources is synchronous and has the same effect as the
         # async path's lazy materialisation, just without the per-project
-        # asyncio.Lock that we don't need in a CLI context.
-        resources = registry._build_resources(pid)  # noqa: SLF001
+        # asyncio.Lock that we don't need in a CLI context. A failure here
+        # (corrupt DB, missing dir, permission error) for one project must
+        # not silently abort the loop — record a per-project error entry
+        # and continue, matching status.py's parity.
         try:
-            backfill = FilesystemBackfill(resources)
-            backfill_report = backfill.run()
-        finally:
-            resources.db_engine.dispose()
-
-        archive_report: FallbackArchiveReport | None = None
-        if not no_fallback_archive:
-            # Fallback file is shared across projects (single ~/.secondsight
-            # location), so we only archive it ONCE per `secondsight sync`
-            # invocation — the first project's pass owns it. Otherwise
-            # iterating N projects would archive it N times (the 2nd-Nth
-            # passes would see an empty file and no-op; harmless but noisy).
-            if pid == project_ids[0]:
-                archive_report = archive_fallback_events(home_path / "fallback_events.jsonl")
+            resources = registry._build_resources(pid)  # noqa: SLF001
+        except Exception as exc:  # noqa: BLE001 — surface to operator
+            any_failure = True
+            reports.append(
+                {
+                    "project_id": pid,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "backfill": None,
+                }
+            )
+            continue
+        # An unexpected raise inside backfill.run (SQLAlchemy connection
+        # death, permission error during iterdir) would otherwise abort
+        # every remaining project's sync. Surfacing it as a per-project
+        # error keeps the loop honest. GUR-98 review-finding S1.
+        try:
+            try:
+                backfill = FilesystemBackfill(resources)
+                backfill_report = backfill.run()
+            finally:
+                resources.db_engine.dispose()
+        except Exception as exc:  # noqa: BLE001 — surface to operator
+            any_failure = True
+            reports.append(
+                {
+                    "project_id": pid,
+                    "error": f"backfill raised: {type(exc).__name__}: {exc}",
+                    "backfill": None,
+                }
+            )
+            continue
 
         if backfill_report.failures:
             any_failure = True
@@ -112,17 +130,38 @@ def sync(
         reports.append(
             {
                 "project_id": pid,
-                "backfill": _backfill_to_dict(backfill_report),
-                "fallback_archive": (
-                    _archive_to_dict(archive_report) if archive_report is not None else None
-                ),
+                "error": None,
+                "backfill": asdict(backfill_report),
             }
         )
 
+    # Archive fallback_events.jsonl OUTSIDE the project loop. The fallback
+    # file lives at the SecondSight-home level, not per-project — running
+    # it inside the loop both (a) made the archive run zero times when
+    # there were zero projects (silent accumulation; review-finding C3)
+    # and (b) implicitly tied the archive to the first project's success.
+    # A single archive call after the loop is correct regardless of how
+    # many projects we processed (including zero).
+    archive_payload: dict[str, Any] | None = None
+    if not no_fallback_archive:
+        archive_report = archive_fallback_events(home_path / "fallback_events.jsonl")
+        archive_payload = _archive_to_dict(archive_report)
+        if archive_report.error is not None:
+            # An unreadable fallback file is a hard failure: pending work
+            # we cannot rotate. Surface it in the exit code so scripts
+            # notice (review-finding C2).
+            any_failure = True
+
     if output_format == "json":
-        typer.echo(json.dumps({"projects": reports}, indent=2, sort_keys=True))
+        typer.echo(
+            json.dumps(
+                {"projects": reports, "fallback_archive": archive_payload},
+                indent=2,
+                sort_keys=True,
+            )
+        )
     else:
-        _render_text(reports)
+        _render_text(reports, archive_payload)
 
     if any_failure:
         raise typer.Exit(code=1)
@@ -137,51 +176,58 @@ def _select_project_ids(home: Path, requested: str) -> list[str]:
     return sorted(child.name for child in projects_dir.iterdir() if child.is_dir())
 
 
-def _backfill_to_dict(report: BackfillReport) -> dict[str, Any]:
-    return asdict(report)
-
-
 def _archive_to_dict(report: FallbackArchiveReport) -> dict[str, Any]:
     return {
         "archived": report.archived,
         "archive_path": (str(report.archive_path) if report.archive_path is not None else None),
         "line_count": report.line_count,
+        "error": report.error,
     }
 
 
-def _render_text(reports: list[dict[str, Any]]) -> None:
+def _render_text(reports: list[dict[str, Any]], archive_payload: dict[str, Any] | None) -> None:
     if not reports:
         _console.print("[yellow]No projects found under <home>/projects/[/yellow]")
-        return
-    table = Table(title="secondsight sync")
-    table.add_column("project_id")
-    table.add_column("sync_log replayed", justify="right")
-    table.add_column("sync_log remaining", justify="right")
-    table.add_column("fs inserted", justify="right")
-    table.add_column("fs already-present", justify="right")
-    table.add_column("failures", justify="right")
-    for r in reports:
-        b = r["backfill"]
-        table.add_row(
-            r["project_id"],
-            str(b["sync_log_replayed"]),
-            str(b["sync_log_remaining"]),
-            str(b["filesystem_inserted"]),
-            str(b["filesystem_already_present"]),
-            str(len(b["failures"])),
-        )
-    _console.print(table)
-    for r in reports:
-        if r["backfill"]["failures"]:
-            _console.print(f"[yellow]{r['project_id']}: failures[/yellow]")
-            for f in r["backfill"]["failures"]:
-                _console.print(f"  - {f}")
-        if r["fallback_archive"] and r["fallback_archive"]["archived"]:
-            _console.print(
-                f"  fallback file archived "
-                f"({r['fallback_archive']['line_count']} line(s)) -> "
-                f"{r['fallback_archive']['archive_path']}"
+    else:
+        table = Table(title="secondsight sync")
+        table.add_column("project_id")
+        table.add_column("sync_log replayed", justify="right")
+        table.add_column("sync_log remaining", justify="right")
+        table.add_column("fs inserted", justify="right")
+        table.add_column("fs already-present", justify="right")
+        table.add_column("failures", justify="right")
+        for r in reports:
+            if r.get("error") or r.get("backfill") is None:
+                table.add_row(r["project_id"], "?", "?", "?", "?", "ERR")
+                continue
+            b = r["backfill"]
+            table.add_row(
+                r["project_id"],
+                str(b["sync_log_replayed"]),
+                str(b["sync_log_remaining"]),
+                str(b["filesystem_inserted"]),
+                str(b["filesystem_already_present"]),
+                str(len(b["failures"])),
             )
+        _console.print(table)
+        for r in reports:
+            if r.get("error"):
+                _console.print(f"[red]{r['project_id']}: {r['error']}[/red]")
+            elif r["backfill"]["failures"]:
+                _console.print(f"[yellow]{r['project_id']}: failures[/yellow]")
+                for f in r["backfill"]["failures"]:
+                    _console.print(f"  - {f}")
+
+    if archive_payload is None:
+        return
+    if archive_payload.get("error"):
+        _console.print(f"[red]fallback file unreadable:[/red] {archive_payload['error']}")
+    elif archive_payload.get("archived"):
+        _console.print(
+            f"fallback file archived "
+            f"({archive_payload['line_count']} line(s)) -> "
+            f"{archive_payload['archive_path']}"
+        )
 
 
 __all__ = ["app"]

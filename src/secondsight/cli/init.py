@@ -1,14 +1,25 @@
 """`secondsight init` — install hook scripts + register them with Claude Code.
 
-Two-stage operation:
+Three-stage operation (the pre-check exists *because* stages 1 and 2 are
+not jointly transactional — see review-response in changes/...):
 
+    0. Pre-check: parse <claude-home>/settings.json. Aborts on malformed
+       JSON or wrong-typed `hooks` section BEFORE any hook script is
+       copied to disk.
     1. Copy bundled hook scripts into ``<claude-home>/hooks/`` (default
        ``~/.claude/hooks/``).
-    2. Patch ``<claude-home>/settings.json`` to register each script under the
-       matching Claude Code hook event (PreToolUse, PostToolUse,
+    2. Patch ``<claude-home>/settings.json`` to register each script under
+       the matching Claude Code hook event (PreToolUse, PostToolUse,
        UserPromptSubmit, SessionStart, SessionEnd).
 
-Both stages are idempotent (re-running yields the same on-disk state) and
+The pre-check closes a silent-failure mode where settings.json validation
+would otherwise happen *after* hook scripts had already landed on disk
+without registration. A race-window between pre-check and apply still
+exists (another writer could corrupt settings.json in between); when that
+happens we exit with the explicit ``settings_invalid_after_hook_copy``
+error code so the operator knows to re-run init after fixing settings.json.
+
+All stages are idempotent (re-running yields the same on-disk state) and
 non-destructive (existing user hooks are preserved).
 
 CLI surface (per SD §9.1 — supports both human + agent personas):
@@ -28,7 +39,6 @@ Exit codes:
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
 from pathlib import Path
 
 import typer
@@ -86,6 +96,21 @@ def init(
     )
     patcher = ClaudeSettingsPatcher(settings_path=settings_path)
 
+    # ----- Stage 0: validate settings.json BEFORE touching hooks -----
+    # The two stages (hook copy + settings patch) are not jointly transactional.
+    # If we wrote hooks first and then discovered settings.json is malformed,
+    # hooks would land on disk but never be registered — exactly the silent
+    # failure mode this command must prevent. Calling plan() up-front raises
+    # InvalidSettingsError on malformed JSON or wrong-typed sections WITHOUT
+    # writing anything, so a failure here aborts before stage 1 ever runs.
+    # In the non-dry-run path we still call apply() below; plan() is cheap
+    # (single read + classify) and re-running it is harmless.
+    try:
+        precheck_plan = patcher.plan(hook_dir)
+    except InvalidSettingsError as exc:
+        _emit_error(output_format, "settings_invalid", str(exc))
+        raise typer.Exit(code=1) from exc
+
     # ----- Stage 1: copy hook scripts -----
     try:
         install_plan = installer.install(hook_dir, dry_run=dry_run)
@@ -93,15 +118,24 @@ def init(
         _emit_error(output_format, "hook_bundle_missing", str(exc))
         raise typer.Exit(code=2) from exc
 
-    # ----- Stage 2: plan/apply settings.json patch -----
-    try:
-        if dry_run:
-            patch_plan = patcher.plan(hook_dir)
-        else:
+    # ----- Stage 2: apply (or report) settings.json patch -----
+    if dry_run:
+        patch_plan = precheck_plan
+    else:
+        try:
             patch_plan = patcher.apply(hook_dir)
-    except InvalidSettingsError as exc:
-        _emit_error(output_format, "settings_invalid", str(exc))
-        raise typer.Exit(code=1) from exc
+        except InvalidSettingsError as exc:
+            # settings.json was parseable at pre-check time but became invalid
+            # between pre-check and apply (race with another writer). Hooks
+            # are now on disk; surface the half-state honestly so the operator
+            # can re-run after fixing settings.json.
+            _emit_error(
+                output_format,
+                "settings_invalid_after_hook_copy",
+                f"hooks copied but settings.json patch failed: {exc}. "
+                f"Re-run `secondsight init` after fixing {settings_path}.",
+            )
+            raise typer.Exit(code=1) from exc
 
     summary = {
         "dry_run": dry_run,
@@ -173,5 +207,4 @@ def _render_text(summary: dict[str, object]) -> None:
             )
 
 
-# Re-export utilities for tests.
-__all__ = ["app", "asdict"]
+__all__ = ["app"]

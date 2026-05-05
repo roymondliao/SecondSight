@@ -286,7 +286,7 @@ def find_existing_secondsight_paths(settings_path: Path) -> list[str]:
     """
     try:
         raw = settings_path.read_text(encoding="utf-8")
-    except FileNotFoundError, OSError:
+    except (FileNotFoundError, OSError):
         return []
     try:
         obj = json.loads(raw)

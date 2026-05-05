@@ -81,11 +81,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        app(args=args, standalone_mode=False)
+        # standalone_mode=False makes Click *return* the exit code (typer.Exit
+        # is caught and unwrapped) rather than re-raise. The previous version
+        # ignored the return value and always exited 0 — review-finding
+        # discovered via smoke test of the init-pre-check fix. Capture it.
+        result = app(args=args, standalone_mode=False)
     except typer.Exit as exc:
         return int(exc.exit_code)
     except SystemExit as exc:
         return int(exc.code) if isinstance(exc.code, int) else 1
+    if isinstance(result, int):
+        return result
     return 0
 
 

@@ -18,7 +18,6 @@ Death tests:
 from __future__ import annotations
 
 import os
-import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -63,6 +62,14 @@ def test_death_missing_bundle_raises(tmp_path: Path) -> None:
 
 
 def test_death_install_idempotent_skips_identical(tmp_path: Path) -> None:
+    """Behavioural assertion only: second install reports zero copied.
+
+    The earlier version checked mtime equality with a 50ms sleep, which
+    was both flaky on coarse-mtime filesystems (HFS+ = 1s) and coupled
+    to an implementation detail. The behavioural contract is "second
+    install does no work" — that's what HookInstallPlan.copied vs
+    skipped_identical exposes (review-finding B1).
+    """
     src = _make_bundle(tmp_path)
     target = tmp_path / "claude" / "hooks"
 
@@ -70,21 +77,11 @@ def test_death_install_idempotent_skips_identical(tmp_path: Path) -> None:
     plan_first = installer.install(target)
     assert sorted(plan_first.copied) == sorted(HOOK_FILES)
 
-    # Capture mtimes after first install.
-    mtimes_after_first = {name: (target / name).stat().st_mtime_ns for name in HOOK_FILES}
-    # Sleep a bit so a regression that re-wrote files would change mtime.
-    time.sleep(0.05)
-
     plan_second = installer.install(target)
     assert plan_second.copied == [], (
         f"second install must skip everything, got copied={plan_second.copied!r}"
     )
     assert sorted(plan_second.skipped_identical) == sorted(HOOK_FILES)
-
-    mtimes_after_second = {name: (target / name).stat().st_mtime_ns for name in HOOK_FILES}
-    assert mtimes_after_first == mtimes_after_second, (
-        "second install must not touch unchanged files (mtime should match)"
-    )
 
 
 # ---------------------------------------------------------------------------

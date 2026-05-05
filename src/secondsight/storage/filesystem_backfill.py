@@ -85,6 +85,14 @@ class FallbackArchiveReport:
     line_count: int
     """Number of lines that were in the file when we archived it."""
 
+    error: str | None = None
+    """Why the archive did NOT happen, when archived=False but the file
+    existed. ``None`` when the file was missing/empty (legitimate no-op)
+    OR when ``archived=True``. Distinguishing "no work to do" from
+    "couldn't read the file" is a Phase 1 silent-failure-mode closure
+    (review of GUR-98 found that swallowed OSError during line-count
+    silently masked unreadable fallback files)."""
+
 
 class FilesystemBackfill:
     """Orchestrates Path A and Path B for one project."""
@@ -184,8 +192,17 @@ class FilesystemBackfill:
             return
         body = "".join(json.dumps(obj, ensure_ascii=False) + "\n" for obj in lines)
         tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(body, encoding="utf-8")
-        os.replace(tmp, path)
+        try:
+            tmp.write_text(body, encoding="utf-8")
+            os.replace(tmp, path)
+        except BaseException:
+            # Match _atomic_write/_atomic_copy cleanup contract: never leave
+            # a sync_log.jsonl.tmp orphan on disk if os.replace fails.
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+            raise
 
     # ------------------------------------------------------------------
     # Path B — filesystem walk
@@ -253,11 +270,20 @@ def archive_fallback_events(fallback_path: Path) -> FallbackArchiveReport:
 
     # Count lines defensively. We tolerate trailing partial lines (matches
     # SyncLog.iter_pending policy: a process killed mid-write will leave at
-    # most one truncated line, which we count once).
+    # most one truncated line, which we count once). An OSError here means
+    # the file exists but cannot be read (permission denied, NFS stale
+    # handle, mid-rotation race) — surfacing it as a structured `error`
+    # field so the operator does NOT see a silent archived=False on a
+    # readable-but-broken file. GUR-98 review-finding C2.
     try:
         line_count = sum(1 for _ in fallback_path.open("r", encoding="utf-8"))
-    except OSError:
-        line_count = 0
+    except OSError as exc:
+        return FallbackArchiveReport(
+            archived=False,
+            archive_path=None,
+            line_count=0,
+            error=f"cannot read {fallback_path}: {type(exc).__name__}: {exc}",
+        )
     if line_count == 0:
         return FallbackArchiveReport(archived=False, archive_path=None, line_count=0)
 

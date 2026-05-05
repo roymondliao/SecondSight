@@ -23,7 +23,6 @@ production path now passes them so future refactors stay honest):
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -201,8 +200,6 @@ def test_death_atomic_write_no_partial_file_on_crash(tmp_path: Path) -> None:
     settings_path.write_text("{}", encoding="utf-8")
     patcher = ClaudeSettingsPatcher(settings_path)
 
-    real_replace = os.replace
-
     def fail_once(src: str, dst: str) -> None:
         raise OSError("simulated rename failure")
 
@@ -217,9 +214,6 @@ def test_death_atomic_write_no_partial_file_on_crash(tmp_path: Path) -> None:
     # No tmp file leaked.
     leftovers = list(settings_path.parent.glob(".tmp_settings_*.json"))
     assert leftovers == [], f"tmp files leaked after failed apply: {leftovers!r}"
-
-    # Sanity: real os.replace would have worked.
-    assert real_replace is os.replace
 
 
 # ---------------------------------------------------------------------------

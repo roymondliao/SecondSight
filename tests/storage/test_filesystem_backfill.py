@@ -63,13 +63,13 @@ def project_resources(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# DT-1: corrupt raw_trace path -> failure surfaced, entry NOT dropped
+# DT-1: missing AND corrupt raw_trace -> failure surfaced, entry NOT dropped
 # ---------------------------------------------------------------------------
 
 
-def test_death_corrupt_raw_trace_keeps_sync_log_entry(project_resources) -> None:
+def test_death_missing_raw_trace_keeps_sync_log_entry(project_resources) -> None:
+    """Missing file -> exercises the OSError branch of _replay_sync_log."""
     sync_log = project_resources.sync_log
-    # Record a failure that points at a file that doesn't exist.
     bogus_path = Path("/tmp/secondsight-test-does-not-exist.json")
     sync_log.record_failure(
         event_id="evt-x",
@@ -82,14 +82,71 @@ def test_death_corrupt_raw_trace_keeps_sync_log_entry(project_resources) -> None
 
     assert report.sync_log_replayed == 0
     assert report.sync_log_remaining == 1, (
-        "corrupt entries must remain in sync_log so operator sees them"
+        "missing-file entries must remain in sync_log so operator sees them"
     )
     assert any("evt-x" in f for f in report.failures), (
         f"failure must surface evt-x, got {report.failures!r}"
     )
-    # And the on-disk log still has one line.
     assert sync_log.path.is_file()
     assert sum(1 for _ in sync_log.path.open()) == 1
+
+
+def test_death_corrupt_json_raw_trace_keeps_sync_log_entry(
+    project_resources, tmp_path: Path
+) -> None:
+    """File present but not valid JSON -> exercises the
+    RawTraceCorruptionError branch of _replay_sync_log.
+
+    Without this test, removing the `except RawTraceCorruptionError` arm
+    in production would leave the OSError fallback alone and pass the
+    earlier missing-file death test, hiding the regression. Cited as
+    coverage gap #1 in GUR-98 review.
+    """
+    sync_log = project_resources.sync_log
+    corrupt_path = tmp_path / "corrupt-trace.json"
+    corrupt_path.write_text("{ this is not valid JSON", encoding="utf-8")
+    sync_log.record_failure(
+        event_id="evt-corrupt",
+        raw_trace_path=corrupt_path,
+        error=RuntimeError("orig"),
+    )
+
+    report = FilesystemBackfill(project_resources).run()
+
+    assert report.sync_log_replayed == 0
+    assert report.sync_log_remaining == 1
+    assert any("evt-corrupt" in f for f in report.failures), (
+        f"corrupt-JSON failure must surface evt-corrupt, got {report.failures!r}"
+    )
+    # The corrupt file is still on disk — we never auto-deleted it.
+    assert corrupt_path.is_file()
+
+
+def test_death_corrupt_json_in_filesystem_walk_does_not_abort(
+    project_resources,
+) -> None:
+    """A corrupt event JSON inside sessions/.../events/ must not abort the
+    walk — it should be recorded in failures and iteration continues to
+    surface the rest of that session's events. Coverage gap #1 (walk-side).
+    """
+    repo = project_resources.events_repository
+    store = project_resources.raw_trace_store
+
+    good = _make_event(event_id="walk-good")
+    good_path = store.event_path(good)
+    good_path.parent.mkdir(parents=True, exist_ok=True)
+    good_path.write_text(good.model_dump_json(), encoding="utf-8")
+
+    # Drop a corrupt sibling next to the valid event.
+    corrupt = good_path.parent / "20260505T120001000Z_user_prompt_seq000099.json"
+    corrupt.write_text("not json", encoding="utf-8")
+
+    report = FilesystemBackfill(project_resources).run()
+    assert report.filesystem_inserted == 1, "valid event must still be inserted"
+    assert repo.exists(good.id)
+    assert any(str(corrupt) in f for f in report.failures), (
+        f"corrupt sibling must surface in failures, got {report.failures!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +252,38 @@ def test_archive_no_op_when_file_empty(tmp_path: Path) -> None:
     fb.write_text("", encoding="utf-8")
     report = archive_fallback_events(fb)
     assert report.archived is False
+    assert report.error is None
     assert fb.exists(), "empty file must NOT be moved (no work to archive)"
+
+
+def test_death_archive_surfaces_oserror_on_unreadable_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OSError while counting lines must NOT silently degrade to
+    archived=False with no signal — the operator needs to know the
+    fallback file exists but couldn't be archived. GUR-98 review C2.
+    """
+    fb = tmp_path / "fallback_events.jsonl"
+    fb.write_text("one line\n", encoding="utf-8")
+
+    real_open = Path.open
+
+    def open_failing(self, *args, **kwargs):
+        if self == fb:
+            raise PermissionError("simulated permission denied")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_failing)
+
+    report = archive_fallback_events(fb)
+    assert report.archived is False
+    assert report.error is not None, (
+        "unreadable fallback file must surface a structured error, "
+        "not silently return archived=False"
+    )
+    assert "PermissionError" in report.error
+    # Live file still on disk — we did not move it.
+    assert fb.exists()
 
 
 # ---------------------------------------------------------------------------
