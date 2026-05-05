@@ -1,0 +1,70 @@
+feature: gur-99-phase1-e2e-integration-test
+status: pending
+parent_issue: GUR-99
+plan_ref_doc: changes/2026-05-05_gur-99_phase1-e2e-integration-test/2-plan.md
+design_ref_doc: docs/system_design.md §3.9
+gap_resolutions: changes/2026-05-05_gur-99_phase1-e2e-integration-test/2-pre-thinking.md
+  # Board-confirmed at 2026-05-05T06:26:21Z:
+  #   G1=G1-α  (MH-3 tests archive-only; Path C carry-forward)
+  #   G2/G3   (MH-2 corrections: USER_PROMPT increment + SUB_AGENT_START/END events)
+  #   G4=G4-β (stderr histogram, no on-disk artifact)
+  #   G5=G5-β (tests/integration/ + imported fixtures)
+
+# Step 0 commitments (samsara — recorded for audit):
+#   1. Most-wanted shortcut REJECTED:
+#        "use TestClient.post() and avoid subprocess complexity"
+#      because that bypasses bash, curl, and the localhost socket — exactly
+#      the seams GUR-99 exists to test.
+#   2. This implementation MUST NOT run when bash, curl, or jq are absent
+#      from PATH. _prereqs.py raises pytest.skip with the named missing tool.
+#      Silent green-pass on missing prereqs is forbidden.
+#   3. Silent failure surface this PR closes:
+#        - Hook URL drift -> MH-1 asserts no fallback line on success
+#        - segment_index increment regression -> MH-2 asserts transitions on USER_PROMPT
+#        - sub_agent stack mismatch silently advances depth -> MH-2 death case
+#        - sync archive happens before durability -> MH-3 idempotency check
+#        - serve --daemon PID-file lies about port-bound state -> MH-5 death case
+
+tasks:
+  - id: task-1
+    title: "Test scaffold: tests/integration/ package + _prereqs.py + named-skip"
+    plan_ref: "MH-1..MH-5 prerequisite"
+    sd_ref: ["3.9"]
+    status: pending
+    depends_on: []
+
+  - id: task-2
+    title: "MH-1 + MH-2 — single-event happy path + multi-event session sequence with sub-agent nesting"
+    plan_ref: "MH-1, MH-2"
+    sd_ref: ["3.9"]
+    status: pending
+    depends_on: [task-1]
+
+  - id: task-3
+    title: "MH-3 — Server-down fallback + sync archive (G1-α) + idempotency"
+    plan_ref: "MH-3"
+    sd_ref: ["3.9.2"]
+    status: pending
+    depends_on: [task-1]
+
+  - id: task-4
+    title: "MH-4 — Hook latency wall-clock measurement + p95 ≤ 50ms gate"
+    plan_ref: "MH-4"
+    sd_ref: ["3.9.1"]
+    status: pending
+    depends_on: [task-1]
+
+  - id: task-5
+    title: "MH-5 — CLI lifecycle composition (init -> serve --daemon -> hook -> stop -> status)"
+    plan_ref: "MH-5"
+    sd_ref: ["9.1", "9.2"]
+    status: pending
+    depends_on: [task-1]
+
+exit_criteria:
+  - "All 5 must-haves green on developer macbook in `pytest tests/integration/test_phase1_e2e.py -v`"
+  - "30 consecutive local runs ≥ 29 green (≤ 1 flake permitted) before merge"
+  - "Deliberately breaking a seam (URL typo, segment_index increment removal) turns at least one MH red with a failure message that names the broken seam"
+  - "No production code changes (test-only PR)"
+  - "tests/integration/test_phase1_e2e.py ≤ 600 lines (alarm if exceeded — likely indicates over-testing)"
+  - "Existing test suite (post-GUR-98 baseline) continues to pass"
