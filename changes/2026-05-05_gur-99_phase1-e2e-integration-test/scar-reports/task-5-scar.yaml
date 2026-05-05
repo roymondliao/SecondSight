@@ -1,0 +1,181 @@
+task_id: task-5
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      MH-5 binds the hardcoded ServerConfig port (8420). ServerConfig
+      has no env-var override in Phase 1, so concurrent test runs on
+      the same machine collide. Mitigated by a `_port_is_free` skip
+      guard at test start: if 8420 is busy, the test skips with a
+      named reason ("Stop the other secondsight before re-running").
+      A future ServerConfig that reads SECONDSIGHT_PORT would let MH-5
+      bind a kernel-assigned port and remove this collision class.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The init step asserts only that `settings.json` contains a
+      "hooks" key, not that the patch shape is byte-exact. The exact
+      patch shape is owned by installer.claude_settings (already
+      unit-tested at tests/installer/test_claude_settings.py); MH-5
+      avoids re-asserting it to prevent two sources of truth.
+      A patch-shape regression that stays valid JSON with a "hooks"
+      key would not be caught here.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      `serve --daemon` blocks until the parent process exits — but
+      the daemonized child may still be initializing uvicorn when the
+      parent returns. Tests poll for both PID file presence AND
+      port-bound state to handle this race. If a future change to
+      daemonize() splits these signals (PID file written before
+      uvicorn binds), the poll catches it; if a future change merges
+      them (uvicorn binds before daemonize forks), the test still
+      passes. Documented to make the dual-condition reasoning visible.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      The finalizer attempts `serve --stop` even on test failure.
+      If `serve --stop` itself fails (e.g. because the child process
+      ignored SIGTERM and SIGKILL also failed — extremely rare), the
+      daemon could leak across test runs. The finalizer's defense in
+      depth: if `daemon_proc.poll()` shows the parent still alive,
+      Popen.terminate then Popen.kill. There is no tertiary cleanup
+      after Popen.kill. Documented; orphan daemon detection is a
+      Phase 2 concern.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Status assertion checks `proj-mh5 in project_ids` but does not
+      verify event_count. The exact field name for event counts varies
+      by implementation; asserting on it would lock the shape. Trade-off:
+      regression where status drops the event_count entirely would
+      silently pass MH-5. Considered acceptable because per-project
+      event counts are unit-tested in tests/cli/test_serve_daemon.py.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Port unbind check uses `_port_is_free()` which attempts to bind.
+      On macOS, TIME_WAIT can keep a freshly-closed port unbindable
+      for 30-60 seconds. The 5s poll timeout is generous but could
+      flake on a machine under load. If observed, switch to a different
+      check (e.g. parse netstat output) or drop the port-unbind
+      assertion in favor of the PID-liveness check (which is the
+      ground truth).
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The hook fire in step 4 uses `agent="claude_code"` (snake case,
+      production). If a future ClaudeCodeAdapter.AGENT_NAME refactor
+      flips to kebab-case, MH-5 fails loudly — but a refactor that
+      changes the constant in BOTH the adapter and a future test
+      shared constant might silently propagate. The fix would be a
+      single-source-of-truth import: `from secondsight.adapters.claude_code import _AGENT_NAME`.
+      Deferred because _AGENT_NAME is a private symbol.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      The `secondsight` console script is on PATH when MH-5 runs.
+    verified: true
+    note: >
+      Confirmed by adding a shutil.which("secondsight") pre-check
+      that skips MH-5 with a named reason if the binary is absent.
+      Task-1's scar item ("MH-5 needs subprocess.Popen of the
+      secondsight binary; that's a different class of prereq than
+      bash/curl/jq") is now resolved by this skip.
+
+  - assumption: >
+      `subprocess.Popen([secondsight, serve, --daemon, ...])` exits
+      after spawning the daemon child (i.e., it does not block the
+      caller while the daemon runs).
+    verified: true
+    note: >
+      Manually verified: `secondsight serve --daemon --home <tmp>` on
+      command line returns to shell within ~1s. Test uses
+      `daemon_proc.wait(timeout=5.0)` to confirm.
+
+  - assumption: >
+      Real ClaudeCodeAdapter accepts agent='claude_code' (snake_case).
+    verified: true
+    note: >
+      Verified by reading src/secondsight/adapters/claude_code.py:54
+      (`_AGENT_NAME = "claude_code"`) and confirmed by MH-5 going
+      green with that string. The test stub used by MH-1/MH-2
+      uses 'claude-code' (kebab-case) — a deliberate stub-vs-
+      production drift that MH-5 caught during implementation.
+
+  - assumption: >
+      Real ClaudeCodeAdapter requires payload.hook_event_name to match
+      the dispatched event_type's expected hook.
+    verified: true
+    note: >
+      Verified by reading
+      src/secondsight/adapters/claude_code.py:301-311 and confirmed
+      by MH-5: without `hook_event_name: "PreToolUse"` in the payload,
+      the server returns 422 with "payload missing required field
+      'hook_event_name'". The test stub does NOT enforce this — same
+      stub-vs-production drift as #1 above.
+
+  - assumption: >
+      Port 8420 is free at test start on the developer machine.
+    verified: true
+    note: >
+      Pre-check via _port_is_free() skips with named reason if busy.
+      Self-test: ran on a clean machine, port was free.
+
+debt_registered: true
+debt_location: >
+  tests/integration/test_phase1_e2e.py — MH-5 has the highest
+  filesystem + subprocess + port footprint of any test in this
+  repo. Maintenance burden is concentrated here. Future
+  refactors of the daemon lifecycle, settings.json patcher, or
+  ClaudeCodeAdapter agent-name should cross-reference this test
+  and update in lockstep.
+
+review_methodology:
+  mode: inline_self_review
+  reason: >
+    Same as task-3 and task-4 — subagent-based review unavailable
+    due to upstream usage limit (4+ heartbeats failed earlier
+    with "claude_transient_upstream"). Main agent applied yin +
+    quality lenses inline.
+
+resolved_items:
+  - original_section: "implementation-issue-1"
+    original_description: >
+      First test run failed with 422 because synthetic envelope was
+      missing `payload.hook_event_name`. The test stub used by
+      MH-1/MH-2 (IdentityAdapter via _ClaudeCodeAdapterStub) does
+      NOT require this field; the production ClaudeCodeAdapter
+      does.
+    resolution: >
+      Added `hook_event_name: "PreToolUse"` to the MH-5 payload.
+      Documented inline as the kind of stub-vs-production drift
+      MH-5 exists to catch.
+
+  - original_section: "implementation-issue-2"
+    original_description: >
+      Second test run still failed with 422 because envelope.agent
+      was "claude-code" (kebab-case from MH-1/MH-2 convention) but
+      production ClaudeCodeAdapter._AGENT_NAME is "claude_code"
+      (snake_case).
+    resolution: >
+      Changed envelope.agent to "claude_code" for MH-5 only.
+      Documented as the second stub-vs-production drift caught by
+      this test layer; explained inline why MH-1/MH-2 don't
+      reproduce the issue (they use the stub registered with the
+      kebab string).
+
+  - original_section: "self-review-coupling"
+    original_description: >
+      Quality dimension: the test directly imports private CLI
+      module attributes (`from secondsight.cli.serve import app
+      as serve_app`), which couples MH-5 to internal CLI module
+      structure. A refactor that splits or renames these modules
+      breaks the test silently.
+    resolution: >
+      Acceptable — the imports are local-to-test and named for
+      what they do (init_app, serve_app, status_app). The
+      coupling is necessary for CliRunner's invocation contract.
+      Documented in the test docstring; no fix needed.

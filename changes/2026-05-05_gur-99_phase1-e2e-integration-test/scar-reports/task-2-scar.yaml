@@ -1,0 +1,205 @@
+task_id: task-2
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      Sub-agent events (sub_agent_start / sub_agent_end) are POSTed via
+      bash + curl directly because no dedicated hook script exists in
+      scripts/hooks/. The plan's task-2.md anticipated this gap and
+      authorized the bash-c-curl path. Trade-off: still exercises bash
+      → curl → socket → server, but skips the named-script wrapper
+      layer that the other MHs go through. If sub_agent_*.sh scripts
+      are ever added (e.g. when a real Claude Code Task-tool integration
+      lands), MH-2 nesting tests should switch to using them.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      _post_event_via_curl asserts on stdout matching "200" or "4xx" via
+      string startswith. Stricter parsing (e.g. integer comparison)
+      would catch a curl misconfiguration that emits "200 something"
+      or shell injection that pollutes stdout. Acceptable for Phase 1
+      given the controlled test environment; revisit if curl flag
+      drift causes false-positive HTTP code parsing.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      _wait_for_rows polls every 50ms for up to 3s. If a CI machine is
+      under heavy load and ingest takes longer than 3s, the assertion
+      fails with "got N rows" rather than waiting longer. Generous but
+      bounded — chosen to avoid hangs. If flake rate climbs, lengthen
+      the timeout rather than removing the bound.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The MH-2 sub-agent nesting test uses a static sub_agent_id "c1".
+      Running this test concurrently with another that also pushes "c1"
+      onto the same session would corrupt nesting assertions. Mitigated
+      by per-test session_id, but a future refactor that reuses
+      session_id across tests could surface this silently. Documented;
+      not currently exploitable.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      MH-1's "no fallback line" assertion uses the FALLBACK_FILENAME at
+      the SECONDSIGHT_HOME root, but uses real_secondsight_server's
+      fixture-managed home. If that home gets reused across tests with
+      a stale fallback file, MH-1 could falsely report "URL drift".
+      Mitigated because the fixture creates a fresh tmp_path per test.
+      Documented to make the assumption explicit.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      Pytest fixture sharing across subtrees works via re-importing the
+      fixture function in tests/integration/conftest.py.
+    verified: true
+    note: >
+      Verified by running 10× stress: 10/10 green. The re-export pattern
+      avoids both lifting (broad blast radius) and pytest_plugins
+      (deprecation warning in non-rootdir conftests). This is now the
+      canonical seam for cross-subtree fixture sharing in this project —
+      future tasks should follow it.
+
+  - assumption: >
+      The _ClaudeCodeAdapterStub registered by real_secondsight_server
+      supports sub_agent_start and sub_agent_end event types because
+      its supported_event_types() returns the full EventType set
+      (delegated to IdentityAdapter).
+    verified: true
+    note: >
+      Verified by reading src/secondsight/adapters/identity.py:90-97
+      and tests/scripts/conftest.py:138-167 (the stub). MH-2 nesting
+      test going green is end-to-end confirmation: sub_agent_start
+      events were accepted (200) and produced DB rows with correct
+      depth/sub_agent_id transitions.
+
+  - assumption: >
+      SubAgentStackMismatch surfaces as HTTP 422 from the server.
+    verified: true
+    note: >
+      Verified by reading src/secondsight/api/hooks.py:226-231 (tracker
+      exceptions → 422) and confirmed by DT-2.3 going green: the rogue
+      sub_agent_end POST returned 4xx (specifically 422 in test logs).
+      The DT assertion uses startswith("4") so it would also tolerate
+      a future change to 400 — the contract is "reject loudly", not
+      "reject with exactly 422".
+
+  - assumption: >
+      Hook script filenames (kebab-case) and URL event_types (snake_case
+      EventType enum values) are intentionally different. pre-tool-use.sh
+      posts to /hook/tool_use_start.
+    verified: true
+    note: >
+      Verified by reading scripts/hooks/pre-tool-use.sh:46-49 (FILENAME
+      vs URL NOTE block) and scripts/hooks/_lib.sh:188-258
+      (secondsight_post). MH-1's evidence-chain test asserts
+      event_type='tool_use_start' on the resulting DB row to lock this
+      mapping in.
+
+  - assumption: >
+      Test prereqs (bash/curl/jq) are sufficient for MH-1 and MH-2.
+    verified: true
+    note: >
+      All 6 tests in this task pass. Task-1's forward-pointing flag
+      that "MH-5 needs subprocess.Popen of the secondsight binary"
+      is still relevant to task-5 but does not affect task-2.
+
+debt_registered: true
+debt_location: >
+  tests/integration/test_phase1_e2e.py — _post_event_via_curl uses
+  shell-string formatting for the URL; if a future caller passes a
+  non-trivial URL (e.g. with quotes), the bash -c command could break.
+  Currently safe because URLs are constructed from int port and
+  hardcoded EventType strings.
+
+resolved_items:
+  - original_section: "implementation-issue-1"
+    original_description: >
+      _fire_script was defined with kw-only arguments (signature with *)
+      but called positionally in three places in MH-2. Tests failed
+      with TypeError before any actual logic ran.
+    resolution: >
+      Removed the * from _fire_script signature. Both kw-style calls
+      (in MH-1) and positional-style calls (in MH-2) now work. Did NOT
+      change call sites — the helper accommodates both styles. Re-ran:
+      6/6 green. 10× stress loop: 0/10 flakes.
+
+  - original_section: "implementation-issue-2"
+    original_description: >
+      First test run failed with "fixture 'real_secondsight_server' not
+      found" because pytest scopes conftest fixtures to the conftest's
+      directory subtree. The fixture lives in tests/scripts/conftest.py
+      and was not visible to tests/integration/.
+    resolution: >
+      Created tests/integration/conftest.py with a single import:
+      `from tests.scripts.conftest import real_secondsight_server`.
+      Pytest re-registers imported fixture functions in the new
+      conftest's scope. Smaller blast radius than lifting to
+      tests/conftest.py and avoids pytest_plugins deprecation warning.
+      Documented as the canonical pattern for this project.
+
+  - original_section: "review-finding-yin-CRITICAL"
+    original_description: >
+      Yin reviewer (Critical): DT-2.1's `if fallback.exists()` guard
+      means the test passes vacuously when the hook crashes before
+      writing fallback either. The URL-drift death case can pass on
+      a silently broken system.
+    resolution: >
+      test_mh1_no_fallback_when_server_accepts now asserts the POSITIVE
+      claim FIRST (DB has 1 row for this session_id with matching
+      event_id, via _wait_for_rows). Only after proving the event
+      reached the server do we then assert the fallback file is empty.
+      Two-sided assertion makes the no-fallback claim meaningful only
+      if we can also prove the live-server path was actually taken.
+
+  - original_section: "review-finding-yin-1"
+    original_description: >
+      Yin reviewer (Important): DT-2.2's failure message mentions the
+      frozen-segment_index case, but the message fires for any
+      observed != expected mismatch — mislabeling general failures.
+    resolution: >
+      Split into a pre-check (`if all(si == 0 for si in observed_si)`)
+      that raises pytest.fail with the DT-2.2-specific message before
+      the general comparison. The general assertion's message now
+      explicitly says "general mismatch — not the all-zero case".
+
+  - original_section: "review-finding-yin-2"
+    original_description: >
+      Yin reviewer (Suggestion): _expected_si naming with leading
+      underscore implied unused, but the value drives the `expected`
+      reconstruction. Soft naming concern.
+    resolution: >
+      Switched to iterating `for script_name, seq, _ in plan` —
+      `_` honestly signals "unused at THIS scope" while the
+      comprehension `[(seq, si) for (_, seq, si) in plan]` reads
+      directly from the plan tuple. Added a comment explaining
+      that the loop fires events while the comprehension constructs
+      the assertion target from the same single source of truth.
+
+  - original_section: "review-finding-quality-1"
+    original_description: >
+      Quality reviewer (Important): raw SQL coupling — _wait_for_rows
+      and the inline COUNT in DT-2.3 both depend on production schema
+      names (events table, sequence_number column) but the dependency
+      is unmarked.
+    resolution: >
+      Added a SCHEMA CONTRACT block-comment above _wait_for_rows
+      explicitly naming the production schema as the bet, pointing
+      readers at src/secondsight/storage/events_table.py as the owner.
+      Extracted the inline COUNT into a new helper _count_session_rows
+      that also references the SCHEMA CONTRACT. DT-2.3 now uses the
+      helper instead of opening its own sqlite3 connection. One named
+      site for the schema dependency in this test file.
+
+  - original_section: "review-finding-quality-2"
+    original_description: >
+      Quality reviewer (Important): _fire_script hardcodes
+      agent="claude-code" with no parameter, hidden coupling to one
+      agent identity for all callers.
+    resolution: >
+      Added an `agent: str = "claude-code"` keyword-only parameter
+      to _fire_script. Existing call sites unchanged (default
+      preserves behavior); future tests can pass agent="..." to
+      drive other adapter routes. Coupling now visible at the
+      function signature.

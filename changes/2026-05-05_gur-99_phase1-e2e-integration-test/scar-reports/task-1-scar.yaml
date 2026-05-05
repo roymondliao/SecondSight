@@ -1,0 +1,187 @@
+task_id: task-1
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      _prereqs.py uses module-level scoping (single tuple of required
+      tools) rather than a class- or registry-based extension point.
+      If MH-4 or MH-5 needs a different prereq (e.g. shellcheck for
+      MH-1's no-shellcheck-warning assertion), the file must be edited
+      rather than extended. Trade-off: 30 lines of code is too small
+      to warrant a registry pattern; YAGNI applies.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      shutil.which() consults PATH at the moment of the call. If the
+      test process has a STALE PATH (e.g. a tool was installed AFTER
+      pytest started but the env var didn't propagate),
+      require_e2e_prereqs_or_skip could skip even though the tool is
+      now reachable. Mitigation: pytest is short-lived; this is a
+      developer-machine concern already accepted by the project's
+      other PATH-dependent tests.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The helper detects tool PRESENCE on PATH but does NOT verify
+      tool CAPABILITY. A neutered jq stub with only `--version` could
+      satisfy `shutil.which("jq")` but fail when the e2e tests pipe
+      JSON through it. Acceptable risk: such stubs are rare; failure
+      mode would be loud (subprocess error in MH tests) rather than
+      silent green-pass, which is what the helper actively prevents.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      DT-1.1..DT-1.3 invoke the helper from inside test scope, where
+      ``allow_module_level=True`` is a no-op. A regression that
+      removes the flag would still pass all four death tests but
+      cause test_phase1_e2e.py to fail with `Failed: Using pytest.skip
+      outside of a test` instead of a clean Skipped at module-import.
+      The failure is loud (not silent), but in the wrong shape.
+      Mitigation: documented as BOUNDARY CONTRACT in _prereqs.py
+      docstring — that comment is the regression guard.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      DT coverage relies on parametrize ["bash", "curl", "jq"] in
+      test_prereqs.py duplicating the _REQUIRED_TOOLS tuple in
+      _prereqs.py. If a future maintainer adds a fourth tool to
+      _REQUIRED_TOOLS but forgets the parametrize list, DT coverage
+      narrows silently. Reviewer (quality) flagged this as
+      structurally-justified divergence (different masters), but the
+      drift risk is real.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      pytest's rootdir resolution allows `from tests.integration import _prereqs`
+      and `from tests.scripts.conftest import ...` from inside
+      tests/integration/test_phase1_e2e.py without modifying
+      [tool.pytest.ini_options].
+    verified: true
+    note: >
+      Verified by running `pytest tests/integration/ -v` (5/5 passed)
+      AND running the existing suite (`pytest --ignore=tests/integration -q`,
+      533/533 passed). The configfile=pyproject.toml line in the pytest
+      banner shows pytest is reading config from there but no
+      [tool.pytest.ini_options] block exists — pytest's defaults plus
+      the package-marker __init__.py files are sufficient.
+
+  - assumption: >
+      pytest.skip(allow_module_level=True) is honored even when called
+      from a helper function imported at module top-level (rather than
+      called directly inside the test module body).
+    verified: true
+    note: >
+      Verified indirectly: test_phase1_e2e.py imports the helper and
+      calls it at module top; the e2e test collected successfully on a
+      fully-equipped machine. The boundary behavior under MISSING tools
+      is not exercised by automated tests at module-import scope; that
+      gap is documented as the third silent_failure_condition above.
+
+  - assumption: >
+      Bash, curl, and jq are sufficient prereqs for ALL of MH-1..MH-5.
+    verified: false
+    note: >
+      Plausible — the existing tests/scripts/test_hook_fallback.py runs
+      the same bash hook scripts and uses curl + jq. But MH-5 uses
+      `subprocess.Popen(['secondsight', ...])` which depends on the
+      `secondsight` console script being installed; that's a different
+      class of prereq (Python entry point, not PATH tool). Task-5
+      MUST extend the prereq set OR add its own check before invoking
+      the daemon. Surfacing now so task-5's implementer notices.
+    deferred_to_feature_iteration: false
+
+debt_registered: true
+debt_location: >
+  tests/integration/_prereqs.py — _REQUIRED_TOOLS is a fixed tuple,
+  not extensible without editing. Scoped to current task; unlikely
+  to require iteration.
+
+resolved_items:
+  - original_section: "known_shortcuts"
+    original_description: >
+      The named-skip helper aborts on the FIRST missing tool rather
+      than collecting the full set of missing tools and reporting
+      them together.
+    resolution: >
+      Self-iteration: switched from early-return loop to list
+      comprehension that collects ALL missing tools, then skips
+      with a single message naming every absentee. Death tests still
+      pass — each missing tool's literal name appears in the joined
+      message. Operator UX fix: one round of installs instead of
+      fix-rerun chains.
+
+  - original_section: "review-finding-yin-1"
+    original_description: >
+      Yin reviewer (PASS_WITH_CONCERNS): test_scaffold_collects has no
+      stated death condition — `assert True` cannot fail under any
+      input and gives the false impression that the e2e scaffold is
+      exercised.
+    resolution: >
+      Replaced placeholder with test_prereq_guard_is_idempotent: calls
+      require_e2e_prereqs_or_skip a second time after the
+      module-import call and asserts no different behavior. Real death
+      condition (helper acquires global state breaking re-entry) +
+      meaningful invariant (idempotency contract) instead of tautology.
+
+  - original_section: "review-finding-yin-2"
+    original_description: >
+      Yin reviewer: ensure_e2e_prereqs is a scope-misleading name —
+      "ensure" implies the function brings the system into a passing
+      state. The implementation only detects absence and raises.
+    resolution: >
+      Renamed to require_e2e_prereqs_or_skip everywhere
+      (_prereqs.py, test_phase1_e2e.py, test_prereqs.py). The new
+      name labels the contract honestly: requires the prereqs OR
+      skips the calling module.
+
+  - original_section: "review-finding-yin-3"
+    original_description: >
+      Yin reviewer: the allow_module_level=True flag is load-bearing
+      but untested at the integration boundary. DT-1.1..1.3 verify
+      behavior at the wrong execution context.
+    resolution: >
+      Documented as BOUNDARY CONTRACT in _prereqs.py docstring with
+      explicit reasoning ("This docstring IS the regression guard for
+      the flag"). Logged as the third silent_failure_condition above
+      so the assumption is labeled, not hidden. Full module-import
+      regression test deferred — the cost-benefit of importlib-based
+      module-level test plumbing is not worth it for this scaffold.
+
+  - original_section: "review-finding-quality-1"
+    original_description: >
+      Quality reviewer (PASS_WITH_CONCERNS): monkeypatch target
+      _prereqs.shutil.which creates an invisible name-level lock-in.
+      A future refactor to `from shutil import which` would cause all
+      death tests to pass vacuously.
+    resolution: >
+      Added COUPLING CONTRACT comment near `import shutil` in
+      _prereqs.py declaring the dependency. test_prereqs.py also
+      cross-references the contract at the monkeypatch site. Future
+      refactors will see the coupling marker before silently breaking
+      the tests.
+
+  - original_section: "review-referral-quality-1"
+    original_description: >
+      Quality reviewer referral: skip message used `repr(t)` so it
+      reads "missing 'bash'" (with quotes) rather than "missing bash"
+      (bare token). Tests passed because `"bash" in "'bash'"` is true,
+      but the bare-token form is more honest.
+    resolution: >
+      Dropped repr() in _prereqs.py — message is now
+      "GUR-99 e2e tests require bash, curl, jq on PATH; not found"
+      with bare tokens. Death tests unaffected (substring assertion
+      passes either way).
+
+  - original_section: "review-finding-yin-4"
+    original_description: >
+      Yin reviewer: known_shortcuts[0] described an active shortcut
+      (early-return) that was already self-resolved. Reader scanning
+      only the shortcuts section gets a false picture of remaining
+      debt.
+    resolution: >
+      Removed the resolved entry from known_shortcuts in this update.
+      The resolution is recorded in resolved_items only, where it
+      belongs. known_shortcuts now reflects only currently-active
+      shortcuts.
