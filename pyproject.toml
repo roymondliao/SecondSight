@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.scripts]
-secondsight = "secondsight.__main__:main"
+secondsight = "secondsight.cli.app:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -27,6 +27,14 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/secondsight"]
+
+# Bundle the canonical hook scripts at wheel-build time so a `pip install
+# secondsight` carries everything `secondsight init` needs to copy into
+# ~/.claude/hooks/. The dev-tree source-of-truth stays at scripts/hooks/
+# (kept there so shellcheck CI runs unchanged); installer.bundled_hook_dir()
+# probes both locations and uses whichever exists.
+[tool.hatch.build.targets.wheel.force-include]
+"scripts/hooks" = "secondsight/_resources/hooks"
 
 [tool.ruff]
 extend-exclude = ["changes"]

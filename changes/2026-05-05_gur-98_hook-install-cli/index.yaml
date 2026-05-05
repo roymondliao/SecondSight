@@ -1,0 +1,69 @@
+feature: phase1-hook-install-cli
+status: in_progress
+parent_issue: GUR-98
+plan_ref_doc: docs/plan_v2.md (P1-11..P1-13)
+design_ref_doc: docs/system_design.md §3.9.2, §9.1, §9.2
+
+# Scope summary (board copy):
+#   P1-11  Hook script install — `secondsight init` auto-installs hook scripts
+#          to ~/.claude/hooks/ AND patches ~/.claude/settings.json with
+#          non-destructive merge (preserves any non-SecondSight hooks the user
+#          already configured).
+#   P1-12  CLI scaffold (Typer) — secondsight {init,serve,status,sync} +
+#          rewires [project.scripts] entry point.
+#   P1-13  Backfill mechanism — `secondsight sync` walks per-project events/*
+#          filesystem and re-INSERTs missing rows; replays fallback_events.jsonl
+#          when it carries enough envelope info, otherwise reports skipped count.
+
+# Step 0 commitments (samsara — recorded so future readers can audit):
+#   1. The most-wanted shortcut ("just cp scripts/hooks/* ~/.claude/hooks/, done")
+#      is rejected: installing files without registering them in settings.json
+#      means hooks silently never fire.
+#   2. This implementation should NOT run when ~/.claude/settings.json contains
+#      hooks already pointing at a different SecondSight install path on the
+#      same machine (would double-fire); the installer detects and warns.
+#   3. Silent failure surface this PR closes:
+#         - hooks installed but settings.json not patched -> warn loudly
+#         - sync truncates fallback_events.jsonl before DB INSERT confirmed
+#           -> truncate AFTER all rows committed and only on success
+#         - sync replays fallback envelope without session_id
+#           -> reject + write to .skipped sibling file, never silently drop
+#         - `secondsight sync` runs without DB schema -> create_schema is called
+#           per project so first-run cannot silently no-op
+
+tasks:
+  - id: task-1
+    title: "ClaudeSettingsPatcher — read/merge/write ~/.claude/settings.json"
+    plan_ref: P1-11
+    sd_ref: ["3.9.2"]
+    status: in_progress
+
+  - id: task-2
+    title: "HookInstaller — copy bundled hook scripts to ~/.claude/hooks/"
+    plan_ref: P1-11
+    sd_ref: ["3.9.2"]
+    status: in_progress
+    depends_on: [task-1]
+
+  - id: task-3
+    title: "FilesystemBackfill + FallbackReplay — secondsight sync core"
+    plan_ref: P1-13
+    sd_ref: ["3.9.2"]
+    status: in_progress
+
+  - id: task-4
+    title: "Typer CLI app — init/serve/status/sync subcommands + entry point rewire"
+    plan_ref: P1-12
+    sd_ref: ["9.1", "9.2"]
+    status: in_progress
+    depends_on: [task-1, task-2, task-3]
+
+exit_criteria:
+  - "`secondsight init` is idempotent: re-running does not duplicate settings.json hook entries"
+  - "`secondsight init --dry-run` prints planned diff and exits 0 without touching disk"
+  - "`secondsight init` preserves existing non-SecondSight hooks in settings.json"
+  - "`secondsight sync --filesystem-only` walks events/*.json and re-inserts missing rows; idempotent on re-run"
+  - "`secondsight sync` archives fallback_events.jsonl atomically after success (move to timestamped .bak); never deletes before commit"
+  - "`secondsight status --format json` returns server + per-project event counts"
+  - "All four subcommands functional: pyproject [project.scripts] points at cli.app:main"
+  - "Existing tests (post-GUR-97 baseline) continue to pass"

@@ -1,10 +1,12 @@
-"""Typer command group for server lifecycle management (P1-6).
+"""Typer command group for server lifecycle management (P1-6 + GUR-98).
 
-Commands:
-  secondsight serve          # foreground (blocking, for dev)
-  secondsight serve --daemon # double-fork into background
-  secondsight serve --stop   # send SIGTERM; SIGKILL on timeout
-  secondsight serve status   # print daemon status
+CLI surface:
+  secondsight serve            # foreground (blocking, for dev)
+  secondsight serve --daemon   # double-fork into background
+  secondsight serve --stop     # send SIGTERM; SIGKILL on timeout
+
+`secondsight status` (separate subcommand under cli/status.py) supersedes
+the historical `serve status` form.
 
 Design assumptions:
 - DEFAULT_HOME is ~/.secondsight.  Override via SECONDSIGHT_HOME env var
@@ -26,7 +28,6 @@ Silent failure conditions:
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import typer
@@ -34,17 +35,10 @@ import uvicorn
 from loguru import logger
 
 from secondsight.api.server import ServerConfig, create_app
-from secondsight.daemon import DaemonStatus, StopOutcome, daemon_status, daemonize, stop_daemon
+from secondsight.cli._home import secondsight_home as resolve_secondsight_home
+from secondsight.daemon import StopOutcome, daemon_status, daemonize, stop_daemon
 
 app = typer.Typer(name="serve", help="Manage the SecondSight daemon server.")
-
-
-def _default_home() -> Path:
-    """Return the default SecondSight home, respecting SECONDSIGHT_HOME env var."""
-    env = os.environ.get("SECONDSIGHT_HOME")
-    if env:
-        return Path(env)
-    return Path.home() / ".secondsight"
 
 
 def _pid_path(home: Path) -> Path:
@@ -69,8 +63,9 @@ def _run_server(home: Path) -> None:
     uvicorn.run(server_app, host=cfg.host, port=cfg.port, workers=1)
 
 
-@app.command(name="serve")
+@app.callback(invoke_without_command=True)
 def serve(
+    ctx: typer.Context,
     daemon: bool = typer.Option(False, "--daemon", help="Run as a background daemon."),
     stop: bool = typer.Option(False, "--stop", help="Stop the running daemon."),
     home: str = typer.Option("", "--home", help="SecondSight home directory."),
@@ -81,7 +76,10 @@ def serve(
     --daemon: double-fork into background.
     --stop: send SIGTERM to the running daemon.
     """
-    resolved_home: Path = Path(home) if home else _default_home()
+    if ctx.invoked_subcommand is not None:  # pragma: no cover — no subcmds
+        return
+
+    resolved_home: Path = resolve_secondsight_home(home)
 
     if stop:
         _do_stop(resolved_home)
@@ -140,28 +138,6 @@ def _do_daemon(home: Path) -> None:
 
     daemonize(pid_path=pid, log_path=log, on_child=on_child)
     typer.echo("Daemon started.")
-
-
-@app.command(name="status")
-def status(
-    home: str = typer.Option("", "--home", help="SecondSight home directory."),
-) -> None:
-    """Print the SecondSight daemon status."""
-    resolved_home: Path = Path(home) if home else _default_home()
-    pid = _pid_path(resolved_home)
-    s: DaemonStatus = daemon_status(pid)
-
-    if s.running:
-        if s.cmdline_match:
-            typer.echo(f"SecondSight daemon is running (PID {s.pid}).")
-        else:
-            typer.echo(
-                f"Warning: PID {s.pid} is running but does not look like "
-                "a SecondSight server (stale PID file?).",
-                err=True,
-            )
-    else:
-        typer.echo("SecondSight daemon is not running.")
 
 
 __all__ = ["app"]

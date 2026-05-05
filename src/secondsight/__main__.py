@@ -1,31 +1,20 @@
-"""Stub `secondsight` console-script entry point.
+"""Console-script entry point for the `secondsight` CLI (GUR-98 / P1-12).
 
-Wired up so `pip install secondsight && secondsight --version` works end-to-end
-in CI's install smoke test (GUR-112). GUR-98 will replace this with the full
-Typer CLI (`init`/`serve`/`status`) and re-point `[project.scripts]`.
+Pre-GUR-98 this file shipped a stub that supported only ``--version``
+(see GUR-112 install smoke test). GUR-98 wires the full Typer app
+(:mod:`secondsight.cli.app`); this module now just delegates so the
+``[project.scripts]`` mapping in pyproject.toml stays a stable target.
+
+The thin ``if __name__ == '__main__'`` shim lets ``python -m secondsight``
+work in the same way as the installed entry point — useful for tests and
+for ``uv run python -m secondsight`` during local development.
 """
 
 from __future__ import annotations
 
 import sys
-from importlib.metadata import PackageNotFoundError, version
 
-
-def main(argv: list[str] | None = None) -> int:
-    args = sys.argv[1:] if argv is None else argv
-    if len(args) == 1 and args[0] in ("--version", "-V"):
-        try:
-            ver = version("secondsight")
-        except PackageNotFoundError:
-            print("secondsight: package metadata not found", file=sys.stderr)
-            return 1
-        print(f"secondsight {ver}")
-        return 0
-    print(
-        "secondsight: CLI not yet wired up (tracked in GUR-98); only --version is available",
-        file=sys.stderr,
-    )
-    return 2
+from secondsight.cli.app import main
 
 
 if __name__ == "__main__":
