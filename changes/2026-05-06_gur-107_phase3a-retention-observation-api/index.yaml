@@ -28,8 +28,8 @@ tasks:
     plan_ref: "2-plan.md §3.1, D4"
     wave: 1
     sd_ref: ["3.10.1"]
-    death_cases: ["DC-6"]
-    notes: "Pure config: global + per-project merge, source attribution. No FS/DB side effects."
+    death_cases: ["DC-6", "DC-6b"]
+    notes: "Pure config: global + per-project merge, source attribution. No FS/DB side effects. NOTE (verification C1): RetentionConfig is the FIRST config consumer in the codebase — task defines the file format, not just consumes it. Uses stdlib tomllib (Python 3.14)."
 
   - id: task-A2
     title: "enumerate_expired_sessions — pure read-side enumerator + DC-1, DC-2"
@@ -70,7 +70,7 @@ tasks:
     wave: 2
     sd_ref: ["10.4"]
     death_cases: ["DC-4", "DC-7"]
-    notes: "Mounts onto create_app(); reuses ProjectRegistry pattern from hooks router."
+    notes: "Mounts onto create_app(); reuses ProjectRegistry pattern from hooks router. NOTE (D8): API uses async ProjectRegistry (in-server); CLI cleanup uses FS walk. Asymmetry must be called out in router module docstring."
 
   # --- Wave 3: orchestration ---
   - id: task-A6
@@ -81,7 +81,7 @@ tasks:
     wave: 3
     sd_ref: ["3.10"]
     death_cases: ["DC-3"]
-    notes: "--dry-run uses identical enumeration path as real run."
+    notes: "--dry-run uses identical enumeration path as real run. NOTE (verification C2 + D8): mirrors cli/sync.py:_select_project_ids FS-walk; builds resources synchronously per project (NOT via async ProjectRegistry)."
 
   - id: task-A7
     title: "Pagination cursor + ETag wiring on listing endpoints"

@@ -88,6 +88,24 @@ contract) plus dashboard MVP single-project means the worst-case
 session list is hundreds, not millions. Streaming adds frontend
 complexity for no payoff at MVP traffic.
 
+### D8. CLI bypasses ProjectRegistry; API uses it
+
+The Observation API runs inside the server and resolves project
+resources via
+`await request.app.state.server_state.registry.get(project_id)`
+— same pattern as `api/hooks.py`.
+
+The `cleanup` CLI runs as a one-shot subprocess with no event loop;
+it builds per-project resources synchronously, mirroring
+`ProjectRegistry._build_resources`. SQLite WAL mode (already
+configured by `DBEngine`) makes concurrent CLI cleanup vs. server
+ingest safe; cleanup's `DELETE FROM events` will block briefly
+behind in-flight server writes, which is acceptable.
+
+The Observation router module docstring must explicitly call out
+this asymmetry so future contributors don't import the CLI's FS
+walk as a generic project-enumeration pattern.
+
 ### D7. Pure SQL paths only — no per-event JSON parse on listing endpoints
 
 Listing endpoints rely on table columns + indexes (`session_id`,
@@ -100,7 +118,17 @@ the full event payload anyway.
 
 ### 3.1 New: `secondsight.storage.retention` (module)
 
+> **Verification correction (C1):** RetentionConfig is the *first*
+> config consumer in the codebase — no `config.toml` infrastructure
+> exists today (`grep -r config.toml src/` returns zero). Task-A1
+> must DEFINE the file format, not just consume an existing loader.
+> Python 3.14 is pinned, so stdlib `tomllib` is used — no new
+> dependency.
+
 - `class RetentionConfig` — TOML loader; per-project override on top of global.
+  Missing files return built-in default (90d, source=`builtin_default`)
+  and never raise — otherwise every fresh install fails on first
+  cleanup. **DC-6b** enforces this.
 - `class RawTracesTTL` — pure computation:
   - `enumerate_expired_sessions(repo, *, raw_traces_ttl_days, now) -> list[ExpiredSession]`
   - `compute_resolved_ttl(global_cfg, project_cfg) -> tuple[int, str]` (returns `(days, source)`)
@@ -123,9 +151,18 @@ analogue) so dashboard polling can short-circuit on 304.
 
 ### 3.3 New: `secondsight.cli.cleanup` (Typer subcommand)
 
+> **Verification correction (C2):** ProjectRegistry is async and
+> server-bound; it cannot be used by the synchronous one-shot CLI.
+> The precedent for project enumeration in CLI is
+> `cli/sync.py:170-176` — FS walk over `home/"projects"`.
+
 - `secondsight cleanup [--project-id PID] [--dry-run]`
-- Reuses `secondsight init` patterns for resolving `~/.secondsight`
-  home; reuses `serve.py` for project enumeration.
+- Reuses `cli/_home.py:secondsight_home()` for home resolution and
+  the `cli/sync.py:_select_project_ids` enumeration pattern (FS
+  walk over `home/"projects"`, sorted directory names).
+- Builds per-project `DBEngine` + `EventsRepository` +
+  `RawTraceStore` synchronously per project, mirroring
+  `ProjectRegistry._build_resources` — see D8.
 - Default: walks every project under home; with `--project-id`,
   scopes to one.
 
@@ -178,6 +215,11 @@ cases this scope must cover:
 - **DC-6**: `RetentionConfig` with malformed per-project TOML
   raises `RetentionConfigError` rather than silently falling back
   to global (see D4 / silent-failure case 1).
+- **DC-6b**: `RetentionConfig.load(home, project_id)` with NO
+  config files present (neither global nor per-project) returns
+  the built-in default (90 days, source=`builtin_default`) and
+  does NOT raise. (Verification finding C1: this is the fresh-
+  install path; failing here would brick every clean install.)
 - **DC-7**: ETag computation on `GET /sessions` is stable across
   identical underlying state and changes only when a new event is
   appended.

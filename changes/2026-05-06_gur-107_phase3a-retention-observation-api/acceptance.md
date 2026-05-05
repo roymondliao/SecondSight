@@ -39,6 +39,10 @@
     `RetentionConfigError`; cleanup exits non-zero and reports the
     project_id (DC-6). Cleanup of OTHER projects is unaffected
     (per-project errors do not abort the whole run).
+11b. **A-T4b** Fresh install with NO config files present
+    (neither `~/.secondsight/config.toml` nor any per-project
+    `config.toml`) uses the built-in default of 90 days and exits
+    cleanly (DC-6b). Verification finding C1.
 
 ## Boundary correctness
 
