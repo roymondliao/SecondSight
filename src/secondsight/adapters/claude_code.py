@@ -232,6 +232,16 @@ _DATA_BUILDERS: dict[EventType, Callable[[Mapping[str, Any]], dict[str, Any]]] =
     EventType.SESSION_END: _normalize_session_end,
 }
 
+# Startup-time consistency guard (DT-9 enforces this invariant from tests).
+# Fires at import, not at first request — divergence is named explicitly so
+# the operator can fix it in seconds rather than tracing a 422 in production.
+assert set(_HOOK_TO_EVENT_TYPE.values()) == set(_DATA_BUILDERS.keys()), (
+    "_HOOK_TO_EVENT_TYPE / _DATA_BUILDERS divergence: "
+    f"hook→event mapping publishes {set(_HOOK_TO_EVENT_TYPE.values()) - set(_DATA_BUILDERS.keys())!r} "
+    f"that have no _DATA_BUILDERS entry, AND/OR _DATA_BUILDERS has builders for "
+    f"{set(_DATA_BUILDERS.keys()) - set(_HOOK_TO_EVENT_TYPE.values())!r} that no hook publishes."
+)
+
 
 class ClaudeCodeAdapter(AgentAdapter):
     """Claude Code v1.x hook payload → SecondSight PartialEvent.

@@ -297,6 +297,24 @@ def test_dt8_supports_consistency_with_supported_event_types() -> None:
         )
 
 
+def test_dt9_data_builders_keys_match_hook_event_types() -> None:
+    """DT-9: _DATA_BUILDERS keys MUST equal _HOOK_TO_EVENT_TYPE values.
+
+    The module-scope assert fires at import; this test makes the invariant
+    explicit in the suite so regressions are visible in CI rather than only
+    at server startup. A developer adding a new event type must update BOTH
+    tables; this test (plus the assert) closes two detection windows: import-
+    time and test-time.
+    """
+    from secondsight.adapters.claude_code import _DATA_BUILDERS, _HOOK_TO_EVENT_TYPE
+
+    assert set(_HOOK_TO_EVENT_TYPE.values()) == set(_DATA_BUILDERS.keys()), (
+        f"_DATA_BUILDERS / _HOOK_TO_EVENT_TYPE divergence: "
+        f"unpaired in hook map: {set(_HOOK_TO_EVENT_TYPE.values()) - set(_DATA_BUILDERS.keys())!r}; "
+        f"unpaired in builders: {set(_DATA_BUILDERS.keys()) - set(_HOOK_TO_EVENT_TYPE.values())!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # UNIT TESTS
 # ---------------------------------------------------------------------------
