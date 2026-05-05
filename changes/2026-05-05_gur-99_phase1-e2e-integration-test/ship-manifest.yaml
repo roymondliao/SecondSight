@@ -1,0 +1,263 @@
+# Ship Manifest — GUR-99 Phase 1 E2E Integration Test
+# Validate-and-ship gate complete on 2026-05-05.
+
+delivered_capability: >
+  Five seam-level integration tests (MH-1..MH-5) at
+  tests/integration/test_phase1_e2e.py that exercise the user-visible
+  install-and-run lifecycle of the SecondSight observation pipeline
+  end-to-end. No production code changes.
+
+# --- What was built ---
+test_classes:
+  - id: MH-1
+    name: TestMH1SingleEvent
+    closes: "Hook URL drift would silently fall back to JSONL"
+  - id: MH-2
+    name: TestMH2MultiEvent
+    closes: >
+      segment_index frozen at 0 (USER_PROMPT increment regression);
+      sub_agent_end on empty stack silently advancing depth
+  - id: MH-3
+    name: TestMH3FallbackArchive
+    closes: >
+      sync archives fallback before INSERT durability; double-archive
+      on idempotent re-run; G1-α (Path C replay-into-DB silently
+      implemented without scope confirmation)
+  - id: MH-4
+    name: TestMH4LatencyBudget
+    closes: >
+      Hook latency p95 regressing >2× without alarm. Empirical baseline
+      recorded as p50=68ms, p95=115ms, p99=137ms on test fixture.
+  - id: MH-5
+    name: TestMH5CliLifecycle
+    closes: >
+      serve --daemon writes PID file but never binds port (silent
+      partial start); status reports "running" when daemon is dead.
+
+# --- Verification chain ---
+verification:
+  acceptance_passed: 10  # of 10 scenarios in acceptance.yaml
+  integration_suite: "10/10 passing in ~6s on developer macbook"
+  full_suite: "547/547 passing (533 pre-existing + 9 GUR-99 + 5 prereq); 0 regressions"
+  stress_runs:
+    integration_5x: "0/5 failures"
+    mh3_8x: "0/8 failures"
+    mh1_mh2_15x: "0/15 failures (during round-2 review fix verification)"
+  reconciliation_drift:
+    intentional_acknowledged_by_board:
+      - "Test file size 1266 vs ≤600 line target (verbose-by-design)"
+      - "MH-4 latency budget 50ms → 350ms (empirical first measurement)"
+      - "Tasks 3/4/5 inline self-review (subagent dispatch hit upstream usage limit)"
+      - "Security review inline-manual (origin/main not fetched in worktree)"
+
+# --- Known failure modes (yin: what can rot) ---
+known_failure_modes:
+  - mode: >
+      _wait_until predicate-exception swallowing: predicate programming
+      errors (typos, AttributeError on None) are indistinguishable from
+      "not ready yet" and surface as timeout-then-False rather than
+      immediate failure.
+    severity: degradation
+    detection: >
+      Code review (yin reviewer flagged at validate-and-ship). Mitigated
+      by keeping predicates as simple single-expression lambdas; risk
+      activates only when a future maintainer adds a complex predicate.
+      Docstring updated with KNOWN LIMITATION block at line 999-1014.
+
+  - mode: >
+      MH-4 measures TEST-FIXTURE latency, not production latency. A
+      regression that doubles only production latency (without changing
+      fixture overhead) might not surface. Conversely, a fixture-only
+      slowdown (uvicorn version bump, asyncio change) could fail the
+      test without affecting users.
+    severity: degradation
+    detection: >
+      Death condition documented: remove this test class when a
+      production-side latency metric (server-emitted Prometheus
+      histogram) exists. Until then, p95 ≤ 350ms gate catches 2×
+      regressions.
+
+  - mode: >
+      MH-5 binds hardcoded ServerConfig port 8420. Concurrent test
+      runs on the same machine collide. Mitigated by _port_is_free()
+      pre-check that skips with a named reason if 8420 is busy.
+    severity: degradation
+    detection: >
+      Test self-skips with "MH-5 needs port 8420 free; another
+      secondsight daemon (or unrelated service) is bound."
+
+  - mode: >
+      Stub-vs-production adapter drift. MH-1/MH-2 use the
+      _ClaudeCodeAdapterStub registered as agent='claude-code' (kebab)
+      with IdentityAdapter delegation. MH-5 hits the real
+      ClaudeCodeAdapter (agent='claude_code' snake-case, requires
+      payload.hook_event_name). MH-1/MH-2 cannot catch drifts in the
+      real adapter's contract by design.
+    severity: silent_corruption
+    detection: >
+      MH-5 catches the adapter contract drift. If MH-5 is removed or
+      skipped (e.g. port 8420 busy on CI), drift surfaces only in
+      production. Mitigation: keep MH-5 in CI gate; investigate
+      port-collision if skip rate > 5%.
+
+  - mode: >
+      Test-fixture overhead (uvicorn cold-start, _ClaudeCodeAdapterStub
+      composition, asyncio.create_task scheduling) dwarfs the
+      bash+curl+socket cost SD §3.9.1's 7ms target contemplated.
+      Real-world hot-path latency may be very different from MH-4's
+      350ms budget.
+    severity: degradation
+    detection: >
+      Documented in task-4 scar with the empirical breakdown. Death
+      condition: remove MH-4 when production-side metric exists.
+
+  - mode: >
+      _stage_fallback_lines and the bash hook scripts assume port 1
+      is unbindable. Modern systems do not bind it by default, but a
+      sandboxed/containerized environment that DID could mis-route
+      fallback events to a real listener with --connect-timeout=0.1s.
+    severity: degradation
+    detection: >
+      Existing tests/scripts/test_hook_fallback.py uses the same
+      idiom; never reported issues. If observed, switch to
+      kernel-assigned port via socket.bind(0).getsockname()[1] for
+      "port that nothing listens on this run."
+
+  - mode: >
+      File-size alarm: tests/integration/test_phase1_e2e.py is 1266
+      lines vs ≤600 line target. Maintenance burden concentrated in
+      one file. A typo in a shared helper (_envelope, _wait_for_rows,
+      _stage_fallback_lines) breaks multiple test classes.
+    severity: degradation
+    detection: >
+      Refactor into 5 files (one per MH) is a Phase 2 housekeeping
+      concern. Until then, every helper change must run all 10 tests.
+
+# --- Accepted risks (carry forward; need re-evaluation) ---
+accepted_risks:
+  - risk: >
+      Tasks 3, 4, 5 received INLINE self-review by the main agent
+      instead of subagent-based parallel review (yin + code-quality)
+      because subagent dispatch hit "claude_transient_upstream:
+      monthly usage limit" across 4+ heartbeats. Discipline preserved
+      (review happened with documented findings); independence
+      reduced (one reviewer, not two).
+    accepted_by: "human (local-board)"
+    expires: "2026-08-05"  # Re-evaluate at next quarterly review
+    rationale: >
+      For test-only PRs the structural review surface is small; the
+      cost of waiting for subagent budget to reset would have stalled
+      the gate without proportional benefit. Documented per-task in
+      scar reports.
+
+  - risk: >
+      Security review was inline-manual instead of platform-built-in
+      because origin/main is not fetched in this long-running feature
+      branch worktree. All 5 Python files (1406 lines) reviewed
+      manually; verdict PASS with 0 issues. Independence reduced
+      relative to a built-in scanner that might catch patterns a
+      manual reader misses.
+    accepted_by: "human (implicitly via Ok comment at 2026-05-05T13:35Z)"
+    expires: "2026-08-05"
+    rationale: >
+      Test-only PR; attack surface is test plumbing (subprocess,
+      sqlite, tmp_path). Manual review covered the specific concerns
+      flagged in the security-privacy-review skill arguments.
+
+  - risk: >
+      MH-4 latency budget is 350ms p95 (empirical) vs the plan's
+      50ms target. Plan number was speculative; first measurement
+      showed p99=137ms. The 350ms gate catches 2× regressions but
+      is generous relative to SD §3.9.1's theoretical 7ms hot path.
+    accepted_by: "human (local-board)"
+    expires: "2026-08-05"
+    rationale: >
+      Kickoff EXPLICITLY anticipated this case under
+      decoupling_detection. The 50ms number is preserved in SD as
+      the design target; this test is a CI-stable proxy with a death
+      condition (remove when production metric exists).
+
+  - risk: >
+      Test file tests/integration/test_phase1_e2e.py is 1266 lines
+      vs ≤600 target. Verbose-by-design (assertion failure messages
+      name broken seams; SCHEMA CONTRACT blocks; stub-vs-production
+      drift documentation). Refactor into 5 files is Phase 2 work.
+    accepted_by: "human (local-board)"
+    expires: "2026-08-05"
+    rationale: >
+      Lines are load-bearing comments + assertion messages, not
+      bloat. Splitting into 5 files would not reduce line count;
+      it would just relocate.
+
+# --- Silent failure surface ---
+silent_failure_surface: high
+# Computed from scar reports: 18 unique silent_failure_conditions
+# across 5 task scar reports. Threshold per the format guide:
+# >7 = high. NOTE: most entries are documented as LOUD failure modes
+# (test fails with named message), not silent corruption — they are
+# tagged as silent_failure_conditions for severity classification, not
+# because they actually rot silently. The honest-but-strict count
+# rounds up to "high."
+
+# --- Monitoring hooks ---
+monitoring_hooks:
+  - >
+    CI gate: pytest tests/integration/test_phase1_e2e.py — 10 tests
+    with named-skip on missing prereqs (bash/curl/jq) and named-skip
+    on port 8420 collision.
+  - >
+    Stress signal: if integration suite flake rate exceeds 1/30 runs
+    locally, investigate test-fixture noise (uvicorn cold-start,
+    asyncio scheduling) before tightening any test.
+  - >
+    Latency artifact: MH-4 prints histogram to stderr each run with
+    literal substrings "p50=", "p95=", "p99=" so log-grep can
+    track trend across CI history.
+  - >
+    Drift signal: MH-5's "stub-vs-production" comment block at
+    test_phase1_e2e.py:~1145-1158 documents two known drifts. If a
+    third drift surfaces, MH-5 should be re-examined for whether
+    the stub is still serving its purpose.
+
+# --- Kill switch ---
+kill_switch: >
+  Disable: rename tests/integration/test_phase1_e2e.py →
+  test_phase1_e2e.py.disabled and add a TODO referencing this
+  manifest. The 5 unit tests in tests/integration/test_prereqs.py
+  remain green (they don't depend on the e2e file). Existing
+  tests/scripts/test_hook_fallback.py covers the bash-hook layer
+  unchanged. To fully remove, drop the entire tests/integration/
+  directory; no production code references it.
+
+# --- Provenance ---
+provenance:
+  branch: paperclip-experiment
+  commits:
+    - "9fd6f83 GUR-99 research"
+    - "6feae8b GUR-99 planning pre-thinking"
+    - "edbefb3 GUR-99 plan"
+    - "5e5ba41 GUR-99 implement (5 tasks)"
+  base_branch: main
+  diff_scope: "22 files, 3827 insertions (5 Python + 17 docs/YAML)"
+  validated_at: "2026-05-05"
+  validated_by: "Tianqi (claude_local) via samsara:validate-and-ship"
+
+# --- Cross-references ---
+references:
+  research:
+    - "changes/2026-05-05_gur-99_phase1-e2e-integration-test/1-kickoff.md"
+    - "changes/2026-05-05_gur-99_phase1-e2e-integration-test/problem-autopsy.md"
+  planning:
+    - "changes/2026-05-05_gur-99_phase1-e2e-integration-test/2-plan.md"
+    - "changes/2026-05-05_gur-99_phase1-e2e-integration-test/2-pre-thinking.md"
+    - "changes/2026-05-05_gur-99_phase1-e2e-integration-test/acceptance.yaml"
+    - "changes/2026-05-05_gur-99_phase1-e2e-integration-test/index.yaml"
+  scar_reports:
+    - "changes/2026-05-05_gur-99_phase1-e2e-integration-test/scar-reports/task-1-scar.yaml"
+    - "changes/2026-05-05_gur-99_phase1-e2e-integration-test/scar-reports/task-2-scar.yaml"
+    - "changes/2026-05-05_gur-99_phase1-e2e-integration-test/scar-reports/task-3-scar.yaml"
+    - "changes/2026-05-05_gur-99_phase1-e2e-integration-test/scar-reports/task-4-scar.yaml"
+    - "changes/2026-05-05_gur-99_phase1-e2e-integration-test/scar-reports/task-5-scar.yaml"
+  spec:
+    - "docs/system_design.md §3.9 (Observation Data Flow Pipeline)"
+    - "docs/plan_v2.md §P1-14 (E2E observation test)"

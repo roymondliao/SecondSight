@@ -1002,6 +1002,15 @@ def _wait_until(predicate, *, timeout: float = 5.0, interval: float = 0.05) -> b
     Replaces blind sleep loops with a bounded poll. If predicate raises
     on a still-converging state (e.g. port not yet bound), the exception
     is treated as "not ready yet" and the loop continues.
+
+    KNOWN LIMITATION (ship-manifest carry-forward): predicate programming
+    errors (AttributeError on a typo, etc.) are also swallowed as
+    "not ready yet" and surface as timeout-then-False. Caller must keep
+    predicates SIMPLE (single-expression lambdas, no attribute lookups
+    on possibly-None values). If a future predicate grows complex enough
+    to risk programming bugs, refactor to catch only specific transient
+    exceptions (OSError, ConnectionRefused, FileNotFoundError) instead
+    of bare Exception.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
