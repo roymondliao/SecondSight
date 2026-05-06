@@ -24,8 +24,16 @@ from __future__ import annotations
 
 import tomllib
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+import sqlalchemy as sa
+
+from secondsight.storage.events_table import events
+
+if TYPE_CHECKING:
+    from secondsight.storage.events_repository import EventsRepository
 
 BUILTIN_DEFAULT_TTL_DAYS = 90
 
@@ -146,9 +154,82 @@ def _validate_ttl(value: object, *, source_label: str) -> int:
     return value
 
 
+@dataclass(frozen=True)
+class ExpiredSession:
+    """One session whose retention has expired and is eligible for cleanup.
+
+    ``last_event_at`` is preserved on the result so the cleanup log
+    line can attribute *why* the session was selected (D4: the cleanup
+    audit trail). Without it, an operator looking at "session reaped"
+    has no way to verify the boundary was applied correctly.
+    """
+
+    session_id: str
+    last_event_at: datetime
+
+
+def enumerate_expired_sessions(
+    repo: EventsRepository,
+    *,
+    raw_traces_ttl_days: int,
+    now: datetime,
+) -> list[ExpiredSession]:
+    """Return sessions whose most-recent event is at or before the TTL
+    cutoff (``now - raw_traces_ttl_days``).
+
+    The boundary is ``last_event_at``, NOT ``created_at`` (decision D1
+    in 2-plan.md): a session that was *first* observed 100d ago but had
+    its most-recent event 5 minutes ago is still observably alive and
+    must not be reaped (DC-2).
+
+    Inclusive boundary: a session whose last event is *exactly* at
+    ``now - ttl_days`` IS expired. Strict inequality would let
+    sessions linger one tick past their advertised TTL.
+
+    Args:
+        repo: EventsRepository for the project being scanned.
+        raw_traces_ttl_days: Resolved TTL in days.
+        now: Wall-clock reference for cutoff computation. Passed in so
+            tests are deterministic (DC-1, DC-2 use fixed timestamps).
+
+    Returns:
+        List of :class:`ExpiredSession` ordered by session_id ascending
+        for stable cleanup logs and reproducible ``--dry-run`` output.
+
+    Raises:
+        Nothing for the empty case (DC-1). Underlying SQLAlchemy errors
+        propagate; this function does not catch them.
+    """
+    cutoff = now - timedelta(days=raw_traces_ttl_days)
+    stmt = (
+        sa.select(
+            events.c.session_id,
+            sa.func.max(events.c.timestamp).label("last_event_at"),
+        )
+        .group_by(events.c.session_id)
+        .having(sa.func.max(events.c.timestamp) <= cutoff)
+        .order_by(events.c.session_id.asc())
+    )
+    with repo._db.engine.connect() as conn:  # noqa: SLF001 — see note below
+        rows = conn.execute(stmt).all()
+    return [ExpiredSession(session_id=r.session_id, last_event_at=r.last_event_at) for r in rows]
+
+
+# Note on the `repo._db` access above: the retention module sits next
+# to EventsRepository in the storage layer and intentionally co-owns
+# the events-table schema (events_table.events is imported at the top
+# of this module). Adding a public `engine` property to the repo would
+# leak SQLAlchemy lower-level types to callers who don't need them.
+# We could alternatively add `get_expired_session_ids(cutoff)` to the
+# repo, but that mixes retention policy into a generic repo API.
+# Co-owning the storage internals here is the lesser of two evils.
+
+
 __all__ = [
     "BUILTIN_DEFAULT_TTL_DAYS",
     "ConfigSource",
+    "ExpiredSession",
     "RetentionConfig",
     "RetentionConfigError",
+    "enumerate_expired_sessions",
 ]
