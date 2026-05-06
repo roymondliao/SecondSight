@@ -17,11 +17,14 @@ import pytest
 from pydantic import ValidationError
 
 from secondsight.analysis.schemas import (
+    FLAG_DEFINITIONS,
     BehaviorFlag,
+    BehaviorFlagDraft,
     BehaviorFlagType,
     Directive,
     DirectiveStatus,
     DirectiveType,
+    SegmentAnalysis,
     SegmentData,
     ToolUseSpan,
 )
@@ -213,9 +216,7 @@ class TestEnumCoverage:
             (DirectiveType.HINT, "hint"),
         ],
     )
-    def test_directive_type_value_exact(
-        self, member: DirectiveType, expected_value: str
-    ) -> None:
+    def test_directive_type_value_exact(self, member: DirectiveType, expected_value: str) -> None:
         assert member.value == expected_value
         assert DirectiveType(expected_value) is member
 
@@ -293,6 +294,99 @@ class TestRoundTrip:
             end_seq=9,
         )
         assert span.success is False
+
+    # =================================================================
+    # GUR-101 schema extensions (FLAG_DEFINITIONS, BehaviorFlagDraft,
+    # SegmentAnalysis)
+    # =================================================================
+
+    def test_flag_definitions_covers_every_enum_member(self) -> None:
+        """SD §5.5.1 — FLAG_DEFINITIONS MUST be a total mapping over
+        BehaviorFlagType. Missing keys would let the prompt builder
+        silently omit a flag type from the rendered prompt.
+        """
+        for flag_type in BehaviorFlagType:
+            assert flag_type in FLAG_DEFINITIONS, (
+                f"missing FLAG_DEFINITIONS entry for {flag_type.value!r}"
+            )
+
+    def test_flag_definitions_entries_have_all_three_fields(self) -> None:
+        for flag_type, defn in FLAG_DEFINITIONS.items():
+            for key in ("description", "criteria", "example"):
+                assert key in defn, f"FLAG_DEFINITIONS[{flag_type.value!r}] missing {key!r}"
+                assert isinstance(defn[key], str)
+                assert defn[key].strip(), f"FLAG_DEFINITIONS[{flag_type.value!r}][{key!r}] empty"
+
+    def test_behavior_flag_draft_accepts_minimal_llm_output(self) -> None:
+        """LLM emits exactly four fields per SD §5.5.2 — those four
+        fields must validate without requiring persistence fields.
+        """
+        draft = BehaviorFlagDraft(
+            flag_type=BehaviorFlagType.UNNECESSARY_READ,
+            event_ids=["e1"],
+            reason="x",
+            confidence="high",
+        )
+        assert draft.flag_type is BehaviorFlagType.UNNECESSARY_READ
+
+    def test_behavior_flag_draft_rejects_persistence_fields(self) -> None:
+        """extra='forbid' — if the LLM (or a careless caller) injects
+        an `id` or `created_at`, validation rejects it. Persistence
+        fields must be added by the orchestrator at promotion time,
+        never at parse time.
+        """
+        with pytest.raises(ValidationError):
+            BehaviorFlagDraft.model_validate(
+                {
+                    "flag_type": "unnecessary_read",
+                    "event_ids": [],
+                    "reason": "x",
+                    "confidence": "high",
+                    "id": "leaked",
+                }
+            )
+
+    def test_behavior_flag_draft_rejects_bad_confidence(self) -> None:
+        with pytest.raises(ValidationError):
+            BehaviorFlagDraft(
+                flag_type=BehaviorFlagType.UNNECESSARY_READ,
+                event_ids=[],
+                reason="x",
+                confidence="very-high",  # not in Literal
+            )
+
+    def test_segment_analysis_validates_sd_example(self) -> None:
+        analysis = SegmentAnalysis(
+            segment_summary="ok",
+            flags=[
+                BehaviorFlagDraft(
+                    flag_type=BehaviorFlagType.UNNECESSARY_READ,
+                    event_ids=["e1"],
+                    reason="x",
+                    confidence="high",
+                )
+            ],
+            total_events=4,
+            flagged_events=1,
+        )
+        assert len(analysis.flags) == 1
+
+    def test_segment_analysis_count_mismatch_is_not_validation_error(
+        self,
+    ) -> None:
+        """Schema does not enforce flagged_events == len(flags) — the
+        orchestrator logs the mismatch but does not throw away the
+        batch. This test pins that decision (intentional non-strict
+        validation per SegmentAnalysis docstring).
+        """
+        analysis = SegmentAnalysis(
+            segment_summary="ok",
+            flags=[],
+            total_events=4,
+            flagged_events=99,  # divergent from len(flags)
+        )
+        assert analysis.flagged_events == 99
+        assert len(analysis.flags) == 0
 
     def test_segment_data_with_heterogeneous_events(self) -> None:
         thinking_event = {

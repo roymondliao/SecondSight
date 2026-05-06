@@ -1,12 +1,17 @@
-"""Analysis-layer Pydantic contracts and enums (GUR-100 task-1).
+"""Analysis-layer Pydantic contracts and enums (GUR-100 task-1; GUR-101
+extension adds FLAG_DEFINITIONS, BehaviorFlagDraft, SegmentAnalysis).
 
-Single source of truth for the BehaviorFlagType vocabulary (SD §5.5.1)
-and the data shapes the analysis prompt builder (GUR-101) and the Phase-2
+Single source of truth for the BehaviorFlagType vocabulary (SD §5.5.1),
+the FLAG_DEFINITIONS content rendered into the SD §5.5.2 prompt, and
+the data shapes the analysis prompt builder (GUR-101) and the Phase-2
 repositories consume.
 
 Death cases enforced here (Pydantic v2 validation):
 - BehaviorFlag.flag_type rejects values outside BehaviorFlagType.
 - BehaviorFlag.confidence rejects values outside {high, medium, low}.
+- BehaviorFlagDraft mirrors the LLM-emitted shape; the orchestrator
+  promotes Draft → BehaviorFlag by injecting persistence fields.
+- SegmentAnalysis validates the full SD §5.5.2 prompt output JSON.
 - Directive.status rejects values outside DirectiveStatus.
 - ToolUseSpan rejects (success=True, duration_ms=None) — a successful
   span MUST carry a measured duration; orphan starts use success=None.
@@ -16,7 +21,7 @@ Repositories MUST re-validate via the same enums on insert because
 behavior_flags_repository.py and directives_repository.py (D1).
 
 SD references:
-- §5.5.1 — BehaviorFlagType vocabulary (six values).
+- §5.5.1 — BehaviorFlagType vocabulary (six values) + FLAG_DEFINITIONS.
 - §5.5.2 — segment-level analysis prompt; `confidence` field is added
   to the output schema in the same PR (D3 ship gate).
 - §7.4   — directives DDL; `disabled_at` / `disabled_reason` columns
@@ -94,6 +99,44 @@ class BehaviorFlag(BaseModel):
     reason: str
     confidence: Literal["high", "medium", "low"]
     created_at: datetime
+
+
+class BehaviorFlagDraft(BaseModel):
+    """The exact shape the LLM emits per SD §5.5.2 output JSON.
+
+    Promoted to `BehaviorFlag` by the GUR-102 orchestrator, which
+    injects `id`, `project_id`, `session_id`, `segment_index`,
+    `intent_summary`, and `created_at`. Keeping the LLM-output shape
+    distinct prevents the death case where Pydantic validation rejects
+    a syntactically valid model response just because it lacks fields
+    the model could not have known.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    flag_type: BehaviorFlagType
+    event_ids: list[str]
+    reason: str
+    confidence: Literal["high", "medium", "low"]
+
+
+class SegmentAnalysis(BaseModel):
+    """Per SD §5.5.2 — the wrapping object the LLM returns for one segment.
+
+    Validates the entire prompt output. `total_events` and
+    `flagged_events` are LLM-reported counts; the orchestrator should
+    cross-check `len(flags) == flagged_events` and log a divergence
+    warning on mismatch (kept out of schema validation so a small
+    counting discrepancy does not throw away an otherwise-good
+    analysis batch).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    segment_summary: str
+    flags: list[BehaviorFlagDraft]
+    total_events: int
+    flagged_events: int
 
 
 class Directive(BaseModel):
@@ -182,3 +225,54 @@ class SegmentMetrics(TypedDict):
     unique_files: int
     duration: float  # seconds
     error_count: int
+
+
+# ---------- Vocabulary content (SD §5.5.1) ----------
+
+
+class FlagDefinition(TypedDict):
+    """Per SD §5.5.1. Three fields render directly into the prompt's
+    `[Flag Type 定義]` section so the LLM sees one block per flag type.
+    """
+
+    description: str
+    criteria: str
+    example: str
+
+
+# Source-of-truth content for SD §5.5.1. The prompt builder MUST iterate
+# over BehaviorFlagType (not over this dict's keys) so a typo here
+# surfaces as a KeyError at prompt-build time rather than silently
+# dropping a flag type from the rendered prompt.
+FLAG_DEFINITIONS: dict[BehaviorFlagType, FlagDefinition] = {
+    BehaviorFlagType.UNNECESSARY_READ: {
+        "description": "讀了跟當前任務意圖無關的檔案",
+        "criteria": "該檔案的內容與 user prompt 的意圖無直接關聯",
+        "example": "User 要求修改 a.py，agent 先讀了 README.md",
+    },
+    BehaviorFlagType.REDUNDANT_EXPLORATION: {
+        "description": "已經有足夠資訊完成任務，仍在做額外探索",
+        "criteria": ("agent 已具備完成任務所需的資訊，卻繼續 ls / grep / read 不相關的路徑"),
+        "example": "User 給了明確路徑，agent 還在 ls 整個目錄結構",
+    },
+    BehaviorFlagType.MISSED_SHORTCUT: {
+        "description": "有更直接的路徑可達成目標但沒走",
+        "criteria": "存在更短的操作路徑，agent 選了迂迴的方式",
+        "example": "User 給了檔名，agent 卻用 grep 搜尋整個 codebase 才找到",
+    },
+    BehaviorFlagType.REPEATED_OPERATION: {
+        "description": "在同一 segment 內重複做同樣的操作",
+        "criteria": ("相同的 tool + target 組合在同一 segment 出現多次且無合理原因"),
+        "example": "同一個 segment 內讀了同一個檔案兩次",
+    },
+    BehaviorFlagType.WRONG_TOOL_CHOICE: {
+        "description": "使用了不適合當前任務的工具",
+        "criteria": "存在更適合的工具但 agent 選了效率較低的替代方案",
+        "example": "該用 grep 搜尋關鍵字，卻逐個 read 檔案找內容",
+    },
+    BehaviorFlagType.EXCESSIVE_CONTEXT_GATHERING: {
+        "description": "任務規模不需要大量 context，agent 卻收集了過多資訊",
+        "criteria": ("簡單任務（如單檔 edit）卻讀了大量不相關的檔案建立 context"),
+        "example": "簡單 bug fix 卻讀了十幾個不相關的檔案",
+    },
+}
