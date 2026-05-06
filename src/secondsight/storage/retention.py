@@ -22,18 +22,22 @@ analysis_ttl_days defers to GUR-107b (blocked on Phase 2 / GUR-100).
 
 from __future__ import annotations
 
+import shutil
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import sqlalchemy as sa
+from loguru import logger
 
 from secondsight.storage.events_table import events
 
 if TYPE_CHECKING:
     from secondsight.storage.events_repository import EventsRepository
+    from secondsight.storage.raw_trace_store import RawTraceStore
 
 BUILTIN_DEFAULT_TTL_DAYS = 90
 
@@ -225,10 +229,161 @@ def enumerate_expired_sessions(
 # Co-owning the storage internals here is the lesser of two evils.
 
 
+# ---------------------------------------------------------------------------
+# RawTracesPurger — task-A4 (DC-5)
+# ---------------------------------------------------------------------------
+
+PurgeStage = Literal["filesystem", "database"]
+
+
+@dataclass(frozen=True)
+class PurgeFailure:
+    """One session that failed to purge cleanly.
+
+    ``stage`` distinguishes a pre-FS failure (DB row still intact, next
+    reap will retry) from a post-FS failure (FS already gone, DB row
+    still present — the explicit FS/DB drift D3 acknowledges).
+    """
+
+    session_id: str
+    stage: PurgeStage
+    error: str
+
+
+@dataclass(frozen=True)
+class PurgeResult:
+    """Outcome of one ``RawTracesPurger.purge()`` invocation.
+
+    Order of ``purged_session_ids`` matches input order (sessions that
+    failed are NOT in this list — they appear in ``failures`` instead).
+    """
+
+    purged_session_ids: tuple[str, ...]
+    failures: tuple[PurgeFailure, ...]
+
+    @property
+    def had_failures(self) -> bool:
+        return bool(self.failures)
+
+
+def _delete_fs_session(store: RawTraceStore, session_id: str) -> bool:
+    """Remove ``sessions/{session_id}/`` from disk. Returns True if a
+    directory was removed, False if it was already absent.
+
+    Absent directory is the idempotent path: an operator may have
+    already cleaned it manually. The DB cleanup must still proceed so
+    the events row is also reaped.
+    """
+    session_dir = store.project_root / "sessions" / session_id
+    if not session_dir.exists():
+        return False
+    shutil.rmtree(session_dir)
+    return True
+
+
+def _delete_db_events_for_session(repo: EventsRepository, session_id: str) -> int:
+    """``DELETE FROM events WHERE session_id = ?``. Returns rowcount.
+
+    Per-session rather than batched IN(...) so a single corrupt session
+    cannot pull the whole batch down — the DC-5 contract says partial
+    failure is recoverable and other sessions should still be reaped.
+    """
+    stmt = sa.delete(events).where(events.c.session_id == session_id)
+    with repo._db.engine.begin() as conn:  # noqa: SLF001 — see retention module note
+        return int(conn.execute(stmt).rowcount or 0)
+
+
+class RawTracesPurger:
+    """Destructive side of retention. FS first, DB second (D3).
+
+    The two operations are NOT a single atomic transaction (a sqlite
+    transaction cannot encompass an ``rmtree``). The purger explicitly
+    chooses FS-first so a partial failure leaves a recoverable state on
+    the DB side: if FS removal blew up, the DB row is still there and
+    the next reap will re-attempt. The opposite order would leave the
+    DB row deleted and the FS files orphaned forever — invisible
+    to the enumerator on the next run.
+
+    The flip side (D3 acknowledgement): if FS succeeds and DB then
+    fails, the FS files ARE gone and we cannot put them back. We log a
+    structured ERROR and keep going (DC-5). The CLI layer (task-A6)
+    surfaces this as a non-zero exit code.
+    """
+
+    def __init__(
+        self,
+        *,
+        repo: EventsRepository,
+        raw_trace_store: RawTraceStore,
+    ) -> None:
+        self._repo = repo
+        self._store = raw_trace_store
+
+    def purge(self, expired: Sequence[ExpiredSession]) -> PurgeResult:
+        purged: list[str] = []
+        failures: list[PurgeFailure] = []
+
+        for session in expired:
+            sid = session.session_id
+
+            # Stage 1: filesystem.
+            try:
+                _delete_fs_session(self._store, sid)
+            except Exception as exc:  # noqa: BLE001 — boundary owns the catch
+                logger.error(
+                    "raw_traces purge: FS removal failed for session_id={sid}: {exc_type}: {exc}",
+                    sid=sid,
+                    exc_type=type(exc).__name__,
+                    exc=exc,
+                )
+                failures.append(
+                    PurgeFailure(
+                        session_id=sid,
+                        stage="filesystem",
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                )
+                # FS-first contract: do NOT touch DB if FS failed. Next
+                # reap will re-enumerate and retry both sides.
+                continue
+
+            # Stage 2: database. FS files are now gone for `sid`.
+            try:
+                _delete_db_events_for_session(self._repo, sid)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "raw_traces purge: DB delete failed for session_id={sid} "
+                    "AFTER filesystem removal — DB/FS drift; manual reconcile "
+                    "required: {exc_type}: {exc}",
+                    sid=sid,
+                    exc_type=type(exc).__name__,
+                    exc=exc,
+                )
+                failures.append(
+                    PurgeFailure(
+                        session_id=sid,
+                        stage="database",
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                )
+                continue
+
+            purged.append(sid)
+
+        return PurgeResult(
+            purged_session_ids=tuple(purged),
+            failures=tuple(failures),
+        )
+
+
 __all__ = [
     "BUILTIN_DEFAULT_TTL_DAYS",
     "ConfigSource",
     "ExpiredSession",
+    "PurgeFailure",
+    "PurgeResult",
+    "PurgeStage",
+    "RawTracesPurger",
     "RetentionConfig",
     "RetentionConfigError",
     "enumerate_expired_sessions",
