@@ -249,3 +249,31 @@ class TestConfigSourceVisible:
         proj = doc["projects"][0]
         assert proj["ttl_source"] == "builtin_default"
         assert proj["raw_traces_ttl_days"] == 90
+
+
+# ---------------------------------------------------------------------------
+# Hardening (review MEDIUM-1): --project-id with traversal chars exits 2
+# without touching the FS.
+# ---------------------------------------------------------------------------
+
+
+class TestProjectIdSafetyGate:
+    @pytest.mark.parametrize(
+        "bad_pid",
+        ["../../tmp/pwn", "..", "x/y", "x\\y", "."],
+    )
+    def test_unsafe_project_id_exits_two(self, home: Path, bad_pid: str) -> None:
+        result = runner.invoke(
+            root_app,
+            ["cleanup", "--project-id", bad_pid, "--format", "json"],
+        )
+        assert result.exit_code == 2, (result.exit_code, result.output)
+        # Helpful operator-facing message.
+        assert "unsafe" in (result.output + (result.stderr or "")).lower()
+        # No projects directory should have been created.
+        projects_dir = home / "projects"
+        if projects_dir.exists():
+            for child in projects_dir.iterdir():
+                assert child.name == bad_pid.replace("/", "").replace("\\", "") or (
+                    child.name not in {"..", "."}
+                ), child

@@ -50,6 +50,7 @@ import sqlalchemy as sa
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
+from secondsight.api._id_safety import is_safe_id
 from secondsight.event import Event, EventType
 from secondsight.storage.events_table import events as events_table
 
@@ -376,12 +377,22 @@ router = APIRouter()
 async def _aresources(request: Request, project_id: str) -> ProjectResources:
     """Resolve per-project resources via the AppState ProjectRegistry.
 
-    The ``project_id`` arrives validated by ``Query(..., min_length=1)``
-    so it is always non-empty here. The registry materialises a fresh
-    project directory if one does not yet exist; callers handling
-    "session not found" cases distinguish that from "project not found"
-    via the aggregate row count, not the registry.
+    Hardening (GUR-147 review HIGH-1): ``project_id`` is also character-
+    validated here. ``Query(..., min_length=1)`` only guarantees non-empty;
+    it does NOT reject path-traversal characters. Without this gate, a
+    request like ``?project_id=../../tmp/pwn`` would reach
+    ``ProjectRegistry._build_resources`` which uses the value as a
+    directory name and would mkdir + create a SQLite DB outside the
+    SecondSight home root.
     """
+    if not is_safe_id(project_id):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"project_id {project_id!r} contains unsafe characters. "
+                f"Use alphanumeric, hyphen, underscore, colon, or dot."
+            ),
+        )
     state = cast("AppState", request.app.state.server_state)
     return await state.registry.get(project_id)
 

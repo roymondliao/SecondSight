@@ -30,6 +30,17 @@ from secondsight.event import Event
 _SAFE_SESSION_ID = re.compile(r"^[A-Za-z0-9_\-:.]+$")
 
 
+def is_safe_session_id(value: str) -> bool:
+    """Return True if ``value`` matches the strict session-id regex.
+
+    Public defense-in-depth helper for callers (e.g. ``RawTracesPurger``)
+    that consume session_ids from storage and use them as path components
+    in destructive operations. The regex is the same one enforced at write
+    time by :meth:`RawTraceStore.event_path`.
+    """
+    return _SAFE_SESSION_ID.fullmatch(value) is not None
+
+
 class RawTraceStoreError(Exception):
     """Base class for raw-trace-store errors."""
 
@@ -60,9 +71,7 @@ class RawTraceStore:
         so it is constrained by the type system.
         """
         if not _SAFE_SESSION_ID.fullmatch(event.session_id):
-            raise UnsafePathError(
-                f"session_id contains unsafe characters: {event.session_id!r}"
-            )
+            raise UnsafePathError(f"session_id contains unsafe characters: {event.session_id!r}")
 
         events_dir = self._project_root / "sessions" / event.session_id / "events"
         # Re-resolve and verify the result is still under project_root —
@@ -73,17 +82,13 @@ class RawTraceStore:
             raise UnsafePathError(str(exc)) from exc
 
         if resolved_parent != self._project_root:
-            raise UnsafePathError(
-                f"session_id escapes project root: {event.session_id!r}"
-            )
+            raise UnsafePathError(f"session_id escapes project root: {event.session_id!r}")
 
         ts_part = (
             event.timestamp.strftime("%Y%m%dT%H%M%S")
             + f"{event.timestamp.microsecond // 1000:03d}Z"
         )
-        filename = (
-            f"{ts_part}_{event.event_type.value}_seq{event.sequence_number:06d}.json"
-        )
+        filename = f"{ts_part}_{event.event_type.value}_seq{event.sequence_number:06d}.json"
         return events_dir / filename
 
     async def write(self, event: Event) -> Path:
@@ -150,16 +155,12 @@ class RawTraceStore:
         try:
             return Event.model_validate(obj)
         except Exception as exc:
-            raise RawTraceCorruptionError(
-                f"event validation failed for {path}: {exc}"
-            ) from exc
+            raise RawTraceCorruptionError(f"event validation failed for {path}: {exc}") from exc
 
     async def iter_session(self, session_id: str) -> AsyncIterator[Path]:
         """Yield every event path for a session in lexicographic order."""
         if not _SAFE_SESSION_ID.fullmatch(session_id):
-            raise UnsafePathError(
-                f"session_id contains unsafe characters: {session_id!r}"
-            )
+            raise UnsafePathError(f"session_id contains unsafe characters: {session_id!r}")
         events_dir = self._project_root / "sessions" / session_id / "events"
         if not events_dir.exists():
             return

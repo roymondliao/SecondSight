@@ -49,6 +49,7 @@ from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 
 from secondsight.adapters import NoAdapterError
+from secondsight.api._id_safety import is_safe_id as _is_safe_id
 from secondsight.api.schemas import HookEnvelope
 from secondsight.event import EventType
 
@@ -56,39 +57,6 @@ if TYPE_CHECKING:
     from secondsight.api.server import AppState
 
 router = APIRouter()
-
-# Unsafe characters for project_id and session_id — these are used as directory
-# names in _build_resources(), so path traversal characters must be rejected.
-# Includes: slashes, backslash, null byte, ASCII control chars (\x00-\x1f, \x7f),
-# and common whitespace that would corrupt directory names silently (\t, \n, \r).
-_UNSAFE_ID_CHARS = frozenset(
-    "/\\\x00\t\n\r"
-    + "".join(chr(c) for c in range(0x01, 0x20))  # \x01–\x1f
-    + "\x7f"  # DEL
-)
-
-
-def _is_safe_id(value: str) -> bool:
-    """Return True if value is a safe path component (no traversal risk).
-
-    Rejects:
-    - Empty string (caught earlier by Pydantic min_length=1, defensive here).
-    - Slashes, backslashes, null bytes (path traversal / injection).
-    - ASCII control characters (\x00-\x1f, \x7f) and whitespace (\t, \n, \r)
-      that would corrupt directory names or be silently stripped by some filesystems.
-    - Pure-dot sequences ('.' and '..') — directory traversal shorthand.
-
-    Allows dots in other positions (e.g. 'com.company.project') per KS-4.
-    Stricter allowlist (hostname-style chars only) deferred to Phase 2 security review.
-    """
-    if not value:
-        return False
-    if _UNSAFE_ID_CHARS.intersection(value):
-        return False
-    # Reject pure dot sequences (. and ..)
-    if all(c == "." for c in value):
-        return False
-    return True
 
 
 def _task_done_callback(
@@ -197,9 +165,7 @@ async def handle_hook(
 
     # --- Step 3a: Resolve adapter and produce PartialEvent ---
     try:
-        adapter = state.adapter_registry.for_(
-            envelope.agent, validated_event_type.value
-        )
+        adapter = state.adapter_registry.for_(envelope.agent, validated_event_type.value)
     except NoAdapterError as exc:
         raise HTTPException(
             status_code=422,
@@ -237,9 +203,7 @@ async def handle_hook(
 
     # Attach done_callback for structured error logging.
     # Without this, asyncio swallows exceptions when the task is GC'd.
-    task.add_done_callback(
-        lambda t: _task_done_callback(t, event_id=event.id)
-    )
+    task.add_done_callback(lambda t: _task_done_callback(t, event_id=event.id))
 
     # Track in-flight tasks so shutdown can drain them.
     # C1: use a strong-reference set (not WeakSet) so the drain can enumerate all

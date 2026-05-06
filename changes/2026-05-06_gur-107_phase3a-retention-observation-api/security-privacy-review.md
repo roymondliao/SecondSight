@@ -1,201 +1,164 @@
-# Security & Privacy Review — GUR-147 Bundle
+# Security & Privacy Review — GUR-147 Bundle (revised)
 
-**Verdict:** PASS_WITH_ONE_MEDIUM — 0 HIGH, 1 MEDIUM finding (defense-in-depth recommendation), 0 risks accepted that block ship.
+**Verdict:** PASS — 0 HIGH, 0 MEDIUM, 0 LOW after hardening commit.
+0 risks accepted.
 
-**Reviewed:** bundle commit range `3278492..06eb44f` (GUR-147
-implementation, 7 tasks A1–A7). Phase 1 surfaces (events table,
-RawTraceStore write path, adapter layer) are out of scope — covered
-by `Security & privacy review: GUR-96 bundle` (commit 553a739) and
-`Security & privacy review: GUR-97 bundle` (commit a170aea).
+**History:** the prior revision of this document landed at commit
+`bec91ce` with verdict `PASS_WITH_ONE_MEDIUM`. A follow-up review
+(this document) on the same diff range surfaced two additional findings
+that the first pass missed:
 
-## Scope (in-scope production files)
+- **HIGH-1:** Observation API `project_id` Query parameter had only
+  `min_length=1, max_length=128` validation; arbitrary characters
+  reached `ProjectRegistry._build_resources()` which uses `project_id`
+  as a directory name. A request like
+  `GET /api/sessions?project_id=../../tmp/pwn` would `mkdir` and create
+  a SQLite DB outside the SecondSight home root. Asymmetric with the
+  hooks router which already had `_is_safe_id` enforcement.
+- **MEDIUM-1 (cleanup CLI `--project-id`):** the same path-traversal
+  class via the operator boundary. Treated as accepted-self-DoS in the
+  prior review; on second review, treated as a unified surface with
+  HIGH-1 since both flow through `_build_resources`.
+- **MEDIUM-2 (purger `_delete_fs_session`):** the prior MEDIUM-1
+  finding (now MEDIUM-2). Defense-in-depth gap before `shutil.rmtree`.
 
-- `src/secondsight/storage/retention.py` (new — RetentionConfig,
-  ExpiredSession, enumerate_expired_sessions, RawTracesPurger,
-  PurgeFailure, PurgeResult)
-- `src/secondsight/api/observation.py` (new — Pydantic schemas + 4
-  GET endpoints + ETag helpers)
-- `src/secondsight/api/server.py` (3-line change to mount
-  observation router)
-- `src/secondsight/cli/cleanup.py` (new — Typer subcommand)
-- `src/secondsight/cli/app.py` (1-line change to register cleanup
-  subcommand)
+The board (`cd574a9a`) chose option (B): pause ship, fix all three on
+a fresh commit, re-review. This document is the re-review.
+
+**Reviewed:** bundle commit range `3278492..HEAD` (GUR-147 A1–A7 plus
+the hardening commit).
+
+## Scope (in-scope production files, post-fix)
+
+- `src/secondsight/api/_id_safety.py` (new — shared `is_safe_id` helper)
+- `src/secondsight/api/hooks.py` (refactor — imports shared helper)
+- `src/secondsight/api/observation.py` (HIGH-1 fix — calls `is_safe_id`
+  in `_aresources`)
+- `src/secondsight/api/server.py` (unchanged from prior revision)
+- `src/secondsight/cli/cleanup.py` (MEDIUM-1 fix — validates
+  `--project-id` at the CLI boundary)
+- `src/secondsight/storage/raw_trace_store.py` (exposes public
+  `is_safe_session_id` helper)
+- `src/secondsight/storage/retention.py` (MEDIUM-2 fix —
+  `_delete_fs_session` re-validates `session_id` before
+  `shutil.rmtree`)
 - Tests: `tests/storage/test_retention_{config,enumerator,purger}.py`,
   `tests/api/test_observation_{schemas,router,pagination}.py`,
-  `tests/cli/test_cleanup.py`
+  `tests/api/test_id_safety.py` (new), `tests/cli/test_cleanup.py`
 
 ## Method
 
-Manual code review against the OWASP-style threat surface map
-implied by GUR-147's components:
+Same as prior pass: manual code review against the OWASP-style threat
+surface map (HTTP endpoints, FS deletion, DB DELETE, CLI destructive
+command, TOML loader). On this pass, additional attention to the
+asymmetry between the hooks router (`_is_safe_id` enforced) and the
+observation router (no such check).
 
-- **HTTP endpoints (new):** authentication, authorization,
-  parameter validation, info disclosure, ETag side-channels,
-  pagination cursor opacity.
-- **Filesystem deletion:** path traversal, symlink races, DB/FS
-  drift, idempotency.
-- **DB DELETE:** parameterization, transaction scope, partial
-  failure handling.
-- **CLI destructive command:** confused-deputy, exit-code honesty,
-  shell injection in arguments.
-- **TOML config loader:** untrusted-file parsing, schema validation
-  (DC-6).
+## Findings (post-fix)
 
-Plus precedent compliance: did the bundle preserve invariants
-established in earlier security reviews (parameterized SQL, no PII
-in logs, no hardcoded secrets)?
+### HIGH-1 — RESOLVED
 
-## Findings
+**Was:** Observation API `_aresources` accepted any `project_id`
+matching `min_length=1, max_length=128` and forwarded it to
+`state.registry.get(project_id)` → `_build_resources()` →
+`(self._home / "projects" / project_id).mkdir(parents=True,
+exist_ok=True)`. Path traversal characters created directories outside
+the SecondSight home root.
 
-### MEDIUM-1: Path-traversal defense-in-depth gap in `RawTracesPurger`
+**Fix:** `_aresources` now calls `is_safe_id(project_id)` (extracted
+shared helper at `src/secondsight/api/_id_safety.py`) and raises
+`HTTPException(status_code=422)` on unsafe values BEFORE registry
+materialisation. Verified by `tests/api/test_id_safety.py` parametric
+cases (`../../tmp/pwn`, `..`, `x/y`, `x\\y`, `null\\x00byte`, `.`)
+plus a no-traversal-side-effect test that confirms no escape directory
+is created on the host filesystem.
 
-**File:** `src/secondsight/storage/retention.py:269-281`
-(`_delete_fs_session`).
+**Same gate now applies to all four endpoints** (sessions list,
+sessions detail, segments list, segment detail) since they all flow
+through `_aresources`.
 
-`session_dir = store.project_root / "sessions" / session_id`
-followed by `shutil.rmtree(session_dir)`. The `session_id` arrives
-from the events table via `enumerate_expired_sessions`, which
-trusts whatever is in the DB. `RawTraceStore` enforces a strict
-character regex `^[A-Za-z0-9_\-:.]+$` at write time
-(raw_trace_store.py:30), so under the current adapter chain no
-path-traversal session_id can ever land in the DB.
+### MEDIUM-1 — RESOLVED
 
-**Why it's still worth flagging:** the purger is the single most
-destructive operation in the bundle (`shutil.rmtree`) and it is
-the only consumer that does NOT re-validate `session_id` before
-treating it as a path component. Future adapters, DB tampering,
-or a writer that bypasses RawTraceStore would land in this code
-path with no second line of defense. The `RawTraceStore` class
-already exposes the regex constant; calling
-`_SAFE_SESSION_ID.fullmatch(session_id)` (or extracting it as a
-public helper) before `rmtree` would close the gap at near-zero
-cost.
+**Was:** `secondsight cleanup --project-id PID` forwarded `PID`
+unchecked to `home / "projects" / project_id` and to
+`ProjectRegistry._build_resources()`.
 
-**Severity:** MEDIUM (defense-in-depth, not exploitable under
-current invariants). Threat model is constrained by the local-only
-bind (memory `dashboard_api_contracts`) and the single-writer
-RawTraceStore.
+**Fix:** `cleanup()` now calls `is_safe_id(project_id)` immediately
+after resolving `home_path`; on mismatch, prints a stderr message and
+exits 2 (Click usage-error convention). Verified by
+`tests/cli/test_cleanup.py::TestProjectIdSafetyGate` parametric cases.
 
-**Recommended fix (deferred to a follow-up issue, not blocking
-ship):** add a regex assert in `_delete_fs_session` and/or have
-`RawTraceStore` expose a public `safe_session_id_path(session_id)`
-helper that the purger uses. Track as a hardening item.
+### MEDIUM-2 — RESOLVED
 
-## Threat surface verification (no findings, recorded for ship-manifest visibility)
+**Was:** `_delete_fs_session(store, session_id)` did
+`shutil.rmtree(store.project_root / "sessions" / session_id)` without
+re-validating `session_id` against the regex enforced at write time.
+
+**Fix:** `RawTraceStore` exposes a public `is_safe_session_id` helper
+(same regex as `_SAFE_SESSION_ID`). `_delete_fs_session` now calls it
+at the top and raises `ValueError("unsafe session_id ...")` on
+mismatch; the per-session try/except in
+`RawTracesPurger.purge()` surfaces this as
+`PurgeFailure(stage="filesystem")` rather than rmtree-ing. Verified by
+`tests/storage/test_retention_purger.py::TestUnsafeSessionIdRefused`,
+which constructs a synthetic `ExpiredSession(session_id="../../escape")`
+and asserts both the failure shape and that no escape directory was
+created.
+
+## Threat surface verification (carried from prior review, still green)
 
 ### HTTP endpoints (`api/observation.py`)
 
-- ✅ **DC-4 enforcement.** Every endpoint declares
-  `project_id: str = Query(..., min_length=1, max_length=128)`
-  with no default. FastAPI returns 422 automatically if absent.
-  Cross-project enumeration is impossible by construction
-  (`api/observation.py:426, 472, 489, 521`).
-- ✅ **Parameterized SQL throughout.** All read-side aggregation
-  uses SQLAlchemy Core `sa.select(...).where(col == param)`. No
-  `text()`, no string concatenation, no f-string SQL.
-- ✅ **ETag uses SHA-1 with `usedforsecurity=False`** — the
-  documented stdlib pattern for non-cryptographic digests
-  (`observation.py:365`). Truncated to 16 hex chars; collision
-  domain is per-project per-process which is fine for a freshness
-  marker.
-- ✅ **Cursor opacity preserved.** The pagination cursor is
-  `str(offset)`, not a SQL row id or signed token; the schema
-  layer does not parse it. The cursor-vs-offset mutex check at
-  `_resolve_offset` rejects ambiguity with 422 rather than
-  silently picking one.
-- ✅ **No JSON parse on listing endpoints.** Listing (D7) reads
-  table columns only; only `_get_segment_detail` opens
-  `events.data`. The dashboard threat surface for "user can post
-  weird JSON to attack our parser" stays at zero on the heavy
-  endpoint.
-- ✅ **Auth scope = local-only bind.** Per memory
-  `dashboard_api_contracts` the server binds `127.0.0.1`; the
-  Observation API does not introduce its own auth and inherits the
-  Phase 1 trust model. Verified via
-  `api/server.py:55` (host="127.0.0.1" default).
+- ✅ **DC-4 enforcement.** `project_id: Query(..., min_length=1,
+  max_length=128)` with no default. FastAPI 422 if absent.
+- ✅ **HIGH-1 hardening.** `is_safe_id` rejects path-traversal
+  characters at the `_aresources` boundary (this revision).
+- ✅ **Parameterized SQL throughout.**
+- ✅ **ETag uses SHA-1 with `usedforsecurity=False`.**
+- ✅ **Cursor opacity preserved.**
+- ✅ **No JSON parse on listing endpoints.**
+- ✅ **Auth scope = local-only bind.**
 
 ### FS deletion + DB DELETE (`storage/retention.py:RawTracesPurger`)
 
-- ⚠️ See MEDIUM-1 above.
-- ✅ **FS-first / DB-second order intentional and documented**
-  (retention.py:296-310). Partial failure (FS gone, DB DELETE
-  fails) is acknowledged in D3 and surfaces as a structured
-  ERROR log + DC-5 PurgeFailure in the result.
-- ✅ **Per-session try/except** prevents one bad session from
-  poisoning the batch. DC-5 propagation through CLI exit code
-  verified by `tests/cli/test_cleanup.py`.
-- ✅ **`shutil.rmtree` is idempotent** — `_delete_fs_session`
-  returns False rather than raising on missing dir, allowing
-  manual cleanup followed by `secondsight cleanup` to converge.
-- ✅ **Structured ERROR logging** with `session_id` only. No
-  `event.data`, no event content; PII surface contained.
-- ✅ **Parameterized DELETE** via
-  `sa.delete(events).where(events.c.session_id == session_id)`
-  (retention.py:291). No SQL injection surface.
+- ✅ **MEDIUM-2 hardening.** `_delete_fs_session` re-validates
+  `session_id` (this revision).
+- ✅ **FS-first / DB-second order intentional and documented.**
+- ✅ **Per-session try/except** prevents poison-batch.
+- ✅ **`shutil.rmtree` is idempotent** for missing dirs.
+- ✅ **Structured ERROR logging** with `session_id` only — no
+  `event.data`, no event content.
+- ✅ **Parameterized DELETE.**
 
 ### CLI (`cli/cleanup.py`)
 
-- ✅ **Project enumeration via FS walk** (line 266-273) — only
-  yields existing directories. No untrusted-string-as-path
-  surface beyond what the Phase 1 adapter chain already produces.
-- ✅ **`--project-id` CLI override** is operator-typed; threat
-  model is "operator typo creates an empty project dir".
-  Self-DoS, not a security finding.
-- ✅ **No subprocess invocations**, no shell strings, no
-  shell-execution APIs.
-- ✅ **`--dry-run` and real-run share `_enumerate_for_project`
-  helper** (DC-3). Operator-trust contract holds.
-- ✅ **Exit-code honesty.** `any_failure` flag aggregated across
-  enumeration errors AND purge failures; CLI exits non-zero
-  whenever the operator should look (verified by
-  `tests/cli/test_cleanup.py`).
-- ✅ **JSON output sorts keys, escapes content** (line 223).
+- ✅ **MEDIUM-1 hardening.** `is_safe_id(--project-id)` at the CLI
+  boundary (this revision).
+- ✅ **Project enumeration via FS walk** — only yields existing dirs.
+- ✅ **No subprocess invocations.**
+- ✅ **`--dry-run` and real-run share `_enumerate_for_project`** (DC-3).
+- ✅ **Exit-code honesty.**
 
 ### TOML config loader (`storage/retention.py:RetentionConfig`)
 
-- ✅ **stdlib `tomllib`** — no third-party TOML parser, no
-  evaluation surface.
-- ✅ **DC-6 enforcement.** Malformed TOML, wrong type, or
-  non-positive integer all raise `RetentionConfigError` with the
-  offending source path in the message. Verified by 4 death
-  tests in `test_retention_config.py`.
-- ✅ **DC-6b enforcement.** Missing files return built-in default
-  without raising; fresh-install path verified by 3 death tests.
-- ✅ **No code execution paths.** Loader returns a frozen
-  dataclass; no eval / exec / import-from-config.
+- ✅ stdlib `tomllib`, no eval, DC-6 + DC-6b enforced.
 
 ### Test code
 
-- ✅ No hardcoded credentials, tokens, or secrets in any new
-  test fixture. All tests use `tmp_path` for FS scratch; no
-  cross-test pollution surface.
+- ✅ No hardcoded credentials. All tests use `tmp_path`.
 
 ## Risks accepted
 
-None that block ship.
+None.
 
 ## Carry-forward
 
-Items deferred to follow-up issues (not blocking GUR-147 ship):
-
-- **MEDIUM-1 path-traversal defense-in-depth** — file new issue
-  `GUR-147 follow-up: harden RawTracesPurger session_id
-  validation`. Not blocking ship because the threat is
-  unrealizable under current invariants (single-writer
-  RawTraceStore + adapter validation), but the gap should be
-  closed before any new writer is added.
 - **GUR-107b** — `analysis_ttl_days` enforcement + post-analysis
-  trigger remain blocked on **GUR-101 analysis orchestrator**
-  (per `e3c7e9ee` CEO advisory and `06eb44f` task-A7 commit).
-  Out of scope for this ship.
-- **`secondsight cleanup` does not validate `--project-id` as a
-  safe path component** — operator-typed value, self-DoS only.
-  Not security-relevant under the threat model.
+  trigger remain blocked on **GUR-101 analysis orchestrator**. Out of
+  scope for this ship.
 
 ## Pre-existing flakes (not regressions)
 
 - `tests/scripts/test_hook_fallback.py::test_dt2_parallel_writes_no_truncation`
   flakes under full-suite parallel pressure; passes in isolation.
-  Pre-existing from Phase 1 (recorded in
-  `changes/2026-05-04_phase1-adapters/scar-reports/`). Not
-  introduced by GUR-147.
+  Pre-existing from Phase 1.

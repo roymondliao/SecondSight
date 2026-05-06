@@ -39,6 +39,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from secondsight.api._id_safety import is_safe_id
 from secondsight.api.registry import ProjectRegistry
 from secondsight.cli._home import secondsight_home as resolve_secondsight_home
 from secondsight.storage.retention import (
@@ -189,6 +190,18 @@ def cleanup(
         return
 
     home_path = resolve_secondsight_home(home)
+    # Hardening (GUR-147 review MEDIUM-1): a `--project-id` value is forwarded
+    # directly to `home / "projects" / project_id` and to ProjectRegistry
+    # _build_resources which mkdirs that path. Reject traversal characters at
+    # the CLI boundary so a typo or shell-script-supplied value cannot create
+    # directories outside the SecondSight home root.
+    if project_id and not is_safe_id(project_id):
+        typer.echo(
+            f"--project-id {project_id!r} contains unsafe characters; "
+            f"use alphanumeric, hyphen, underscore, colon, or dot.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
     project_ids = _select_project_ids(home_path, project_id)
     now = datetime.now(timezone.utc)
 

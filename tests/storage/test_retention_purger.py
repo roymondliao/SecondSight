@@ -334,3 +334,37 @@ class TestMixedBatchPartialSuccess:
         # s2: FS gone (D3 — already removed before DB error), DB intact.
         assert not _session_dir(store, "s2").exists()
         assert _db_event_count(repo, "s2") == 1
+
+
+# ---------------------------------------------------------------------------
+# Hardening (review MEDIUM-2): _delete_fs_session re-validates session_id.
+# ---------------------------------------------------------------------------
+
+
+class TestUnsafeSessionIdRefused:
+    """The purger must NEVER rmtree on an unsafe session_id, even if one
+    somehow lands in the events table. The write path validates today,
+    but this is the destructive primitive — defense in depth at the
+    boundary keeps a future writer or DB tampering from triggering
+    traversal at shutil.rmtree time.
+    """
+
+    def test_unsafe_session_id_surfaces_as_filesystem_failure(
+        self,
+        repo: EventsRepository,
+        store: RawTraceStore,
+        purger: RawTracesPurger,
+    ) -> None:
+        bad = ExpiredSession(session_id="../../escape", last_event_at=NOW)
+
+        escape = store.project_root.parent / "escape"
+        assert not escape.exists()
+
+        result = purger.purge([bad])
+
+        assert result.had_failures is True
+        assert result.purged_session_ids == ()
+        assert len(result.failures) == 1
+        assert result.failures[0].stage == "filesystem"
+        assert "unsafe session_id" in result.failures[0].error
+        assert not escape.exists()

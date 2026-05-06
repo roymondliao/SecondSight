@@ -35,6 +35,8 @@ from loguru import logger
 
 from secondsight.storage.events_table import events
 
+from secondsight.storage.raw_trace_store import is_safe_session_id
+
 if TYPE_CHECKING:
     from secondsight.storage.events_repository import EventsRepository
     from secondsight.storage.raw_trace_store import RawTraceStore
@@ -270,10 +272,25 @@ def _delete_fs_session(store: RawTraceStore, session_id: str) -> bool:
     """Remove ``sessions/{session_id}/`` from disk. Returns True if a
     directory was removed, False if it was already absent.
 
+    Hardening (GUR-147 review MEDIUM-2): re-validate session_id against
+    the same strict regex ``RawTraceStore`` enforces at write time, even
+    though the value is sourced from the events table whose write path
+    already validates. The purger is the single most destructive
+    primitive in the bundle (``shutil.rmtree``); a future writer or
+    direct DB tampering that bypasses the write-time check would
+    otherwise reach this function with an unsafe id and traverse outside
+    ``store.project_root``. ``ValueError`` is raised so the caller's
+    per-session try/except surfaces the failure as ``PurgeFailure(stage=
+    'filesystem')`` rather than rmtree-ing.
+
     Absent directory is the idempotent path: an operator may have
     already cleaned it manually. The DB cleanup must still proceed so
     the events row is also reaped.
     """
+    if not is_safe_session_id(session_id):
+        raise ValueError(
+            f"unsafe session_id {session_id!r}; refusing to compute path for shutil.rmtree"
+        )
     session_dir = store.project_root / "sessions" / session_id
     if not session_dir.exists():
         return False

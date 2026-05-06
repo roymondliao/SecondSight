@@ -140,26 +140,23 @@ tests:
 # --- Security & privacy ---
 security_privacy_review:
   artefact: changes/2026-05-06_gur-107_phase3a-retention-observation-api/security-privacy-review.md
-  verdict: PASS_WITH_ONE_MEDIUM
+  verdict: PASS  # revised after re-review (board choice B at cd574a9a)
   high: 0
-  medium: 1
-  medium_finding: >
-    MEDIUM-1: RawTracesPurger._delete_fs_session does not re-validate
-    session_id against the RawTraceStore _SAFE_SESSION_ID regex before
-    shutil.rmtree. Defense-in-depth gap, not exploitable under current
-    invariants (single-writer RawTraceStore + adapter validation).
-    Deferred to a follow-up issue (see carry_forward).
+  medium: 0
+  history: >
+    Initial review (commit bec91ce) shipped as PASS_WITH_ONE_MEDIUM and
+    missed two findings. Re-review surfaced HIGH-1 (Observation API
+    project_id path traversal) and MEDIUM-1 (cleanup CLI --project-id
+    same class). Board chose option (B) at comment cd574a9a: pause ship,
+    fix all three findings, re-review. Hardening commit added shared
+    api/_id_safety.is_safe_id helper, applied at three call sites
+    (Observation API _aresources, cleanup CLI cleanup(), purger
+    _delete_fs_session via raw_trace_store.is_safe_session_id). All
+    three findings now RESOLVED.
   risks_accepted: 0
 
 # --- Carry-forward (NOT blocking ship) ---
 carry_forward:
-  - id: GUR-147-followup-1
-    summary: "Harden RawTracesPurger session_id validation (MEDIUM-1 from security review)"
-    rationale: >
-      Add regex re-validation in _delete_fs_session before shutil.rmtree.
-      Near-zero-cost fix; should land before any new event writer is
-      introduced (e.g. a future adapter that bypasses RawTraceStore).
-    blocking_ship: false
   - id: GUR-107b
     summary: "analysis_ttl_days enforcement + post-analysis cleanup trigger"
     rationale: >
@@ -183,6 +180,8 @@ provenance:
     - "a5da2ea — task-A5: Observation API router (DC-4 + DC-7)"
     - "e4ea98e — task-A6: secondsight cleanup CLI (DC-3 + DC-5 propagation)"
     - "06eb44f — task-A7: pagination cursor + ETag wiring on listing endpoints"
+  hardening:
+    - "GUR-147 hardening: shared is_safe_id helper applied at Observation API, cleanup CLI, and RawTracesPurger; resolves HIGH-1 + MEDIUM-1 + MEDIUM-2 from re-review"
   gate_records:
     confirmation_a0a92005:
       kind: request_confirmation
@@ -207,6 +206,6 @@ plan_refs:
 # --- Ship status ---
 status: ready_to_ship
 final_decisions:
-  - decision: "GUR-147 ships as-is. MEDIUM-1 deferred to follow-up; out-of-scope items pinned to GUR-107b."
+  - decision: "GUR-147 ships after hardening commit; HIGH-1 + MEDIUM-1 + MEDIUM-2 all resolved on the same fresh commit per board option (B). Out-of-scope items pinned to GUR-107b."
   - decision: "Default retention TTL = 90 days (per SD §3.10.1). Operator overrides via per-project config.toml."
   - decision: "Observation API binds local-only (inherits Phase 1)."
