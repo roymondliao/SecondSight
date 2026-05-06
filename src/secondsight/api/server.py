@@ -154,6 +154,7 @@ def create_app(
         startup before serving requests (TestClient does this automatically).
     """
     from secondsight.api.hooks import router as hooks_router
+    from secondsight.api.observation import router as observation_router
 
     home = Path(secondsight_home)
     if not home.is_absolute():
@@ -262,6 +263,8 @@ def create_app(
 
     # Mount the hooks router
     app.include_router(hooks_router)
+    # Mount the observation router (GUR-147 task-A5)
+    app.include_router(observation_router)
 
     # -----------------------------------------------------------------------
     # Routes
