@@ -1,0 +1,356 @@
+# Ship Manifest — GUR-100 Phase 2 Analysis Core
+# Validate-and-ship gate complete on 2026-05-06.
+
+delivered_capability: >
+  The data-layer foundation for SecondSight's Phase 2 analysis pipeline:
+  two SQLAlchemy Core tables (behavior_flags, directives) + repositories
+  with defensive enum guards, a read-side event Segmenter that pairs
+  tool_use_start/end into ToolUseSpan with explicit orphan handling,
+  a pure-function supplementary-metrics computer, and the Pydantic
+  contract anchor (analysis/schemas.py) consumed by GUR-101 (analysis
+  prompts), GUR-104 (CLI + REST), and GUR-106 (dashboard). NO HTTP
+  surface, NO LLM calls, NO subprocess — those are downstream issues.
+
+# --- What was built ---
+production_modules:
+  - id: P2-1
+    path: src/secondsight/analysis/schemas.py
+    closes: >
+      The contract anchor. BehaviorFlagType (6 SD §5.5.1 values),
+      DirectiveStatus (5 SD §7.4 values), DirectiveType (2 values),
+      and the Pydantic models BehaviorFlag/Directive/ToolUseSpan/
+      SegmentData/SegmentMetrics. ToolUseSpan model_validator rejects
+      success=True with duration_ms=None (incoherent state).
+
+  - id: P2-2
+    path: src/secondsight/storage/behavior_flags_{table,repository}.py
+    closes: >
+      SD §7.3 table + confidence column (D3). Repository idempotent on
+      id (ON CONFLICT DO NOTHING). Defensive _guard re-validates flag_type
+      and confidence on insert to close the model_construct() bypass
+      (D1 contract).
+
+  - id: P2-3
+    path: src/secondsight/storage/directives_{table,repository}.py
+    closes: >
+      SD §7.4 table + disabled_at + disabled_reason columns (D3 + memory
+      contract). Repository soft-disable lifecycle (DISABLED requires
+      reason; non-DISABLED clears disabled metadata; LookupError on
+      unknown id). _guard validates lifecycle invariant at insert
+      (post-review yin Critical fix: DT-3.7 + DT-3.8).
+
+  - id: P2-4
+    path: src/secondsight/analysis/segmenter.py
+    closes: >
+      Read-side event assembler (NOT a re-segmenter — events arrive
+      pre-segmented from SessionTracker.bind). Pairs tool_use_start/end
+      into ToolUseSpan; orphan starts → success=None; orphan ends →
+      0-width span + WARNING log; pre-prompt segment emitted with
+      user_prompt=None; empty segments emitted explicitly; out-of-order
+      sequence_number raises ValueError; missing-sequence_number on raw
+      dicts raises ValueError (post-review yin Important fix).
+
+  - id: P2-5
+    path: src/secondsight/analysis/metrics.py
+    closes: >
+      Pure function compute_segment_metrics → {total_tokens, unique_files,
+      duration, error_count}. Null token_count contributes 0 + WARNING
+      log (only for thinking/response event types — session_start etc.
+      legitimately null with no warning). ToolUseSpan(success=None) does
+      NOT count as error (orphan ≠ failed).
+
+documentation_patches:
+  - id: D3
+    path: docs/system_design.md
+    sections:
+      - "§5.5.2 — added `confidence: high|medium|low` to prompt output schema"
+      - "§7.4 — added `disabled_at` + `disabled_reason` columns to directives DDL + soft-disable contract paragraph"
+    enforcement: >
+      Verified pre-merge via `git diff -- docs/system_design.md | grep -F`
+      against `confidence":`, `disabled_at`, `disabled_reason`. All three
+      hunks present (D3 ship gate satisfied).
+
+# --- Verification chain ---
+verification:
+  acceptance_passed: 18  # of 18 scenarios in acceptance.yaml
+  acceptance_breakdown:
+    death_paths: "10/10 silent-failure scenarios (flag_type/status drift, disable-without-reason, stale disabled metadata, orphan tool_use_start/end, pre-prompt+empty segment dropping, out-of-order seq, null token_count)"
+    degradation: "1/1 (expires_at not enforced at this layer)"
+    unknown_outcomes: "1/1 (success=None on orphan)"
+    ship_gate: "2/2 (SD §5.5.2 + §7.4 patches present in diff)"
+    happy_paths: "4/4 (round-trip + lifecycle + segmenter shape + metrics fixture)"
+  task_test_suite: "68/68 passing in ~0.3s on developer macbook"
+  full_suite: "411/411 passing (333 pre-existing baseline + 11 GUR-147 + 67 GUR-100 = 411); 0 regressions"
+  reconciliation_drift:
+    intentional_acknowledged_in_plan_or_review:
+      - "LoC budget 1500 → ~1600 actual (slight overage; tests verbose by design)"
+      - "Two new tests (DT-3.7, DT-3.8) added post-review for lifecycle invariant at insert (yin Critical fix; not in original plan)"
+      - "_sort_key behavior tightened post-review to raise on missing sequence_number (yin Important fix)"
+      - "insert_many docstring strengthened post-review (yin Critical, project-wide rename deferred)"
+
+# --- Known failure modes (yin: what can rot) ---
+known_failure_modes:
+  - mode: >
+      `insert_many` returns `len(input)`, not the count of newly-persisted
+      rows. ON CONFLICT(id) DO NOTHING silently skips duplicates. A caller
+      writing `if repo.insert_many(flags) == len(flags): log("all persisted")`
+      will always log success even when half the flags were skipped.
+      Mitigated post-review by an IMPORTANT block in the docstring directing
+      callers to verify via `get_session_flags`/`count_by_type`. Project-wide
+      rename to `-> None` is a feature-iteration candidate (events_repository
+      has the same shape).
+    severity: silent_corruption
+    detection: >
+      Yin code reviewer flagged this. No automated detection in code; relies
+      on caller reading the strengthened docstring. If a future caller is
+      observed using the return value as confirmation, refactor to None.
+
+  - mode: >
+      Empty-string `disabled_reason` slips through DirectivesRepository.update_status
+      because the contract is `reason is None` (not `reason == "" or None`).
+      An empty audit reason violates the audit-trail intent but does not
+      raise. Fix expected at GUR-104's HTTP layer.
+    severity: degradation
+    detection: >
+      Documented in scar-3.yaml as `deferred_to_feature_iteration: true` with
+      target GUR-104. No code-level detection; relies on contract enforcement
+      at the HTTP entry point.
+
+  - mode: >
+      Orphan tool_use_end synthesis preserves `success` from the end event.
+      If an LLM analyzer reads an end-only span and sees `success=True`, it
+      may treat it as a successful tool call — but the missing start event
+      means we can't verify what was actually attempted. WARNING log emitted
+      so a future debugger can correlate.
+    severity: degradation
+    detection: >
+      _logger.warning("orphan_tool_use_end ...") on every synthesized span.
+      Grep CI / runtime logs for the literal substring "orphan_tool_use_end"
+      to spot frequency.
+
+  - mode: >
+      SegmentData.events list contains heterogeneous types
+      (ToolUseSpan | dict[str, Any]). Pydantic v2 smart-union allows a raw
+      dict that happens to match ToolUseSpan field names to be coerced into
+      a ToolUseSpan instance on construction. Currently no fixture triggers
+      this path. If GUR-101's prompt builder constructs SegmentData from
+      pre-built dicts, the conversion may surprise the caller.
+    severity: degradation
+    detection: >
+      Documented in task-1 scar known_shortcuts; defer to GUR-101 boundary
+      contract (which controls the dict shape).
+
+  - mode: >
+      `count_by_type` skips out-of-enum behavior_flags rows with a WARNING
+      log instead of raising. A manually-edited DB with corrupted flag_type
+      values will under-report via the dashboard count rather than crash.
+      Production path never produces such rows (insert validates) — only
+      reachable via manual SQL edit.
+    severity: silent_corruption
+    detection: >
+      _logger.warning("behavior_flags.flag_type=... outside enum"). Grep
+      logs for "outside enum" if dashboard counts look wrong.
+
+  - mode: >
+      `update_status` LookupError-on-rowcount=0 has SQLite-specific semantics.
+      MySQL/Postgres return modified-only rowcount, which would mark a no-op
+      `update_status(id, current_status)` as "not found". Currently SQLite-only;
+      a future backend port would need rework.
+    severity: degradation
+    detection: >
+      Cannot detect at runtime today (no other backend). When a backend
+      port lands, integration tests must include a "no-op status update"
+      case to surface the divergence.
+
+  - mode: >
+      compute_segment_metrics duration=0.0 is ambiguous: it returns 0.0 for
+      both single-event segments AND segments where every timestamp failed
+      to parse. WARNING logs trace the unparseable timestamps but the metric
+      itself does not distinguish.
+    severity: degradation
+    detection: >
+      _logger.warning("unparseable timestamp ...") on each bad ts. Cross-
+      reference WARNING-log volume against duration=0.0 segments to
+      distinguish the two cases.
+
+  - mode: >
+      analysis/__init__.py's package boundary mixes contracts (schemas.py),
+      I/O-bound assembly (segmenter.py), and pure functions (metrics.py).
+      Cohesion is weak: schema death does not kill Segmenter; Segmenter's
+      death-reason (EventsRepository shape change) is orthogonal to the
+      schema contracts. Tolerable at v1; could split at v2 if refactor cost
+      becomes load-bearing.
+    severity: degradation
+    detection: >
+      Quality reviewer flagged. No runtime detection. Re-evaluate at
+      GUR-101 if the analysis layer growth introduces import cycles or
+      circular deps.
+
+  - mode: >
+      Segmenter→EventsRepository coupling is import-visible and depends on
+      `get_session_events` returning rows sorted by sequence_number ASC. If
+      EventsRepository silently changes that sort order, Segmenter._validate_sequence_order
+      will raise in production with no static link showing the cause.
+    severity: silent_corruption
+    detection: >
+      Quality reviewer flagged. Mitigated by Segmenter raising loudly with
+      sequence numbers in the error message; an operator who reads the
+      stack trace can trace it. Defense-in-depth: introduce a
+      `EventsRepositoryProtocol` if a third caller appears.
+
+# --- Accepted risks (carry forward; need re-evaluation) ---
+accepted_risks:
+  - risk: >
+      Empty-string `disabled_reason` accepted on DISABLED transitions.
+      The contract says `reason is None` raises; an empty string passes.
+      Audit-trail integrity depends on GUR-104's HTTP layer rejecting
+      empty strings.
+    accepted_by: "human (local-board, via planning gate accept on plan rev 1)"
+    expires: "2026-08-06"
+    rationale: >
+      Empty-string handling is a presentation-layer concern; pushing it
+      into the data layer would either reject all reasons starting with a
+      space (annoying) or duplicate validation across HTTP and direct-
+      repository callers. GUR-104 is the natural enforcement point.
+
+  - risk: >
+      DRY violation: BehaviorFlagsRepository._guard and DirectivesRepository._guard
+      implement structurally identical "coerce raw string to enum or raise"
+      logic in two places. A third repository will copy the pattern.
+    accepted_by: "human (local-board, via planning gate accept)"
+    expires: "2026-08-06"
+    rationale: >
+      Quality reviewer suggestion. Factoring out a shared helper now is
+      speculative — we don't yet know whether the third caller will need
+      the same shape. When the third repository arrives (likely in Phase
+      3), refactor at that point, not before.
+
+  - risk: >
+      Segmenter→EventsRepository concrete-class coupling. No Protocol/ABC
+      hides the dependency; tests use a duck-typed stub.
+    accepted_by: "human (local-board, via planning gate accept)"
+    expires: "2026-08-06"
+    rationale: >
+      Same as above: introducing a Protocol now is speculative. The test
+      stub demonstrates the duck-type works; if a second non-test caller
+      needs the shape, define the Protocol then.
+
+  - risk: >
+      LoC budget overrun: planned ≤1500 lines (production + test); actual
+      ~1600. Tests are verbose by design (acceptance.yaml death-first
+      scenarios produce per-scenario test methods + per-scenario assertion
+      messages).
+    accepted_by: "human (local-board, via planning gate accept)"
+    expires: "2026-08-06"
+    rationale: >
+      Lines are load-bearing assertion messages and adversarial fixtures,
+      not bloat. Mirrors the GUR-99 precedent (1266 vs 600 line target,
+      accepted as verbose-by-design).
+
+  - risk: >
+      Phase 1 + Phase 2 share the same git branch (paperclip-experiment).
+      The branch is now ~196 files / ~32k lines of insertions vs main.
+      Shipping GUR-100 as a merge to main would also land all prior phases
+      that have not yet merged.
+    accepted_by: "human (local-board) — pending choice in this gate"
+    expires: "N/A — resolved at branch-completion choice (A/B/C/D)"
+    rationale: >
+      Per memory feedback `feedback_branch_accumulation`, the recommended
+      default is (C) Keep branch — never default-merge to main. Merge is
+      a deliberate decision the user makes; this manifest does not
+      pre-commit to it.
+
+# --- Silent failure surface ---
+silent_failure_surface: high
+# Computed from scar reports: 9 unique silent_failure_conditions across
+# 5 task scar reports. Per format guide: >7 = high.
+# NOTE: as with GUR-99, most entries are documented as LOUD failure modes
+# (raises with named message; emits WARNING log). They are tagged as
+# silent_failure_conditions for severity classification rigor, not because
+# they actually rot silently. The honest-but-strict count rounds to "high."
+
+# --- Monitoring hooks ---
+monitoring_hooks:
+  - >
+    CI gate: pytest tests/analysis/ tests/storage/test_behavior_flags_repository.py
+    tests/storage/test_directives_repository.py — 68 tests with deterministic
+    fixtures. Failures here block merge.
+  - >
+    Log signal: grep runtime logs for these literal substrings to detect
+    rot: "orphan_tool_use_start", "orphan_tool_use_end", "outside enum",
+    "null token_count", "unparseable timestamp". Frequency spikes are the
+    canary.
+  - >
+    Schema-contract drift signal: `git diff main -- docs/system_design.md`
+    must continue to include `confidence`, `disabled_at`, and `disabled_reason`
+    in §5.5.2 / §7.4. If a future PR removes them while keeping the code,
+    grep against the diff catches it.
+  - >
+    Round-trip signal: tests/storage/test_behavior_flags_repository.py::
+    test_round_trip_preserves_event_ids_and_all_fields — if the SQLite
+    tz-drop limitation changes (driver upgrade, timezone-aware SQLite
+    type adopted), this test will surface the change loudly.
+
+# --- Kill switch ---
+kill_switch: >
+  Disable analysis-layer reads: rename src/secondsight/analysis/ →
+  analysis.disabled. The analysis package is NOT yet imported by any
+  production code path (api/, observation/, daemon.py, cli/) — it is
+  consumed only by tests and (eventually) GUR-101/104. Renaming
+  surfaces no production breakage today.
+  Disable storage-layer writes: revert src/secondsight/storage/__init__.py
+  to remove the BehaviorFlagsRepository + DirectivesRepository exports.
+  The tables themselves are created lazily via `metadata.create_all
+  (checkfirst=True)`; a fresh intelligence.db will not contain them
+  unless the repository is instantiated.
+  Disable SD doc patches: revert §5.5.2 + §7.4 hunks via
+  `git revert <sd-commit>`.
+  Full removal: `rm -rf src/secondsight/analysis/
+  src/secondsight/storage/{behavior_flags,directives}_*.py
+  tests/analysis/ tests/storage/test_{behavior_flags,directives}_repository.py
+  changes/2026-05-05_gur-100_phase2-analysis-core/`.
+
+# --- Provenance ---
+provenance:
+  branch: paperclip-experiment
+  commits:
+    - "4a93d63 GUR-100 research: kickoff + problem-autopsy"
+    - "98537fb GUR-100 plan: 2-plan + acceptance + overview + index.yaml + 5 tasks"
+    - "d58b64b GUR-100 implement: Phase 2 Analysis Core data layer (5 tasks, D3 SD patches)"
+    - "37f6169 Security & privacy review: GUR-100 bundle (Phase 2 Analysis Core)"
+  base_branch: main
+  diff_scope_for_this_feature: >
+    23 files (8 production .py + 5 test .py + 5 scar reports + 1 SD patch +
+    research/plan/index/overview/acceptance/security-review docs);
+    ~3343 insertions across the four GUR-100 commits.
+  validated_at: "2026-05-06"
+  validated_by: "Tianqi (claude_local) via samsara:validate-and-ship"
+
+# --- Cross-references ---
+references:
+  research:
+    - "changes/2026-05-05_gur-100_phase2-analysis-core/1-kickoff.md"
+    - "changes/2026-05-05_gur-100_phase2-analysis-core/problem-autopsy.md"
+  planning:
+    - "changes/2026-05-05_gur-100_phase2-analysis-core/2-pre-thinking.md"
+    - "changes/2026-05-05_gur-100_phase2-analysis-core/2-plan.md"
+    - "changes/2026-05-05_gur-100_phase2-analysis-core/acceptance.yaml"
+    - "changes/2026-05-05_gur-100_phase2-analysis-core/overview.md"
+    - "changes/2026-05-05_gur-100_phase2-analysis-core/index.yaml"
+  tasks:
+    - "changes/2026-05-05_gur-100_phase2-analysis-core/tasks/task-{1..5}.md"
+  scar_reports:
+    - "changes/2026-05-05_gur-100_phase2-analysis-core/scar-reports/task-{1..5}-scar.yaml"
+  security_review:
+    - "changes/2026-05-05_gur-100_phase2-analysis-core/security-privacy-review.md"
+  spec:
+    - "docs/system_design.md §5.3.1 (Session-level analysis)"
+    - "docs/system_design.md §5.3.3 (Long segment processing — out of scope, GUR-101)"
+    - "docs/system_design.md §5.5.1 (BehaviorFlagType source of truth)"
+    - "docs/system_design.md §5.5.2 (Segment-level analysis prompt — patched)"
+    - "docs/system_design.md §7.3 (behavior_flags table)"
+    - "docs/system_design.md §7.4 (directives table — patched)"
+  downstream_blockers_now_unblocked:
+    - "GUR-101 — Phase 2 Analysis Prompts (consumes BehaviorFlag, SegmentData, SegmentMetrics)"
+    - "GUR-104 — Phase 2 Analysis CLI + REST (wraps DirectivesRepository.update_status)"
+    - "GUR-106 — Phase 3A Dashboard (waits on GUR-104 close)"
