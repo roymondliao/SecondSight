@@ -386,6 +386,39 @@ async def _aresources(request: Request, project_id: str) -> ProjectResources:
     return await state.registry.get(project_id)
 
 
+def _resolve_offset(cursor: str | None, offset: int) -> int:
+    """Translate ``cursor`` (preferred) or ``offset`` (fallback) into an int.
+
+    Cursor format is the opaque string ``str(offset)`` that this router
+    emits in ``next_cursor``. Keeping the two params mutually exclusive
+    prevents the ambiguity case where a client sends both and the server
+    silently picks one — that's the kind of drift the dashboard contract
+    in plan §3.2 / D6 specifically rules out.
+
+    Raises HTTPException(422) on bad cursor or both-supplied.
+    """
+    if cursor is not None and offset != 0:
+        raise HTTPException(
+            status_code=422,
+            detail="Pass either `cursor` or `offset`, not both.",
+        )
+    if cursor is not None:
+        try:
+            parsed = int(cursor)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"cursor {cursor!r} is not a valid pagination cursor.",
+            ) from exc
+        if parsed < 0:
+            raise HTTPException(
+                status_code=422,
+                detail=f"cursor {cursor!r} must be non-negative.",
+            )
+        return parsed
+    return offset
+
+
 @router.get("/api/sessions", response_model=None)
 async def list_sessions(
     request: Request,
@@ -393,13 +426,26 @@ async def list_sessions(
     project_id: str = Query(..., min_length=1, max_length=128),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    cursor: str | None = Query(
+        None,
+        description=(
+            "Opaque pagination cursor returned in a previous response's "
+            "`next_cursor`. Mutually exclusive with `offset`."
+        ),
+    ),
 ) -> ListSessionsResponse | Response:
     """List sessions for a project.
 
     DC-4: ``project_id`` is required (no default → FastAPI returns 422).
     DC-7: an ETag is set on every 200 response and a matching
     ``If-None-Match`` returns 304 with no body.
+
+    Pagination (task-A7): accepts either ``offset`` or ``cursor``; the
+    cursor is the opaque string previously emitted in ``next_cursor``.
+    Sending both is rejected with 422 to keep the cursor contract
+    unambiguous.
     """
+    resolved_offset = _resolve_offset(cursor, offset)
     resources = await _aresources(request, project_id)
     repo = resources.events_repository
 
@@ -407,10 +453,12 @@ async def list_sessions(
     if etag is not None and request.headers.get("if-none-match") == etag:
         return Response(status_code=304)
 
-    summaries, total = _list_session_summaries(repo, project_id, limit=limit, offset=offset)
+    summaries, total = _list_session_summaries(
+        repo, project_id, limit=limit, offset=resolved_offset
+    )
     next_cursor: str | None = None
-    if offset + len(summaries) < total:
-        next_cursor = str(offset + len(summaries))
+    if resolved_offset + len(summaries) < total:
+        next_cursor = str(resolved_offset + len(summaries))
 
     if etag is not None:
         response.headers["ETag"] = etag
