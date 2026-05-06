@@ -1,0 +1,114 @@
+task_id: task-2
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      `_guard()` checks confidence as a frozenset membership but does NOT
+      type-check that confidence is a `str`. A model_construct caller
+      could pass `confidence=42` and the `42 not in _VALID_CONFIDENCE`
+      check would correctly reject — but the error message would not
+      hint at the type confusion. Trade-off: simpler guard, slightly
+      worse diagnostic.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      `count_by_type` skips out-of-enum rows with a WARNING log instead
+      of raising. Rationale: the production path never produces such
+      rows (insert validates), so the only way to reach this state is
+      a manual SQL edit — and a dashboard count call shouldn't crash
+      the dashboard because someone hand-edited the DB. Acknowledged:
+      a corrupted row is invisible to count totals.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      `insert_many` runs the defensive guard sequentially before any
+      SQL is executed. A bad flag at index 49 of a 50-flag batch
+      raises after 48 successful guards, but no SQL has been issued.
+      The behavior is "all-or-nothing" which matches expectations,
+      but the defensive guard cost is paid even on the bad-batch path.
+      Acceptable for v1 batch sizes.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      SQLite drops `tzinfo` on DateTime read-back. A flag inserted with
+      `created_at` carrying tzinfo=UTC round-trips as a naive datetime
+      with the same wall-clock. The schema declares `datetime` (no tz
+      constraint) so this is not a Pydantic violation, but downstream
+      code that compares `flag.created_at.tzinfo` post-round-trip will
+      see None. Documented in the round-trip test; mirrors existing
+      events_repository behavior.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      `_flag_to_row` accepts a `flag_type` that is either a
+      BehaviorFlagType enum OR a string (defensive against
+      model_construct). The string branch goes through
+      BehaviorFlagType(...) constructor which would raise on an invalid
+      value — but that branch is only reached AFTER the guard already
+      verified the value, so the constructor call is redundant. Kept
+      as a belt-and-suspenders.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The `behavior_flags` table reuses `events_table.metadata`. A
+      future refactor that splits metadata across packages would silently
+      break `create_schema()` because only one of the two `metadata`
+      objects would have the table registered. The convention is
+      documented in `behavior_flags_table.py`; depends on convention
+      adherence, not on tooling enforcement.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      Existing events_repository's `INSERT … ON CONFLICT(id) DO NOTHING`
+      pattern works the same on the behavior_flags table.
+    verified: true
+    note: "DT-2.2 passes — second insert with same id is a no-op."
+
+  - assumption: >
+      The `confidence` Literal["high","medium","low"] in the Pydantic
+      model gives Pydantic-construction validation but not after
+      model_construct(). Repository must re-validate.
+    verified: true
+    note: "DT-2.4 passes — bypassed confidence='kinda' raises ValueError."
+
+  - assumption: >
+      DBEngine's PRAGMA verification will not interfere with multi-table
+      schemas (events + behavior_flags + future directives sharing one
+      metadata).
+    verified: true
+    note: "test_create_schema_idempotent + DT-2.3 fresh-engine round-trip pass"
+
+debt_registered: true
+debt_location: >
+  src/secondsight/storage/behavior_flags_repository.py — see
+  `count_by_type` skip-on-corrupt-row behavior; see `_flag_to_row`
+  redundant validate after guard.
+
+resolved_items:
+  - original_section: known_shortcuts
+    original_description: >
+      Initial implementation passed all tests except the round-trip
+      assertion which used full-model equality and tripped on the
+      SQLite tz-drop limitation.
+    resolution: >
+      Updated test to compare non-datetime fields exactly and assert
+      created_at wall-clock equality with a docstring naming the
+      SQLite limitation. The schema/repo behavior is correct; the
+      test now honestly reports what is and isn't preserved.
+
+  - original_section: known_shortcuts
+    original_description: >
+      insert_many returned len(input) but the name suggested inserted
+      count; a caller comparing return == len(input) would falsely
+      conclude all flags persisted even if ON CONFLICT skipped some.
+      (Yin-reviewer Critical finding.)
+    resolution: >
+      Strengthened the docstring with an IMPORTANT block making the
+      semantics explicit ("return value == len(input) ALWAYS; not a
+      persistence confirmation"), pointing callers to
+      get_session_flags / count_by_type for verification. The signature
+      matches the project-wide EventsRepository.insert_many convention;
+      a system-wide rename (returning None) is a feature-iteration
+      candidate but out of scope for GUR-100.

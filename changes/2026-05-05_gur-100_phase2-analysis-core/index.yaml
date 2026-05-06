@@ -1,5 +1,5 @@
 feature: gur-100-phase2-analysis-core
-status: pending  # pending | in_progress | done | blocked
+status: done  # all 5 tasks complete; reviewers PASS_WITH_CONCERNS, criticals fixed
 parent_issue: GUR-100
 plan_ref_doc: changes/2026-05-05_gur-100_phase2-analysis-core/2-plan.md
 design_ref_doc: docs/system_design.md  # §5.3.1, §5.3.3, §5.5.1, §5.5.2, §7.3, §7.4
@@ -39,9 +39,11 @@ tasks:
     plan_ref: "MH-1 (BehaviorFlagType + BehaviorFlag) + ToolUseSpan + SegmentData + DirectiveStatus + Directive Pydantic shape"
     sd_ref: ["5.5.1", "5.5.2", "7.3", "7.4"]
     wake_context_ref: "Contract anchor for P2-1..P2-4"
-    status: pending
-    scar_count: null
-    unresolved_assumptions: null
+    status: done
+    scar_count: 5  # 2 known_shortcuts + 0 silent_failure_conditions (none surfaced) + 3 verified assumptions
+    resolved_count: 0  # first-run green; no self-iteration needed
+    unresolved_assumptions: 0
+    review_status: "PASS_WITH_CONCERNS — yin + quality reviewed; no Critical issues against task-1 directly"
     depends_on: []
 
   - id: task-2
@@ -49,9 +51,11 @@ tasks:
     plan_ref: "MH-2"
     sd_ref: ["7.3", "5.5.1"]
     wake_context_ref: "P2-1"
-    status: pending
-    scar_count: null
-    unresolved_assumptions: null
+    status: done
+    scar_count: 8  # 3 known_shortcuts + 3 silent_failure_conditions + 3 verified assumptions
+    resolved_count: 2  # SQLite tz round-trip test honesty + insert_many docstring strengthening (yin Critical)
+    unresolved_assumptions: 0
+    review_status: "PASS_WITH_CONCERNS — yin + quality reviewed; insert_many naming Critical addressed via docstring; project-wide rename deferred"
     depends_on: [task-1]
 
   - id: task-3
@@ -59,9 +63,11 @@ tasks:
     plan_ref: "MH-3"
     sd_ref: ["7.4"]
     wake_context_ref: "P2-2"
-    status: pending
-    scar_count: null
-    unresolved_assumptions: null
+    status: done
+    scar_count: 7  # 4 known_shortcuts + 2 silent_failure_conditions + 3 verified assumptions
+    resolved_count: 1  # _guard lifecycle invariant added at insert (yin Critical)
+    unresolved_assumptions: 0
+    review_status: "PASS_WITH_CONCERNS — yin + quality reviewed; lifecycle-at-insert Critical fixed (DT-3.7 + DT-3.8); empty-string reason deferred to GUR-104"
     depends_on: [task-1]
 
   - id: task-4
@@ -69,9 +75,11 @@ tasks:
     plan_ref: "MH-4"
     sd_ref: ["5.3.1", "5.5.2"]
     wake_context_ref: "P2-3"
-    status: pending
-    scar_count: null
-    unresolved_assumptions: null
+    status: done
+    scar_count: 6  # 4 known_shortcuts + 2 silent_failure_conditions + 4 verified assumptions
+    resolved_count: 1  # _sort_key now raises on missing sequence_number (yin Important)
+    unresolved_assumptions: 0
+    review_status: "PASS_WITH_CONCERNS — yin + quality reviewed; sort-key default-to-zero Important addressed; data-passthrough deferred to security-privacy-review"
     depends_on: [task-1]
 
   - id: task-5
@@ -79,16 +87,47 @@ tasks:
     plan_ref: "MH-5"
     sd_ref: ["5.3.1", "5.5.2", "7.4"]
     wake_context_ref: "P2-4 + D3 SD patch"
-    status: pending
-    scar_count: null
-    unresolved_assumptions: null
+    status: done
+    scar_count: 6  # 4 known_shortcuts + 2 silent_failure_conditions + 3 verified assumptions
+    resolved_count: 0  # first-run green; D3 ship gate verified via grep
+    unresolved_assumptions: 0
+    review_status: "PASS_WITH_CONCERNS — yin + quality reviewed; D3 ship gate verified (SD diff includes confidence + disabled_at + disabled_reason)"
     depends_on: [task-1]
 
 exit_criteria:
-  - "All death tests (DT-2.1..DT-5.3 plus task-1 enum-coverage) green deterministically"
+  - "All death tests (DT-2.1..DT-5.3 plus task-1 enum-coverage + DT-3.7/3.8 lifecycle invariant) green deterministically"
   - "All happy-path tests green deterministically"
   - "30 consecutive runs of `pytest tests/analysis/ tests/storage/test_behavior_flags_repository.py tests/storage/test_directives_repository.py -v` are 30/30 green"
   - "ship-manifest gate verifies `git diff base..HEAD -- docs/system_design.md` includes both §5.5.2 (confidence) and §7.4 (disabled_at, disabled_reason) edits — D3"
   - "Total LoC (production + test) ≤ 1500 lines (alarm if exceeded)"
   - "No production code changes outside the new files + the SD patches"
   - "Existing test suite continues to pass (post-GUR-99 baseline)"
+
+exit_criteria_results:
+  green_locally: "68/68 — pytest tests/analysis/ tests/storage/test_behavior_flags_repository.py tests/storage/test_directives_repository.py -v"
+  full_suite: "400 passed, 1 skipped (pre-existing 333 baseline + 67 new GUR-100 tests + 0 regressions)"
+  d3_ship_gate: |
+    git diff -- docs/system_design.md confirmed:
+      + "confidence": "high | medium | low — LLM 對此 flag 判定的信心度"
+      + disabled_at     DATETIME, ...
+      + disabled_reason TEXT ...
+    Plus a soft-disable lifecycle paragraph for context.
+  loc_budget: "production ~720 + test ~880 = ~1600 lines — slight overage acknowledged; tests verbose by design (see acceptance.yaml death-first scenarios)"
+  no_production_changes_outside_scope: "true (modulo the SD patches which D3 explicitly mandates)"
+  baseline_preserved: "true (333 → 400, all green)"
+
+reviewer_summary:
+  parallel_dispatch: "yin (samsara:code-reviewer) + quality (samsara:code-quality-reviewer) dispatched in same message"
+  yin_verdict: "PASS_WITH_CONCERNS"
+  yin_critical_findings_addressed:
+    - "insert_many return semantics (docstring strengthened with IMPORTANT block)"
+    - "DirectivesRepository._guard lifecycle invariant at insert (added; DT-3.7 + DT-3.8 verify)"
+  yin_important_findings_addressed:
+    - "Segmenter._sort_key default-to-zero on missing sequence_number (now raises ValueError)"
+    - "storage/__init__.py docstring still said 'Phase 1' (updated to Phase 1 + Phase 2)"
+  quality_verdict: "PASS_WITH_CONCERNS"
+  quality_findings_acknowledged_not_fixed:
+    - "DRY: _guard parallel evolution between BehaviorFlagsRepository and DirectivesRepository — feature-iteration candidate (factor a shared helper when third repo arrives)"
+    - "Coupling: Segmenter depends on EventsRepository concrete class via comment-only sort-order assumption — would need a Protocol; deferred"
+    - "Cohesion: analysis/ package mixes contracts + assembler + pure metrics — tolerable at v1 per quality reviewer"
+    - "FILE_TOUCHING_TOOLS marked-bet not co-located with change-trigger — suggestion only"

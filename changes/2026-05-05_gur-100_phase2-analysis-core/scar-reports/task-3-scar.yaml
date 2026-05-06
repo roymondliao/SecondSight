@@ -1,0 +1,101 @@
+task_id: task-3
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      `update_status` uses `datetime.now(timezone.utc)` directly. Tests
+      that try to assert exact `disabled_at` values can't predict the
+      timestamp. The DT-3.4 tests assert `is not None` rather than a
+      specific value. A future test that needs exact-time control will
+      need to mock `datetime.now` — not done here.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      `get_active_conventions` does NOT filter by expires_at. A
+      directive with `expires_at` in the past but `status='active'`
+      WILL be returned. Documented in the docstring; expiry-checking
+      is GUR-101's analyzer concern. Acceptance scenario already calls
+      this out.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      `_directive_to_row` uses `cls._enum_value(d.status, DirectiveStatus)`
+      which calls `DirectiveStatus(value)` if the input isn't an enum
+      instance. The repository defensive `_guard()` already validated
+      the value, so the second call is redundant — kept as belt-and-
+      suspenders, same as task-2.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Reason is rejected when `reason is not None` for non-DISABLED
+      transitions. An empty-string reason `""` slips through the DISABLED
+      side: `reason is None` is False for `""`, so DISABLED with empty
+      string is accepted. Acknowledged: the contract says "non-None reason"
+      not "non-empty reason". An empty audit reason is still bad practice;
+      enforce at the HTTP layer (GUR-104) if we want stricter validation.
+    deferred_to_feature_iteration: true  # surface for GUR-104 contract
+
+silent_failure_conditions:
+  - description: >
+      `update_status(LookupError)` raises if rowcount==0, which uses
+      SQLite's UPDATE rowcount semantics. SQLAlchemy's rowcount is the
+      number of rows MATCHED, not modified — fine for SQLite, but other
+      backends (e.g. MySQL) may return modified-only counts that would
+      mark a no-op update (status already equals new_status) as
+      "not found". Currently SQLite-only; future backend port would
+      need to revisit.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      `_row_to_directive` reconstructs the Directive via Pydantic
+      validation. If the DB row contains a `status` value outside the
+      enum (only possible via manual SQL edit), the row would raise
+      `ValueError` during read — not caught. A read of a corrupted DB
+      crashes the caller. Symmetric with how events_repository handles
+      this: corrupted rows are caller-visible.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      SQLAlchemy `result.rowcount` returns 0 when no rows matched the
+      WHERE clause on SQLite UPDATE.
+    verified: true
+    note: "DT-3.5 passes — LookupError raised for unknown id."
+
+  - assumption: >
+      `datetime.now(timezone.utc)` survives the SQLite round-trip with
+      tz dropped to None but wall-clock preserved.
+    verified: true
+    note: >
+      Same pattern as task-2's BehaviorFlag.created_at; tested implicitly
+      via DT-3.4 which compares only is-None / is-not-None on disabled_at.
+
+  - assumption: >
+      Sharing `metadata` between events_table, behavior_flags_table,
+      and directives_table works for create_all even when called from
+      different repositories.
+    verified: true
+    note: >
+      DirectivesRepository.create_schema in test_create_schema_idempotent
+      brings up the directives table in a fresh DB without conflict.
+
+debt_registered: true
+debt_location: >
+  src/secondsight/storage/directives_repository.py — empty-string reason
+  edge case (deferred to GUR-104); SQLite-specific rowcount semantics
+  in update_status.
+
+resolved_items:
+  - original_section: silent_failure_conditions
+    original_description: >
+      DirectivesRepository._guard did not validate the lifecycle
+      invariant "disabled_at and disabled_reason are non-None iff
+      status is DISABLED". A model_construct bypass with
+      status='active' + disabled_at=set could land an incoherent row
+      via insert. (Yin-reviewer Critical finding.)
+    resolution: >
+      _guard now performs a third coherence check: raises ValueError
+      if (status==DISABLED) != (disabled_at and disabled_reason both
+      set). DT-3.7 verifies status='active' + disabled_at=set rejects;
+      DT-3.8 verifies status='disabled' + disabled_at=None rejects.
+      All 12 prior tests continue passing; 2 new tests added.

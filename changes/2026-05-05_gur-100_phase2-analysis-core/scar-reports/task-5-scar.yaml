@@ -1,0 +1,94 @@
+task_id: task-5
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      `_TOKEN_BEARING_EVENT_TYPES` is hard-coded to `{"thinking",
+      "response"}`. If a future event_type is added that should also
+      carry token_count (e.g. a hypothetical "tool_thinking"), the
+      WARNING log will not fire on null token_count for that type.
+      Acknowledged: cheap to extend; not load-bearing for v1.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      `compute_segment_metrics` parses ISO-format timestamps via
+      `datetime.fromisoformat`. The Segmenter `_event_to_dict` produces
+      ISO-format strings, but if a future caller hands a raw event
+      with a non-ISO timestamp string, the metric falls through to
+      WARNING + excluded-from-duration. Symmetric with the null-token
+      design (warn + zero-contribution); not silent. Documented.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      `error_count` only counts ToolUseSpans with success=False. A
+      raw event dict with `event_type="tool_use_end"` and `data.success
+      = False` would NOT be counted because tool_use_ends are paired
+      INTO ToolUseSpans by the segmenter. If a future code path
+      bypasses the segmenter and feeds raw tool_use_end dicts directly,
+      errors won't count. Coupling-by-convention: depends on the
+      caller using the segmenter. Acceptable.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      `unique_files` uses a frozenset literal in module-level
+      `FILE_TOUCHING_TOOLS`. If a Claude Code tool name changes case
+      (e.g. "read" instead of "Read"), the metric silently
+      under-counts. Tied to upstream tool-name stability; documented.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      `int(tc)` for token_count assumes the value is convertible to
+      int. A string token_count "1500" would coerce silently; a list
+      [1500] would raise TypeError mid-loop. The schema doesn't
+      type-check the dict's token_count field (it's just `dict[str,
+      Any]`), so this is a contract-loosening point. Trust assumption:
+      callers (segmenter) construct dicts via `_event_to_dict` which
+      passes through `event.token_count` as the typed Python value.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      `duration` returns 0.0 when len(timestamps) <= 1. A segment with
+      exactly one parseable timestamp + several unparseable ones
+      reports duration=0.0 — same value as a segment with all-bad
+      timestamps. Distinguishing "no timestamps" from "all timestamps
+      bad" requires either extra return shape or a distinct sentinel,
+      neither implemented. Acceptable: WARNING logs trace the bad ones.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      Pydantic v2 with arbitrary types disabled doesn't object to
+      `list[ToolUseSpan | dict[str, Any]]` containing both kinds.
+    verified: true
+    note: "tests/analysis/test_metrics.py exercises both span and dict elements"
+
+  - assumption: >
+      Existing test suite continues to pass with the new schemas and
+      modules (no name collisions, no import cycles).
+    verified: true
+    note: "Full pytest run: 398 passed, 1 skipped, 0 failures"
+
+  - assumption: >
+      D3 ship gate verifiable via `git diff docs/system_design.md`
+      grep against `confidence`, `disabled_at`, `disabled_reason`.
+    verified: true
+    note: |
+      git diff -- docs/system_design.md | grep -F 'confidence":' returned:
+        +      "confidence": "high | medium | low — LLM 對此 flag 判定的信心度"
+      grep -F 'disabled_at' returned:
+        +    disabled_at     DATETIME, ...
+        + lifecycle paragraph mentions disabled_at
+      grep -F 'disabled_reason' returned:
+        +    disabled_reason TEXT ...
+        + lifecycle paragraph
+
+debt_registered: true
+debt_location: >
+  src/secondsight/analysis/metrics.py — see _TOKEN_BEARING_EVENT_TYPES
+  hard-code; FILE_TOUCHING_TOOLS case-sensitivity; duration=0.0 ambiguity
+  between single-event and all-bad-timestamps segments.
+
+resolved_items: []
+  # No self-iteration fixes — first run was green on all 9 tests, plus
+  # the SD patches landed cleanly with the D3 grep verification.

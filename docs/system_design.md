@@ -935,13 +935,19 @@ FLAG_DEFINITIONS: dict[BehaviorFlagType, FlagDefinition] = {
     {
       "flag_type": "必須是上述定義的合法類型",
       "event_ids": ["涉及的事件 ID"],
-      "reason": "為什麼判定為低效（一句話）"
+      "reason": "為什麼判定為低效（一句話）",
+      "confidence": "high | medium | low — LLM 對此 flag 判定的信心度"
     }
   ],
   "total_events": number,
   "flagged_events": number
 }
 ```
+
+`confidence` 由 LLM 自行判定。Orchestrator 可選擇丟棄低信心 flag
+以降低 false-positive；schema 層不過濾。`schemas/analysis.py`
+（`secondsight.analysis.schemas.BehaviorFlag`）為唯一 source of truth，
+LLM 輸出由該 Pydantic 模型驗證。
 
 #### 5.5.3 Cross-Session Aggregation Prompt（第二層）
 
@@ -1274,7 +1280,9 @@ CREATE TABLE directives (
     source_sessions TEXT,               -- JSON array：貢獻此 convention 的 session IDs
     created_at      DATETIME,
     expires_at      DATETIME,
-    updated_at      DATETIME
+    updated_at      DATETIME,
+    disabled_at     DATETIME,            -- NULL except when status = 'disabled'
+    disabled_reason TEXT                 -- NULL except when status = 'disabled'
 );
 ```
 
@@ -1283,6 +1291,14 @@ CREATE TABLE directives (
 - Session start 載入 conventions：`WHERE project_id = ? AND type = 'convention' AND status = 'active' ORDER BY frequency DESC`
 - Lifecycle management：update status, check expiry, handle superseding
 - [Reserved] Session start 預載入 hints：`WHERE project_id = ? AND type = 'hint' AND status = 'active'`
+
+**Soft-disable lifecycle 合約：** 若 `status` 從 `'disabled'` 轉回 `'active'`，
+`disabled_at` 與 `disabled_reason` 必須清除為 NULL（避免 stale 元資料）；
+`status` 從 `'disabled'` 轉到任何非 `'disabled'` 值（含 `superseded` /
+`expired` / `obsolete`）也同樣清除——只有 `'disabled'` 狀態擁有這兩個欄位。
+進入 `'disabled'` 狀態 MUST 提供 `disabled_reason`（audit trail 不可省略）。
+HTTP `PATCH /api/directives/{id}` (GUR-104) 僅接受 `{active, disabled}`；
+`expired` / `superseded` / `obsolete` 由 analyzer 設定，不對外暴露。
 
 ---
 
