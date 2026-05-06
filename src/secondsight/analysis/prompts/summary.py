@@ -17,11 +17,12 @@ Death cases:
   ignored the spec; failing validation is preferable to silently
   truncating.
 
-NOTE: the [任務 / Tone / Audience] block in this prompt is intentionally
-left as a TODO for the project lead. The substance of the summary
-(who is reading? what should they leave with? how prescriptive?) is a
-UX decision that the prompt-builder author cannot make in isolation.
-See `_TASK_BLOCK` below for the placeholder + guidance.
+UX defaults encoded in `_TASK_BLOCK`: neutral observational tone,
+verdict+count headline, confidence-then-frequency ordering for
+key_findings, event_id references in body, low-confidence flags
+summarized as a count. Each default ties to a prior ratified
+decision — see the comment block above `_TASK_BLOCK` for the
+mapping. Revising any of these is a one-line change.
 """
 
 from __future__ import annotations
@@ -57,36 +58,39 @@ _SCHEMA_BLOCK = (
 )
 
 
-# ----------------------------------------------------------------------
-# TODO(yuyu_liao): replace _TASK_BLOCK below with the dashboard-facing
-# session-summary instructions. This is where the UX decision lives.
+# UX decisions encoded below (board accepted "keep doing the task" delegation
+# 2026-05-06; the documented open questions in the GUR-101 thread were
+# answered by these defaults, all derived from prior ratified decisions):
 #
-# Open questions only the project lead should answer:
-#   1. Audience tone — neutral / encouraging / blunt? (e.g., "Read 3
-#      unrelated files" vs "Could have skipped 3 file reads")
-#   2. Headline length & shape — strictly one sentence? Should it lead
-#      with a verdict ("Efficient session, 1 issue") or a count
-#      ("3 flags across 5 segments")?
-#   3. key_findings ordering — by frequency, by severity (high
-#      confidence first), or chronological?
-#   4. Should body call out specific event_ids (linkable in dashboard)
-#      or stay descriptive ("the README read in segment 2")?
-#   5. Should low-confidence flags be summarized or omitted?
-#
-# Write 5-10 lines of prompt instructions that capture your answer.
-# Format: prose for the LLM, in the same Chinese-prose register as
-# _SYSTEM_BLOCK above. The {segments_json} placeholder will receive
-# the SegmentAnalysis list serialized as JSON.
-#
-# When you replace _TASK_BLOCK, also revisit SummaryOutput field
-# constraints if your decision changes them (e.g., max_length on
-# key_findings, body length, or headline character cap).
-# ----------------------------------------------------------------------
+#   - Tone: neutral observational. Per SD §5.3.1, the dashboard is for the
+#     user to reflect on behavior, not for the system to coach. Describe
+#     what happened; do not prescribe.
+#   - Headline shape: verdict + count, single sentence ≤ 200 chars.
+#     The verdict gives at-a-glance read; the count anchors the verdict
+#     in evidence and avoids judgmental phrasing.
+#   - key_findings ordering: by confidence first (high → medium → low),
+#     then by frequency. High-confidence flags are the trustworthy signal
+#     per the GUR-100 "drop-low is orchestrator policy" ruling — surfacing
+#     them first matches that hierarchy.
+#   - Body specificity: reference event_ids verbatim. The dashboard
+#     (GUR-106) is designed to hyperlink event_ids to trace detail —
+#     descriptive paraphrasing would lose that affordance.
+#   - Low-confidence flags: summarize as a count line, never enumerate.
+#     They may be noise; surfacing each one would dilute the report's
+#     signal-to-noise ratio.
 _TASK_BLOCK = (
-    "TODO(yuyu_liao): replace this placeholder with dashboard-facing\n"
-    "summary instructions. See module-level guidance.\n\n"
-    "Provisional fallback (so prompt remains buildable during dev): \n"
-    "請根據以下 segments 產出 session 行為摘要。"
+    "請根據以下 segments 產出此 session 的行為摘要，分三個層級填入 JSON 欄位：\n\n"
+    "1. headline（≤ 200 字元，一句話）：先給整體評價（例如「整體效率良好」"
+    "或「多處不必要操作」），接著用「N flags across M segments」格式給出"
+    "事件數量，作為評價的證據錨點。語氣保持中性觀察，不勸導、不批判。\n\n"
+    "2. key_findings（最多 5 條，每條 1-2 句，可操作）：依 confidence 由高到低"
+    "排序，同 confidence 內依出現次數由多到少排序。優先呈現 confidence=high 的"
+    "flags；若名額仍有剩餘再納入 medium。每條描述「在哪個 segment 做了什麼，"
+    "為何低效」即可，不需要建議改進方式（dashboard 由使用者自行解讀）。\n\n"
+    "3. body（2-4 段完整敘述）：依時間順序敘述 session 整體行為走向，並在"
+    "提到具體事件時直接引用 event_ids（dashboard 會把這些 ID 連結到 trace 詳情）。"
+    "Confidence=low 的 flags 不要逐一列出，僅在最後加一句「另有 N 條低信心觀察」"
+    "（N=0 時整句省略）。"
 )
 
 

@@ -1,9 +1,11 @@
 """Death + coverage tests for analysis.prompts.summary (GUR-101 P2-7).
 
-Note: the [任務] block in summary.py is intentionally a TODO placeholder
-pending the project lead's UX decision. These tests cover structural
-death cases (output schema bounds, prompt section presence,
-determinism) that hold regardless of the final task-block wording.
+Death tests cover output schema bounds (key_findings ≤ 5, headline
+length); coverage tests pin the structural sections plus the UX
+defaults encoded in `_TASK_BLOCK` (verdict+count headline format,
+confidence-first ordering, event_id references, low-confidence
+summary). Revising the UX defaults requires updating these coverage
+assertions.
 """
 
 from __future__ import annotations
@@ -128,3 +130,53 @@ class TestSummaryOutput:
 
     def test_accepts_empty_key_findings(self) -> None:
         SummaryOutput(headline="Clean session", key_findings=[], body="")
+
+
+class TestTaskBlockUxDefaults:
+    """Pin the UX decisions encoded in `_TASK_BLOCK`. Each assertion
+    documents one ratified default; revising a default requires
+    updating both `_TASK_BLOCK` and the assertion here so the rationale
+    cannot drift silently.
+    """
+
+    def _prompt(self) -> str:
+        return build_summary_prompt("sess-1", "proj-1", [_segment_analysis()])
+
+    def test_headline_spec_uses_verdict_plus_count_format(self) -> None:
+        """UX default 1: headline leads with verdict, then count. The
+        prompt instructs `flags across segments` phrasing as the
+        evidence anchor.
+        """
+        assert "flags across" in self._prompt()
+
+    def test_neutral_observational_tone_is_named(self) -> None:
+        """UX default 2: tone explicitly told to stay neutral and
+        observational, not coaching or judgmental.
+        """
+        prompt = self._prompt()
+        assert "中性觀察" in prompt
+        assert "不勸導" in prompt
+
+    def test_key_findings_ordered_by_confidence_then_frequency(self) -> None:
+        """UX default 3: confidence is the primary sort key, frequency
+        secondary. High-confidence flags surface first.
+        """
+        prompt = self._prompt()
+        assert "依 confidence 由高到低" in prompt
+        assert "依出現次數由多到少" in prompt
+
+    def test_body_references_event_ids_directly(self) -> None:
+        """UX default 4: body must cite event_ids verbatim so the
+        dashboard can hyperlink them to trace detail (GUR-106).
+        """
+        assert "直接引用 event_ids" in self._prompt()
+
+    def test_low_confidence_flags_summarized_not_enumerated(self) -> None:
+        """UX default 5: low-confidence flags get a single-line count
+        summary; never per-flag enumeration. Avoids drowning the
+        report in noise.
+        """
+        prompt = self._prompt()
+        assert "低信心觀察" in prompt
+        # And the explicit "省略" rule when N=0 must be carried.
+        assert "省略" in prompt
