@@ -88,6 +88,7 @@ from typing import TYPE_CHECKING, Final
 
 from secondsight.analysis.aggregator import AggregateProjectResult, aggregate_project_flags
 from secondsight.analysis.agent import AnalysisAgent, AnalysisAgentError
+from secondsight.api._id_safety import is_safe_id
 from secondsight.analysis.behavior import promote_draft, validate_draft_pre_insert
 from secondsight.analysis.metrics import compute_segment_metrics
 from secondsight.analysis.prompts.behavior import build_segment_prompt
@@ -127,6 +128,35 @@ def _ensure_utc(dt: datetime) -> datetime:
 # Hard-coded for v1.
 # TODO: make configurable via analysis_config.toml (SD §11 line 1392).
 STALE_DIRECTIVES_THRESHOLD_DAYS: Final[int] = 30
+
+# Maximum length of the sanitized error_message persisted to analysis_runs
+# on pipeline failure. Bounded to keep DB rows small and to limit how much
+# of an LLM prompt/response fragment ends up in the audit column.
+_MAX_FAILURE_MESSAGE_LENGTH: Final[int] = 200
+
+
+def _sanitize_failure_message(exc: BaseException) -> str:
+    """Return a bounded, diagnostic-but-non-leaky error_message string.
+
+    Security-privacy-review MEDIUM-2: the prior `str(exc)` form persisted
+    arbitrary exception messages verbatim to the analysis_runs.error_message
+    column. AnalysisAgentError messages may include LLM prompt or response
+    fragments derived from user-session segment data; SessionIncompleteError
+    and SessionAlreadyAnalyzedError include session/run identifiers in their
+    message text.
+
+    Sanitization rule: record exception class name + truncated repr-stripped
+    message (whitespace-collapsed, length-capped). Diagnostics for the
+    operator survive; unbounded user content does not.
+    """
+    cls_name = type(exc).__name__
+    raw = str(exc).strip()
+    # Collapse internal whitespace so multi-line LLM output doesn't bloat the
+    # column or break log parsers.
+    collapsed = " ".join(raw.split())
+    if len(collapsed) > _MAX_FAILURE_MESSAGE_LENGTH:
+        collapsed = collapsed[: _MAX_FAILURE_MESSAGE_LENGTH - 3] + "..."
+    return f"{cls_name}: {collapsed}" if collapsed else cls_name
 
 
 class SessionIncompleteError(Exception):
@@ -321,8 +351,16 @@ class Orchestrator:
         except Exception as exc:
             # Outer pipeline boundary catch-all (see module docstring rationale).
             # record_failure sets stage='failed' + completed_at = now().
+            #
+            # Sanitization (security-privacy-review MEDIUM-2): record exception
+            # type + truncated message rather than the raw str(exc). Raw
+            # exceptions from the pipeline (notably AnalysisAgentError) may
+            # carry LLM prompt/response fragments derived from segment data.
+            # The audit row's error_message is queryable via any future
+            # surface; keep it diagnostic but bounded.
+            sanitized_message = _sanitize_failure_message(exc)
             try:
-                self._analysis_runs_repo.record_failure(run_id, str(exc))
+                self._analysis_runs_repo.record_failure(run_id, sanitized_message)
             except Exception as inner_exc:
                 # record_failure itself failed (e.g., DB connection lost).
                 # Log and continue propagation of the original exception.
@@ -524,12 +562,39 @@ class Orchestrator:
         stage='failed'. The DB record is the authoritative source; the
         filesystem is a secondary cache for tools that bypass the DB.
         """
+        # Path-safety guard (security-privacy-review HIGH-1): every path-
+        # constructing site in this codebase validates project_id/session_id
+        # via is_safe_id before use as a path component (RawTraceStore,
+        # retention.py, hooks.py, observation.py). The orchestrator's
+        # filesystem writer is callable independently of the HTTP gate
+        # (CLI, GUR-103 trigger, tests) and must not rely on upstream
+        # validation. Reject unsafe components with ValueError naming the
+        # offending field; do NOT echo the raw value (avoid leaking the
+        # adversarial input back through logs).
+        if not is_safe_id(report.project_id):
+            raise ValueError(
+                "Refusing to write filesystem backup: project_id is not a "
+                "safe path component (contains traversal chars or is a "
+                "pure-dot sequence). See secondsight.api._id_safety."
+            )
+        if not is_safe_id(report.session_id):
+            raise ValueError(
+                "Refusing to write filesystem backup: session_id is not a "
+                "safe path component. See secondsight.api._id_safety."
+            )
+
         secondsight_home_str = os.environ.get("SECONDSIGHT_HOME", "")
         if secondsight_home_str:
             home = Path(secondsight_home_str)
         else:
             home = Path.home() / ".secondsight"
 
+        # Belt-and-braces containment check (mirrors RawTraceStore.event_path):
+        # resolve the constructed path and assert it is rooted under
+        # home / "projects". is_safe_id above already rejects traversal
+        # characters, but symlink resolution + Path.resolve covers the
+        # remaining edge case of pre-existing symlinks under home.
+        projects_root = (home / "projects").resolve()
         backup_path = (
             home
             / "projects"
@@ -538,6 +603,15 @@ class Orchestrator:
             / report.session_id
             / "session_report.json"
         )
+        resolved_backup = backup_path.resolve()
+        try:
+            resolved_backup.relative_to(projects_root)
+        except ValueError as exc:
+            raise ValueError(
+                "Refusing to write filesystem backup: resolved path escapes "
+                "the projects root (symlink or other indirection)."
+            ) from exc
+
         backup_path.parent.mkdir(parents=True, exist_ok=True)
 
         payload = {

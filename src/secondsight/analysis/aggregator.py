@@ -89,6 +89,7 @@ DEFAULT_CONVENTION_TOP_N: Final[int] = 15
 
 
 def compute_identity_key(
+    project_id: str,
     flag_type: BehaviorFlagType,
     representative_sessions: Sequence[str],
 ) -> str:
@@ -99,12 +100,20 @@ def compute_identity_key(
     full aggregation. Tests use it directly. The aggregator is the only
     production caller today.
 
-    Input: emerged AggregatePattern's (flag_type, representative_sessions)
-    — NOT the input flags. This is critical: two patterns emerging from
-    the same flag_type with overlapping but distinct session-sets must
-    produce distinct identity_keys (DC-6).
+    Input: emerged AggregatePattern's (project_id, flag_type,
+    representative_sessions) — NOT the input flags. This is critical: two
+    patterns emerging from the same flag_type with overlapping but distinct
+    session-sets must produce distinct identity_keys (DC-6).
 
-    Returns: hex sha256 of `flag_type.value + "|" +
+    Security-privacy-review MEDIUM-3: project_id is included in the hash
+    input so the hash itself is self-isolating across projects. Previously
+    cross-project isolation depended entirely on the DB
+    UNIQUE(project_id, identity_key) constraint; now it is structural in
+    the hash. This is defense-in-depth — the DB constraint still enforces
+    the invariant, but the hash no longer collides across projects even
+    if the constraint were removed or the hash were used outside the DB.
+
+    Returns: hex sha256 of `project_id + "|" + flag_type.value + "|" +
     sorted(representative_sessions).join(",")`.
 
     Assumption: flag_type.value is the canonical string (e.g.
@@ -112,7 +121,7 @@ def compute_identity_key(
     .value is the declared string, not the enum's integer ordinal or repr.
     """
     sorted_sessions = sorted(representative_sessions)
-    raw = f"{flag_type.value}|{','.join(sorted_sessions)}"
+    raw = f"{project_id}|{flag_type.value}|{','.join(sorted_sessions)}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -268,7 +277,9 @@ async def aggregate_project_flags(
     upserted = 0
 
     for flag_type, pattern in top:
-        identity_key = compute_identity_key(flag_type, pattern.representative_sessions)
+        identity_key = compute_identity_key(
+            project_id, flag_type, pattern.representative_sessions
+        )
         # frequency: occurrence_count / flags_read_total for this project run.
         # NOT a global cross-project frequency. Local to this aggregation run.
         frequency = (

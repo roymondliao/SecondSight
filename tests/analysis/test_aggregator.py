@@ -380,10 +380,14 @@ class TestDT42DistinctIdentityKeys:
 
         # Verify keys match compute_identity_key
         expected_key_A = compute_identity_key(
-            BehaviorFlagType.UNNECESSARY_READ, pattern_A.representative_sessions
+            _PROJECT_ID,
+            BehaviorFlagType.UNNECESSARY_READ,
+            pattern_A.representative_sessions,
         )
         expected_key_B = compute_identity_key(
-            BehaviorFlagType.UNNECESSARY_READ, pattern_B.representative_sessions
+            _PROJECT_ID,
+            BehaviorFlagType.UNNECESSARY_READ,
+            pattern_B.representative_sessions,
         )
         assert set(keys) == {expected_key_A, expected_key_B}
 
@@ -587,19 +591,19 @@ class TestDT46IdentityKeyStability:
 
     def test_same_inputs_same_hash(self) -> None:
         key1 = compute_identity_key(
-            BehaviorFlagType.UNNECESSARY_READ, ["sess-A", "sess-B"]
+            _PROJECT_ID, BehaviorFlagType.UNNECESSARY_READ, ["sess-A", "sess-B"]
         )
         key2 = compute_identity_key(
-            BehaviorFlagType.UNNECESSARY_READ, ["sess-A", "sess-B"]
+            _PROJECT_ID, BehaviorFlagType.UNNECESSARY_READ, ["sess-A", "sess-B"]
         )
         assert key1 == key2
 
     def test_session_order_does_not_matter(self) -> None:
         key1 = compute_identity_key(
-            BehaviorFlagType.UNNECESSARY_READ, ["sess-A", "sess-B"]
+            _PROJECT_ID, BehaviorFlagType.UNNECESSARY_READ, ["sess-A", "sess-B"]
         )
         key2 = compute_identity_key(
-            BehaviorFlagType.UNNECESSARY_READ, ["sess-B", "sess-A"]
+            _PROJECT_ID, BehaviorFlagType.UNNECESSARY_READ, ["sess-B", "sess-A"]
         )
         assert key1 == key2, "Session order must not affect identity_key"
 
@@ -607,48 +611,64 @@ class TestDT46IdentityKeyStability:
         """Hash uses flag_type.value (string), not repr of enum object.
 
         This ensures resilience to enum re-ordering or repr changes.
-        The hash must equal sha256(value + "|" + sorted_sessions_joined).
+        The hash must equal sha256(project_id + "|" + value + "|" + sorted_sessions_joined).
         """
         flag_type = BehaviorFlagType.UNNECESSARY_READ
         sessions = ["sess-A", "sess-B"]
-        computed = compute_identity_key(flag_type, sessions)
+        computed = compute_identity_key(_PROJECT_ID, flag_type, sessions)
 
-        # Manually compute expected hash
+        # Manually compute expected hash (security-privacy-review MEDIUM-3:
+        # project_id is now part of the hash input).
         sorted_sessions = sorted(sessions)
-        raw = f"{flag_type.value}|{','.join(sorted_sessions)}"
+        raw = f"{_PROJECT_ID}|{flag_type.value}|{','.join(sorted_sessions)}"
         expected = hashlib.sha256(raw.encode()).hexdigest()
 
         assert computed == expected, (
-            f"identity_key must be sha256 of flag_type.value + '|' + sorted sessions. "
-            f"Got {computed!r}, expected {expected!r}"
+            f"identity_key must be sha256 of project_id + '|' + flag_type.value + "
+            f"'|' + sorted sessions. Got {computed!r}, expected {expected!r}"
         )
 
     def test_different_sessions_different_hash(self) -> None:
         key1 = compute_identity_key(
-            BehaviorFlagType.UNNECESSARY_READ, ["sess-A"]
+            _PROJECT_ID, BehaviorFlagType.UNNECESSARY_READ, ["sess-A"]
         )
         key2 = compute_identity_key(
-            BehaviorFlagType.UNNECESSARY_READ, ["sess-B"]
+            _PROJECT_ID, BehaviorFlagType.UNNECESSARY_READ, ["sess-B"]
         )
         assert key1 != key2
 
     def test_different_flag_types_different_hash(self) -> None:
         key1 = compute_identity_key(
-            BehaviorFlagType.UNNECESSARY_READ, ["sess-A"]
+            _PROJECT_ID, BehaviorFlagType.UNNECESSARY_READ, ["sess-A"]
         )
         key2 = compute_identity_key(
-            BehaviorFlagType.REDUNDANT_EXPLORATION, ["sess-A"]
+            _PROJECT_ID, BehaviorFlagType.REDUNDANT_EXPLORATION, ["sess-A"]
         )
         assert key1 != key2
 
+    def test_different_projects_different_hash(self) -> None:
+        """Security-privacy-review MEDIUM-3: distinct projects must produce
+        distinct hashes even when flag_type + sessions are identical."""
+        key1 = compute_identity_key(
+            "proj-alpha", BehaviorFlagType.UNNECESSARY_READ, ["sess-A"]
+        )
+        key2 = compute_identity_key(
+            "proj-beta", BehaviorFlagType.UNNECESSARY_READ, ["sess-A"]
+        )
+        assert key1 != key2, (
+            "Cross-project isolation must be structural in the hash, "
+            "not solely enforced by the DB UNIQUE constraint."
+        )
+
     def test_empty_sessions_stable(self) -> None:
         """Empty session list produces a stable hash (not error)."""
-        key1 = compute_identity_key(BehaviorFlagType.MISSED_SHORTCUT, [])
-        key2 = compute_identity_key(BehaviorFlagType.MISSED_SHORTCUT, [])
+        key1 = compute_identity_key(_PROJECT_ID, BehaviorFlagType.MISSED_SHORTCUT, [])
+        key2 = compute_identity_key(_PROJECT_ID, BehaviorFlagType.MISSED_SHORTCUT, [])
         assert key1 == key2
 
-        # Verify it matches manual computation
-        raw = f"{BehaviorFlagType.MISSED_SHORTCUT.value}|"
+        # Verify it matches manual computation (security-privacy-review
+        # MEDIUM-3: project_id is now the first segment of the hash input).
+        raw = f"{_PROJECT_ID}|{BehaviorFlagType.MISSED_SHORTCUT.value}|"
         expected = hashlib.sha256(raw.encode()).hexdigest()
         assert key1 == expected
 
@@ -796,7 +816,7 @@ class TestHPA4IdempotentRerun:
         keys = _get_directive_identity_keys(db_engine)
         assert len(keys) == 1
         expected_key = compute_identity_key(
-            BehaviorFlagType.UNNECESSARY_READ, ["sess-001"]
+            _PROJECT_ID, BehaviorFlagType.UNNECESSARY_READ, ["sess-001"]
         )
         assert keys[0] == expected_key
 
