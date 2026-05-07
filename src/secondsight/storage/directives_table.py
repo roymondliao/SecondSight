@@ -6,6 +6,18 @@ adds these columns to the canonical DDL is part of task-5 (D3 ship gate).
 
 `status` and `type` columns are TEXT; validation lives at the
 repository layer (D1 — mirrors events.event_type convention).
+
+`identity_key` (GUR-102 task-1):
+    Hash = sha256(flag_type.value + "|" + sorted(repr_session_ids).join(",")).
+    server_default="" is a TRANSITIONAL DDL default only — valid because
+    the table is empty pre-Phase 3 (G4). The DirectivesRepository
+    upsert_with_identity_key() guard rejects empty identity_key, so no
+    real row should ever hold "". If the table is NOT empty pre-Phase 3
+    (early dogfooding), a backfill is required before the unique index
+    can be enforced.
+
+    UNIQUE(project_id, identity_key) named "uq_directives_project_identity"
+    enables the aggregator UPSERT pattern in DirectivesRepository.
 """
 
 from __future__ import annotations
@@ -42,6 +54,17 @@ directives = sa.Table(
     sa.Column("updated_at", sa.DateTime, nullable=False),
     sa.Column("disabled_at", sa.DateTime, nullable=True),
     sa.Column("disabled_reason", sa.Text, nullable=True),
+    sa.Column(
+        "identity_key",
+        sa.Text,
+        nullable=False,
+        server_default="",
+    ),  # transitional default — see module docstring; empty rejected by repo
+    sa.UniqueConstraint(
+        "project_id",
+        "identity_key",
+        name="uq_directives_project_identity",
+    ),
 )
 
 sa.Index(

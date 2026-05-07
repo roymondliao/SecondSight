@@ -1,0 +1,224 @@
+task_id: task-1
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      SQLite create_schema() uses metadata.create_all(checkfirst=True) which
+      creates tables/indexes that don't exist but does NOT ALTER existing tables
+      to add new columns. If the directives table already exists on disk without
+      the identity_key column (e.g., a dogfooding database from before this
+      migration), _row_to_directive will raise KeyError on read. No migration
+      path (ALTER TABLE ADD COLUMN) is implemented.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      The Directive.identity_key defaults to "" in the Pydantic model. The
+      existing insert() method now converts IntegrityError to ValueError with
+      a message naming the constraint. Non-aggregator callers of insert() must
+      still supply distinct identity keys or the second insert will raise
+      ValueError (now domain-meaningful, not a raw SQLAlchemy leak).
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      count_recent_partial uses updated_at < since to find "stuck" runs. If the
+      system clock jumps backward (NTP correction), recently-created runs may
+      appear "old" and be incorrectly counted as partial. Since the threshold is
+      caller-controlled (ship-manifest review) this is a low-risk monitoring
+      artifact rather than a data corruption path.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      get_latest_for_session now has a deterministic tiebreak (started_at DESC,
+      id DESC) for microsecond-identical timestamps. The tiebreak is lexicographic
+      on the id string ("run-<uuid4>"). UUID4 ids are not temporally ordered, so
+      two runs started in the same microsecond may return the one with the larger
+      UUID string rather than the most recently started one. In practice this is
+      a monitoring edge case — two start_run() calls within the same microsecond
+      is unlikely outside deliberate test scenarios.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      The directives table is empty before Phase 3 ships. The
+      UNIQUE(project_id, identity_key) constraint with server_default="" is safe
+      only because no existing rows would conflict on ("proj_x", "") with each
+      other (G4 from 2-pre-thinking.md).
+    verified: false
+    note: >
+      The plan explicitly states this (G4). If early dogfooding wrote directives
+      before this migration, a backfill is required to assign identity_key values
+      before the unique index can be safely created. Without the backfill, the
+      unique index would fail to create (or would block any second directive
+      insert in the same project via the old insert() path).
+    deferred_to_feature_iteration: true
+
+  - assumption: >
+      summary_written is a terminal stage that sets completed_at. This was
+      confirmed by the task spec listing summary_written in terminal stages for
+      count_recent_partial. Initial test incorrectly assumed otherwise; fixed
+      during Step 7.
+    verified: true
+    note: >
+      The TERMINAL_STAGES set in schemas.py (now the single source of truth)
+      includes summary_written, aggregated, failed. Tests pass confirming
+      this behavior.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      on_conflict_do_update with index_elements=[directives.c.project_id,
+      directives.c.identity_key] correctly targets the
+      UNIQUE(project_id, identity_key) named constraint in SQLite.
+    verified: true
+    note: >
+      Test test_dt_upsert_same_identity_key_updates_instruction passes,
+      confirming the conflict target resolves correctly.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      The metadata shared via events_table.metadata is the single source of
+      truth. All new tables (analysis_runs, session_reports) and the modified
+      directives table register against it. A single create_schema() call on any
+      repository triggers create_all() on the entire metadata.
+    verified: true
+    note: >
+      All table modules import from secondsight.storage.events_table import
+      metadata. Confirmed by reading the existing behavior_flags_table.py and
+      directives_table.py patterns.
+    deferred_to_feature_iteration: false
+
+debt_registered: true
+debt_location: >
+  src/secondsight/storage/directives_table.py (server_default="" transitional
+  concern); no ALTER TABLE migration path for existing databases (deferred to
+  feature iteration).
+
+resolved_items:
+  - original_section: known_shortcuts
+    original_description: >
+      Existing test _directive() helper used identity_key="" by default, causing
+      UNIQUE(project_id, identity_key) conflicts when multiple directives were
+      inserted in the same project via pre-existing tests.
+    resolution: >
+      Updated _directive() helper in tests/storage/test_directives_repository.py
+      to default identity_key to the directive's id (e.g., "dir-1", "d-2"),
+      making each directive's identity key unique within tests without requiring
+      test authors to remember to set it. This preserves all pre-existing test
+      semantics while accommodating the new unique constraint.
+
+  - original_section: known_shortcuts
+    original_description: >
+      insert() callers with empty identity_key would get a silent constraint
+      violation on the second insert for the same project.
+    resolution: >
+      CRITICAL-2 fix (review pass): Added WARNING log to
+      DirectivesRepository.insert() for empty identity_key (existing fix from
+      prior subagent) AND added IntegrityError catch in the DB execute block
+      that converts the raw SQLAlchemy IntegrityError to a domain-meaningful
+      ValueError naming the constraint (uq_directives_project_identity), the
+      project_id, and the identity_key. Test
+      test_dt_insert_empty_identity_key_second_insert_raises_value_error
+      verifies this behavior. The prior scar report claim that "WARNING resolves
+      the IntegrityError surface" was incorrect — the WARNING resolved first-
+      insert visibility only; this fix resolves second-insert distinguishability.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      advance_stage with an unknown run_id would silently no-op if rowcount was
+      not checked, leaving the pipeline in an inconsistent state where the
+      orchestrator believes a stage advanced but the audit row was never updated.
+    resolution: >
+      advance_stage() and record_failure() both check rowcount == 0 and raise
+      LookupError. Tests DT-1.2 and DT-1.3 confirm this behavior.
+
+  - original_section: assumptions_made
+    original_description: >
+      _TERMINAL_STAGES defined twice — once in schemas.py (private, dead)
+      and once in analysis_runs_repository.py (private, active). Two copies
+      would silently diverge when a new terminal stage is added.
+    resolution: >
+      CRITICAL-1 fix (review pass): Renamed schemas.py's _TERMINAL_STAGES to
+      public TERMINAL_STAGES (no underscore) and exported it from
+      secondsight.analysis.__init__. Deleted the private copy in
+      analysis_runs_repository.py; the repository now imports TERMINAL_STAGES
+      from schemas. Single source of truth co-located with the AnalysisRunStage
+      enum definition. _NON_TERMINAL_STAGES derives from the imported set.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      _row_to_run raised undocumented ValueError on corrupt DB stage, with no
+      run_id or session_id in the message for manual repair.
+    resolution: >
+      CRITICAL-3 fix (review pass): Wrapped AnalysisRunStage(row["stage"])
+      in _row_to_run with try/except ValueError that re-raises with a message
+      including run_id, session_id, the bad stage value, and valid values.
+      Updated get_latest_for_session docstring to document ValueError propagation
+      from corrupt DB state. Test
+      test_dt_corrupt_stage_raises_value_error_with_context verifies the message
+      contains all three context fields.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      get_latest_for_session non-deterministic tiebreak on microsecond-identical
+      started_at timestamps.
+    resolution: >
+      IMPORTANT-4 fix (review pass): Added id DESC as secondary sort key in
+      get_latest_for_session (started_at DESC, id DESC). Zero-cost determinism.
+      Test test_get_latest_for_session_id_desc_tiebreak inserts two rows with
+      identical started_at and verifies the lexicographically larger id wins.
+
+  - original_section: known_shortcuts
+    original_description: >
+      SessionReportsRepository.upsert() had no _guard() for key_findings length
+      or headline constraints — model_construct() bypass would persist invalid
+      data silently.
+    resolution: >
+      IMPORTANT-2 fix (review pass): Added _guard() static method to
+      SessionReportsRepository that validates len(key_findings) <= 5,
+      headline min_length=1, and headline max_length=200. Called at the start
+      of upsert() before the DB write. Two death tests verify the guard fires
+      on model_construct() bypass: one for key_findings overflow, one for
+      empty headline.
+
+  - original_section: known_shortcuts
+    original_description: >
+      Dead test helpers: _now() in test_analysis_runs_repository.py and
+      _later() in test_session_reports_repository.py were defined but never
+      called.
+    resolution: >
+      IMPORTANT-1 fix (review pass): Deleted both dead helpers. Also removed
+      the now-unused timedelta import from test_analysis_runs_repository.py
+      and the AnalysisRun import (only AnalysisRunStage is needed in the tests).
+
+  - original_section: known_shortcuts
+    original_description: >
+      Unused sqlite_insert import in analysis_runs_repository.py:30 —
+      analysis_runs_repository uses standard INSERT (not UPSERT), so the
+      sqlite dialect import was dead.
+    resolution: >
+      IMPORTANT-5 fix (review pass): Deleted the unused
+      `from sqlalchemy.dialects.sqlite import insert as sqlite_insert` import
+      from analysis_runs_repository.py. The repository uses
+      analysis_runs.insert() not sqlite_insert().
+
+  - original_section: assumptions_made
+    original_description: >
+      upsert_with_identity_key silently discards incoming id on conflict —
+      undocumented behavior.
+    resolution: >
+      IMPORTANT-3 fix (review pass): Added a NOTE to the
+      upsert_with_identity_key docstring explicitly stating: "On conflict, the
+      existing row's id is preserved; the incoming directive.id is discarded.
+      The id column is NOT in the UPDATE clause."
+
+narrative: >
+  Original task-1 had two test failures caught during implementation (the
+  summary_written terminal-stage assumption and the UNIQUE constraint test
+  helper). The review pass caught eight additional issues: two DRY violations
+  (dead _TERMINAL_STAGES copy and unused sqlite_insert import), two
+  undocumented error surfaces (IntegrityError leak and corrupt-stage ValueError),
+  two test quality issues (dead helpers), one missing guard (key_findings), and
+  one non-determinism issue (tiebreak). All eight were resolved in this pass
+  with tests. The scar report correction about the WARNING resolving the
+  IntegrityError surface was the most important meta-fix: the prior agent's
+  resolved_items overstated what the WARNING accomplished.

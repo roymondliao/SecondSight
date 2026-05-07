@@ -1,0 +1,167 @@
+# Acceptance criteria for GUR-102 Phase 2 Analysis Orchestration
+# Death-first BDD: silent-failure scenarios first, then degradation,
+# then happy path. Coverage type must NOT be "prayer".
+
+feature: gur-102-phase2-analysis-orchestration
+coverage_type: death_first
+
+# ---------------------------------------------------------------------
+# A. Silent failure scenarios — these are the load-bearing tests.
+#    Each maps to a death case (DC-N) in 2-plan.md §4.
+# ---------------------------------------------------------------------
+
+silent_failure_scenarios:
+
+  - id: DT-1.1
+    death_case: DC-1  # pipeline killed mid-stage; no DB row
+    given: "An Orchestrator running analyze_session(session_id='S1')"
+    when: "Process is killed (SIGKILL) after segmenter writes flag rows but before stage transitions to behavior_done"
+    then_naive_lie: "No analysis_runs row exists; pipeline appears to have never started"
+    then_truth: "An analysis_runs row exists at stage='segmented' with completed_at IS NULL; the next caller can detect the orphan and decide resume vs. abandon"
+    test: "tests/analysis/test_orchestrator.py::test_DT_1_1_killed_after_segment_leaves_audit_row"
+
+  - id: DT-1.2
+    death_case: DC-2  # behavior detector batch partial commit
+    given: "A segment LLM-analyzed into M=3 flags, where flag #2 has flag_type='bogus_type' (model_construct bypass)"
+    when: "detect_segment_flags() persists the flag list"
+    then_naive_lie: "First flag commits, second raises mid-iteration, third is never attempted; DB has 1 orphan flag row"
+    then_truth: "behavior.py validates ALL 3 flags against _guard rules BEFORE calling insert_many; raises ValueError before any insert; DB unchanged"
+    test: "tests/analysis/test_behavior.py::test_DT_1_2_validation_before_insert_atomicity"
+
+  - id: DT-1.3
+    death_case: DC-3  # aggregator silently truncates ties at top_n
+    given: "Aggregator merges 20 patterns where ranks 14, 15, 16 share occurrence_count=5"
+    when: "Step 3 takes top_n=15"
+    then_naive_lie: "Slice [:15] silently picks rank-15 over rank-16 based on Python sort stability"
+    then_truth: "Tie-break is deterministic: secondary sort by (flag_type ASC, pattern_description ASC); same input always picks same row"
+    test: "tests/analysis/test_aggregator.py::test_DT_1_3_deterministic_tie_break_at_top_n_boundary"
+
+  - id: DT-1.4
+    death_case: DC-4  # re-run silently re-LLMs
+    given: "A session previously analyzed to stage='summary_written'"
+    when: "analyze_session(session_id) called again WITHOUT force=True"
+    then_naive_lie: "Pipeline re-runs, hitting LLM N times, costing the user $N×segments"
+    then_truth: "SessionAlreadyAnalyzedError raised at entry; zero LLM calls; analysis_runs unchanged"
+    test: "tests/analysis/test_orchestrator.py::test_DT_1_4_completed_session_requires_force_flag"
+
+  - id: DT-1.5
+    death_case: DC-6  # identity-key collision across distinct patterns
+    given: "Two AggregatePattern instances emerged from the same flag_type, with overlapping but not identical representative_sessions"
+    when: "compute_identity_key() called on each"
+    then_naive_lie: "Hash collides because grouping is by flag_type; UPSERT collapses two distinct conventions into one row"
+    then_truth: "compute_identity_key reads representative_sessions from each emerged pattern (not the input flags); distinct session-sets → distinct hashes → both rows persist"
+    test: "tests/analysis/test_aggregator.py::test_DT_1_5_two_patterns_same_flag_type_distinct_identity"
+
+  - id: DT-1.6
+    death_case: DC-7  # consumer-not-recoverer violation
+    given: "An Orchestrator is asked to analyze a session whose events table has 0 rows for that session_id"
+    when: "analyze_session(session_id) entry-stage runs _verify_session_complete"
+    then_naive_lie: "Empty event list segments into 0 segments; pipeline 'succeeds' with empty output; downstream sees vacuously-correct rows"
+    then_truth: "SessionIncompleteError raised; analysis_runs row marked failed with error_message naming the upstream contract violation; orchestrator does NOT attempt to re-execute GUR-99 backfill"
+    test: "tests/analysis/test_orchestrator.py::test_DT_1_6_zero_events_raises_consumer_not_recoverer"
+
+  - id: DT-1.7
+    death_case: DC-2-bis  # partial state on validation error mid-run
+    given: "Orchestrator's analyze_session running stage transition from behavior_done → summary_written"
+    when: "summarize_session LLM call raises AnalysisAgentError after behavior flags were committed"
+    then_naive_lie: "Caller retries; behavior flags are duplicated on second pass"
+    then_truth: "behavior_flags rows have ON CONFLICT DO NOTHING on id; summary stage retry is idempotent; analysis_runs row stays at stage='behavior_done' with completed_at IS NULL until summary completes"
+    test: "tests/analysis/test_orchestrator.py::test_DT_1_7_summary_failure_leaves_resumable_state"
+
+  - id: DT-1.8
+    death_case: DC-5  # aggregator reads stale flags after retention purge
+    given: "A project with 100 historical flags, of which 30 are older than 365 days"
+    when: "Retention purger deleted the 30; aggregator runs aggregate_project"
+    then_naive_lie: "Aggregator silently operates on 70 flags; result claims 'all project history'"
+    then_truth: "AggregateProjectResult includes flags_read=70; ship-manifest documents the retention-window dependency"
+    test: "tests/analysis/test_aggregator.py::test_DT_1_8_aggregate_result_reports_flags_read_count"
+
+  - id: DT-1.9
+    death_case: DC-8  # short-circuit elides aggregation but stale conventions exist
+    given: "A session run produces zero new flags; retention purge previously removed flags backing existing active conventions"
+    when: "analyze_and_aggregate() short-circuits"
+    then_naive_lie: "Skip is silent; active conventions reference vanished evidence forever"
+    then_truth: "Short-circuit logs 'aggregator-skipped-but-stale' when directives.updated_at is older than the most-recent retention purge marker; ship-manifest review exposes the case"
+    test: "tests/analysis/test_orchestrator.py::test_DT_1_9_short_circuit_logs_when_directives_stale"
+
+# ---------------------------------------------------------------------
+# B. Degradation scenarios — fallbacks that must NOT silently mark success
+# ---------------------------------------------------------------------
+
+degradation_scenarios:
+
+  - id: DG-2.1
+    given: "Aggregator running per-flag-type Step-2 LLM call"
+    when: "One flag_type's call raises AnalysisAgentError"
+    then: "Aggregator raises immediately; no partial directives written; no in-memory results from other flag_types leak to DB. Caller can retry."
+    rationale: "All-or-nothing per project run is simpler than partial commit + reconciliation. The retry cost is bounded (O(flag_types) calls)."
+    test: "tests/analysis/test_aggregator.py::test_DG_2_1_partial_step2_failure_writes_nothing"
+
+  - id: DG-2.2
+    given: "Behavior detector running on a segment whose LLM call raises AnalysisAgentError"
+    when: "detect_segment_flags propagates the exception"
+    then: "Orchestrator's analyze_session catches the error, records analysis_runs.stage='failed' with error_message, and re-raises. Other segments in the session are NOT processed."
+    rationale: "Failing fast on segment N preserves the option to debug; processing N+1...M would mask root cause."
+    test: "tests/analysis/test_orchestrator.py::test_DG_2_2_segment_failure_halts_session"
+
+# ---------------------------------------------------------------------
+# C. Happy path scenarios — with evidence chain requirements
+# ---------------------------------------------------------------------
+
+happy_path_scenarios:
+
+  - id: HP-3.1
+    given: "A session with 2 segments, 5 events each, no upstream issues"
+    when: "Orchestrator.analyze_session(session_id) called"
+    then: "analysis_runs row transitions: pending → segmented → behavior_done → summary_written; behavior_flags row count > 0; session_reports row exists with session_id UNIQUE; result.stage='summary_written'"
+    evidence_chain:
+      - "events table: 10 rows for session_id"
+      - "behavior_flags table: ≥0 rows linked to session_id"
+      - "session_reports table: exactly 1 row with that session_id"
+      - "analysis_runs table: row with stage='summary_written' and completed_at IS NOT NULL"
+    test: "tests/analysis/test_orchestrator.py::test_HP_3_1_session_full_pipeline_evidence_chain"
+
+  - id: HP-3.2
+    given: "A project with flags across 3 flag_types from 5 sessions"
+    when: "Orchestrator.aggregate_project(project_id) called"
+    then: "3 LLM calls made (one per non-empty group); top-N directives upserted with status='active'; each row has identity_key set and unique within (project_id)"
+    evidence_chain:
+      - "directives table: K ≤ 15 rows with status='active', distinct identity_key"
+      - "Re-run of aggregate_project: same identity_keys; instruction text may drift; row count unchanged"
+    test: "tests/analysis/test_aggregator.py::test_HP_3_2_aggregate_then_rerun_idempotent_via_identity_key"
+
+  - id: HP-3.3
+    given: "A session with 1 segment producing 0 high-confidence flags"
+    when: "Orchestrator.analyze_and_aggregate(session_id) called"
+    then: "Session pipeline completes; aggregate_project NOT called (short-circuit on flags_inserted==0); result.aggregate is None"
+    evidence_chain:
+      - "behavior_flags: 0 new rows for session_id"
+      - "directives table: unchanged from before the call"
+      - "Logs include 'aggregator skipped: zero flags inserted'"
+    test: "tests/analysis/test_orchestrator.py::test_HP_3_3_zero_flags_short_circuits_aggregator"
+
+  - id: HP-3.4
+    given: "A session previously analyzed; caller wants to re-analyze with updated prompts"
+    when: "analyze_session(session_id, force=True) called"
+    then: "Pipeline re-runs; behavior_flags inserts are idempotent (ON CONFLICT DO NOTHING on id); session_reports UPSERTs by session_id UNIQUE; analysis_runs gets a NEW row (different started_at)"
+    evidence_chain:
+      - "behavior_flags rows pre and post: count unchanged (assuming same LLM output)"
+      - "session_reports rows for session_id: still exactly 1; updated_at advanced; analysis_run_id changed"
+      - "analysis_runs: 2 rows for session_id (old + new); both visible for audit"
+    test: "tests/analysis/test_orchestrator.py::test_HP_3_4_force_rerun_idempotent_with_audit_trail"
+
+# ---------------------------------------------------------------------
+# Exit criteria
+# ---------------------------------------------------------------------
+
+exit_criteria:
+  - "All silent-failure tests (DT-1.1..DT-1.9) green deterministically"
+  - "All degradation tests (DG-2.1..DG-2.2) green"
+  - "All happy-path tests (HP-3.1..HP-3.4) green"
+  - "Death-first ordering verified: silent failure tests in test files are written and made to fail BEFORE happy-path tests are written"
+  - "30 consecutive runs of pytest tests/analysis/ tests/storage/test_analysis_runs_repository.py tests/storage/test_session_reports_repository.py tests/storage/test_directives_repository.py -v are 30/30 green"
+  - "Total LoC (production + test) ≤ 2200 lines (alarm if exceeded; GUR-100 was ~1600)"
+  - "No production code changes outside the new files + the directives migration + analysis/__init__.py re-exports + SD §7 patches"
+  - "Existing test suite continues to pass (post-GUR-101 baseline)"
+  - "convention_top_n=15 hard-coded with explicit TODO comment citing SD §11.x line 1392"
+  - "AnalysisAgent Protocol body appears verbatim in agent.py with no inline implementation"

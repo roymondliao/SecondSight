@@ -12,16 +12,30 @@ Defensive enum guard (D1): model_construct() bypasses Pydantic, so
 insert() re-validates `status` and `type` against their enums. The
 in-process surface is wrapped by GUR-104's HTTP PATCH endpoint, which
 will further restrict user-PATCHable values to {active, disabled}.
+
+GUR-102 identity_key constraint (task-1):
+    The directives table gained UNIQUE(project_id, identity_key) in GUR-102.
+    The server_default="" is a transitional DDL value — valid only because
+    the table is empty pre-Phase 3. insert() is for non-aggregator code paths
+    that don't assign identity_key; callers MUST supply a non-empty, unique
+    identity_key per (project_id) to avoid IntegrityError. Use
+    upsert_with_identity_key() for the Phase 2 aggregator path.
+
+    If your code creates multiple directives for the same project without
+    setting identity_key, use distinct non-empty values (e.g., the directive
+    id) as a surrogate until the aggregator assigns canonical sha256 keys.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import IntegrityError
 
 from secondsight.analysis.schemas import (
     Directive,
@@ -30,6 +44,8 @@ from secondsight.analysis.schemas import (
 )
 from secondsight.storage.db_engine import DBEngine
 from secondsight.storage.directives_table import directives, metadata
+
+_logger = logging.getLogger(__name__)
 
 
 class DirectivesRepository:
@@ -41,6 +57,31 @@ class DirectivesRepository:
         metadata.create_all(self._db.engine, checkfirst=True)
 
     def insert(self, directive: Directive) -> None:
+        """Insert a directive. Idempotent on `id` (ON CONFLICT DO NOTHING).
+
+        WARNING (GUR-102): If directive.identity_key is empty (""), a second
+        insert() in the same project with identity_key="" will raise
+        ValueError (from the UNIQUE(project_id, identity_key) constraint via
+        uq_directives_project_identity). Callers must supply a non-empty,
+        unique identity_key per project.
+        Use upsert_with_identity_key() for Phase 2 aggregator paths.
+
+        Raises:
+            ValueError — UNIQUE(project_id, identity_key) constraint violated
+                (constraint name: uq_directives_project_identity). This happens
+                when two directives with identity_key="" are inserted for the
+                same project, or when any two directives share the same
+                non-empty identity_key within a project.
+        """
+        if not directive.identity_key:
+            _logger.warning(
+                "DirectivesRepository.insert: directive.id=%r has empty "
+                "identity_key. A second directive in project_id=%r with "
+                "identity_key='' will raise ValueError. Assign a unique "
+                "non-empty identity_key or use upsert_with_identity_key().",
+                directive.id,
+                directive.project_id,
+            )
         self._guard(directive)
         row = self._directive_to_row(directive)
         stmt = (
@@ -48,8 +89,19 @@ class DirectivesRepository:
             .values(**row)
             .on_conflict_do_nothing(index_elements=["id"])
         )
-        with self._db.engine.begin() as conn:
-            conn.execute(stmt)
+        try:
+            with self._db.engine.begin() as conn:
+                conn.execute(stmt)
+        except IntegrityError as exc:
+            raise ValueError(
+                f"DirectivesRepository.insert: UNIQUE constraint violated "
+                f"(uq_directives_project_identity) for directive.id={directive.id!r}, "
+                f"project_id={directive.project_id!r}, "
+                f"identity_key={directive.identity_key!r}. "
+                f"Two directives in the same project cannot share identity_key. "
+                f"If identity_key is empty (\"\"), use distinct non-empty keys "
+                f"or switch to upsert_with_identity_key()."
+            ) from exc
 
     def get_active_conventions(self, project_id: str) -> list[Directive]:
         """Active conventions only, sorted by frequency desc.
@@ -82,6 +134,56 @@ class DirectivesRepository:
         with self._db.engine.connect() as conn:
             row = conn.execute(stmt).mappings().first()
             return self._row_to_directive(row) if row else None
+
+    def upsert_with_identity_key(self, directive: Directive) -> None:
+        """ON CONFLICT(project_id, identity_key) DO UPDATE SET
+           instruction, frequency, source_sessions, updated_at.
+           status, type, source_flag_type, created_at preserved on UPDATE.
+
+        Used by the Phase 2 aggregator to create or update directives
+        keyed by content identity (flag_type + session set) rather than
+        by opaque UUID.
+
+        NOTE — id discard on conflict: On (project_id, identity_key) conflict,
+        the existing row's `id` is preserved; the incoming `directive.id` is
+        discarded. The `id` column is NOT in the UPDATE clause. The aggregate
+        caller should use get_by_id or query by (project_id, identity_key) to
+        retrieve the canonical id after upsert if needed.
+
+        Raises:
+            ValueError — identity_key is empty (server_default="" is a
+                transitional DDL default only; no real row should carry it).
+            ValueError — defensive guard rejects invalid status/type.
+        """
+        if not directive.identity_key:
+            raise ValueError(
+                "upsert_with_identity_key: identity_key must not be empty. "
+                "The server_default='' is a transitional DDL default only; "
+                "the repository rejects it to prevent UNIQUE(project_id, "
+                "identity_key) collisions on empty-key rows."
+            )
+        self._guard(directive)
+        row = self._directive_to_row(directive)
+        stmt = (
+            sqlite_insert(directives)
+            .values(**row)
+            .on_conflict_do_update(
+                index_elements=[
+                    directives.c.project_id,
+                    directives.c.identity_key,
+                ],
+                set_={
+                    "instruction": row["instruction"],
+                    "frequency": row["frequency"],
+                    "source_sessions": row["source_sessions"],
+                    "updated_at": row["updated_at"],
+                    # Preserved (NOT updated): status, type, source_flag_type,
+                    # created_at, disabled_at, disabled_reason.
+                },
+            )
+        )
+        with self._db.engine.begin() as conn:
+            conn.execute(stmt)
 
     def update_status(
         self,
@@ -219,6 +321,7 @@ class DirectivesRepository:
             "source_sessions": json.dumps(
                 d.source_sessions, ensure_ascii=False
             ),
+            "identity_key": d.identity_key,
             "created_at": d.created_at,
             "expires_at": d.expires_at,
             "updated_at": d.updated_at,
@@ -240,6 +343,7 @@ class DirectivesRepository:
             max_firing=row["max_firing"],
             source_flag_type=row["source_flag_type"],
             source_sessions=json.loads(row["source_sessions"]),
+            identity_key=row["identity_key"],
             created_at=row["created_at"],
             expires_at=row["expires_at"],
             updated_at=row["updated_at"],

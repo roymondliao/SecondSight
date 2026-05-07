@@ -31,7 +31,12 @@ def _directive(
     instruction: str = "Skip exploration when path is given",
     disabled_at: datetime | None = None,
     disabled_reason: str | None = None,
+    identity_key: str | None = None,
 ) -> Directive:
+    # Default identity_key to the directive id to avoid UNIQUE(project_id,
+    # identity_key) conflicts when multiple directives are inserted in tests.
+    # Pre-GUR-102 code that creates directives without identity_key still works
+    # since each directive has a unique id.
     return Directive(
         id=id,
         project_id=project_id,
@@ -41,6 +46,7 @@ def _directive(
         frequency=frequency,
         source_flag_type="unnecessary_read",
         source_sessions=["s1", "s2"],
+        identity_key=identity_key if identity_key is not None else id,
         created_at=_now(),
         updated_at=_now(),
         disabled_at=disabled_at,
@@ -291,3 +297,241 @@ class TestQueries:
             r.create_schema()
         finally:
             eng.dispose()
+
+
+# =====================================================================
+# UPSERT WITH IDENTITY KEY — DEATH TESTS
+# =====================================================================
+
+
+def _directive_with_identity(
+    *,
+    id: str = "dir-uk-1",
+    project_id: str = "proj-1",
+    identity_key: str = "sha256:abc123",
+    instruction: str = "Skip exploration when path is given",
+    frequency: float = 0.7,
+    source_sessions: list[str] | None = None,
+) -> Directive:
+    from secondsight.analysis.schemas import Directive
+
+    return Directive(
+        id=id,
+        project_id=project_id,
+        type=DirectiveType.CONVENTION,
+        status=DirectiveStatus.ACTIVE,
+        instruction=instruction,
+        frequency=frequency,
+        source_flag_type="unnecessary_read",
+        source_sessions=source_sessions if source_sessions is not None else ["s1"],
+        identity_key=identity_key,
+        created_at=_now(),
+        updated_at=_now(),
+    )
+
+
+class TestUpsertWithIdentityKey:
+    def test_dt_empty_identity_key_raises(
+        self, repo: DirectivesRepository
+    ) -> None:
+        """Death case: calling upsert_with_identity_key with identity_key=''
+        must raise ValueError. The server_default='' is a transitional
+        DDL default only; no row should ever reach the DB with that value
+        via the repository.
+
+        If this guard is absent, empty-key rows from a pre-Phase-3
+        partial migration leak into the UNIQUE(project_id, identity_key)
+        constraint: the second directive in the same project would
+        conflict on ('proj-1', '') and be silently dropped.
+        """
+        d = _directive_with_identity(identity_key="")
+        with pytest.raises(ValueError) as exc:
+            repo.upsert_with_identity_key(d)
+        assert "identity_key" in str(exc.value).lower()
+
+        # No row landed
+        assert repo.get_active_conventions("proj-1") == []
+
+    def test_dt_upsert_same_identity_key_updates_instruction(
+        self, repo: DirectivesRepository
+    ) -> None:
+        """Death case: two upsert calls with same (project_id, identity_key)
+        and different instruction. The second call's instruction and
+        updated_at must win; status, type, created_at preserved.
+
+        If this is INSERT-only, the second call would silently no-op
+        (ON CONFLICT DO NOTHING) or crash (ON CONFLICT ERROR), leaving
+        stale instruction text in the directive — the aggregator's
+        updated analysis would never surface.
+        """
+        d1 = _directive_with_identity(
+            id="d-uk-1",
+            identity_key="sha256:abc",
+            instruction="Original instruction",
+            frequency=0.5,
+            source_sessions=["s1"],
+        )
+        d2 = _directive_with_identity(
+            id="d-uk-2",  # different id, same (project_id, identity_key)
+            identity_key="sha256:abc",
+            instruction="Updated instruction",
+            frequency=0.9,
+            source_sessions=["s1", "s2", "s3"],
+        )
+
+        repo.upsert_with_identity_key(d1)
+        repo.upsert_with_identity_key(d2)
+
+        rows = repo.get_active_conventions("proj-1")
+        assert len(rows) == 1, (
+            f"Expected 1 row after upsert, got {len(rows)}. "
+            "UNIQUE(project_id, identity_key) must not insert a second row."
+        )
+        got = rows[0]
+
+        # These must be updated:
+        assert got.instruction == "Updated instruction", (
+            "instruction must be updated on conflict"
+        )
+        assert got.frequency == 0.9, "frequency must be updated on conflict"
+        assert got.source_sessions == ["s1", "s2", "s3"], (
+            "source_sessions must be updated on conflict"
+        )
+
+        # These must be preserved from the first call:
+        assert got.status is DirectiveStatus.ACTIVE, (
+            "status must be preserved on conflict"
+        )
+        assert got.type is DirectiveType.CONVENTION, (
+            "type must be preserved on conflict"
+        )
+        assert got.created_at.replace(tzinfo=None) == _now().replace(
+            tzinfo=None
+        ), "created_at must be preserved on conflict"
+
+    def test_upsert_insert_then_get_active_conventions(
+        self, repo: DirectivesRepository
+    ) -> None:
+        """Happy path: insert via upsert_with_identity_key then
+        get_active_conventions returns it.
+        """
+        d = _directive_with_identity(identity_key="sha256:xyz")
+        repo.upsert_with_identity_key(d)
+
+        rows = repo.get_active_conventions("proj-1")
+        assert len(rows) == 1
+        assert rows[0].identity_key == "sha256:xyz"
+
+    def test_upsert_different_identity_keys_create_separate_rows(
+        self, repo: DirectivesRepository
+    ) -> None:
+        """Different identity_keys in same project create separate rows."""
+        d1 = _directive_with_identity(
+            id="d-a", identity_key="sha256:aaa", instruction="Directive A"
+        )
+        d2 = _directive_with_identity(
+            id="d-b", identity_key="sha256:bbb", instruction="Directive B"
+        )
+        repo.upsert_with_identity_key(d1)
+        repo.upsert_with_identity_key(d2)
+
+        rows = repo.get_active_conventions("proj-1")
+        assert len(rows) == 2
+
+    def test_upsert_rejects_model_construct_bypass_empty_key(
+        self, repo: DirectivesRepository
+    ) -> None:
+        """model_construct bypass with empty identity_key must be rejected."""
+        from secondsight.analysis.schemas import Directive
+
+        bypassed = Directive.model_construct(
+            id="bp-uk-1",
+            project_id="proj-1",
+            type=DirectiveType.CONVENTION,
+            status=DirectiveStatus.ACTIVE,
+            instruction="x",
+            frequency=0.5,
+            source_sessions=[],
+            identity_key="",  # bypass guard
+            created_at=_now(),
+            updated_at=_now(),
+        )
+        with pytest.raises(ValueError):
+            repo.upsert_with_identity_key(bypassed)
+        assert repo.get_active_conventions("proj-1") == []
+
+
+# =====================================================================
+# INSERT INTEGRITY ERROR → VALUEERROR (CRITICAL-2 fix)
+# =====================================================================
+
+
+class TestInsertIntegrityErrorConversion:
+    def test_dt_insert_empty_identity_key_second_insert_raises_value_error(
+        self, repo: DirectivesRepository
+    ) -> None:
+        """CRITICAL-2: Second insert() with identity_key='' in same project
+        must raise ValueError (not raw IntegrityError) from the
+        uq_directives_project_identity constraint.
+
+        Death case: before the fix, a raw sqlalchemy.exc.IntegrityError
+        propagated. Callers expecting idempotency on `id` (the ON CONFLICT
+        DO NOTHING target) could not distinguish:
+        - Expected no-op: duplicate `id` → silent
+        - Unexpected: (project_id, identity_key='') UNIQUE violation → crash
+
+        After the fix, IntegrityError is caught and re-raised as ValueError
+        with a message naming the constraint and the offending values.
+        """
+        from secondsight.analysis.schemas import Directive
+
+        # First insert with identity_key="" succeeds (with WARNING log)
+        d1 = Directive(
+            id="dup-empty-key-1",
+            project_id="proj-conflict",
+            type=DirectiveType.CONVENTION,
+            status=DirectiveStatus.ACTIVE,
+            instruction="first directive",
+            frequency=0.5,
+            source_flag_type="unnecessary_read",
+            source_sessions=["s1"],
+            identity_key="",  # transitional default
+            created_at=_now(),
+            updated_at=_now(),
+        )
+        repo.insert(d1)
+
+        # Second insert with identity_key="" in same project must raise
+        # ValueError — not raw IntegrityError
+        d2 = Directive(
+            id="dup-empty-key-2",  # different id, same project + identity_key=""
+            project_id="proj-conflict",
+            type=DirectiveType.CONVENTION,
+            status=DirectiveStatus.ACTIVE,
+            instruction="second directive",
+            frequency=0.6,
+            source_flag_type="unnecessary_read",
+            source_sessions=["s2"],
+            identity_key="",  # same empty key — collision
+            created_at=_now(),
+            updated_at=_now(),
+        )
+        with pytest.raises(ValueError) as exc:
+            repo.insert(d2)
+
+        # The message must name the constraint and the values involved
+        msg = str(exc.value)
+        assert "uq_directives_project_identity" in msg, (
+            "ValueError must name the constraint so callers can distinguish "
+            "from other ValueError paths"
+        )
+        assert "identity_key" in msg, (
+            "ValueError must name identity_key so callers understand the issue"
+        )
+
+        # First directive is unaffected
+        d1_fetched = repo.get_by_id("dup-empty-key-1")
+        assert d1_fetched is not None
+
+        # Second directive was never inserted
+        assert repo.get_by_id("dup-empty-key-2") is None

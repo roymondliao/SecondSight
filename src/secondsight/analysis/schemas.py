@@ -34,7 +34,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Literal, TypedDict
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # ---------- Enums (string-valued for direct DB persistence) ----------
@@ -140,9 +140,16 @@ class SegmentAnalysis(BaseModel):
 
 
 class Directive(BaseModel):
-    """Per SD §7.4 (with `disabled_at` / `disabled_reason` added — D3).
+    """Per SD §7.4 (with `disabled_at` / `disabled_reason` added — D3;
+    `identity_key` added — GUR-102 task-1).
 
     Lifecycle status mutates over time via DirectivesRepository.update_status.
+
+    `identity_key`: stable hash for UPSERT-based deduplication. Computed by
+    `secondsight.analysis.aggregator.compute_identity_key`. See that function's
+    docstring for the exact hash inputs and rationale. Empty string is rejected
+    by DirectivesRepository._guard; the DDL server_default="" is a transitional
+    migration default only and is never valid for real rows.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -158,6 +165,7 @@ class Directive(BaseModel):
     max_firing: int | None = None  # hint reserved
     source_flag_type: str | None = None
     source_sessions: list[str] = []
+    identity_key: str = ""
     created_at: datetime
     expires_at: datetime | None = None
     updated_at: datetime
@@ -225,6 +233,97 @@ class SegmentMetrics(TypedDict):
     unique_files: int
     duration: float  # seconds
     error_count: int
+
+
+# ---------- GUR-102 Phase 2 orchestration contracts ----------
+
+
+class AnalysisRunStage(str, Enum):
+    """Audit stages for an analysis pipeline run (analysis_runs.stage).
+
+    Validation lives at the repository layer (D1 — mirrors GUR-100's
+    behavior_flags.flag_type pattern). No DB CHECK constraint.
+
+    Terminal stages: summary_written, aggregated, failed.
+    Non-terminal stages: pending, segmented, behavior_done.
+    """
+
+    PENDING = "pending"
+    SEGMENTED = "segmented"
+    BEHAVIOR_DONE = "behavior_done"
+    SUMMARY_WRITTEN = "summary_written"
+    AGGREGATED = "aggregated"
+    FAILED = "failed"
+
+
+# Terminal stages where the pipeline has reached a definitive end state.
+# Canonical single source of truth — imported by AnalysisRunsRepository.
+# When adding a new terminal stage, update ONLY this set; the repository
+# derives _NON_TERMINAL_STAGES from it automatically.
+TERMINAL_STAGES: frozenset[str] = frozenset(
+    {
+        AnalysisRunStage.SUMMARY_WRITTEN.value,
+        AnalysisRunStage.AGGREGATED.value,
+        AnalysisRunStage.FAILED.value,
+    }
+)
+
+
+class AnalysisRun(BaseModel):
+    """Audit record for one analysis pipeline run (GUR-102 task-1).
+
+    Persisted to the `analysis_runs` table. One row per pipeline
+    execution. The row is inserted at stage='pending' BEFORE any
+    pipeline work begins so a SIGKILL after insertion still leaves an
+    audit trail (DC-1).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    project_id: str
+    session_id: str
+    stage: AnalysisRunStage
+    started_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None = None
+    error_message: str | None = None
+    flags_inserted: int = Field(default=0, ge=0)
+
+
+class SessionReport(BaseModel):
+    """Artifact record for the analysis output for one session (GUR-102 task-1).
+
+    Persisted to the `session_reports` table with UNIQUE(session_id).
+    Upserted (not inserted) to allow re-runs to update the report.
+
+    `key_findings` is a list of strings persisted as JSON. `max_length=5`
+    matches the `prompts/summary.py:43` constraint — drift requires
+    co-modification.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    project_id: str
+    session_id: str
+    analysis_run_id: str
+    headline: str = Field(min_length=1, max_length=200)
+    key_findings: list[str] = Field(max_length=5)
+    body: str
+    created_at: datetime
+    updated_at: datetime
+
+
+# ---------- Shared vocabulary constants ----------
+
+# Single source of truth for the valid confidence values used in
+# BehaviorFlag.confidence (Literal) and in the defensive _guard validators.
+# Co-located here with BehaviorFlagType so that adding a new confidence level
+# requires ONE edit (this set) and imports in behavior.py +
+# behavior_flags_repository.py pick it up automatically.
+# Exported via analysis/__init__.py.
+VALID_CONFIDENCE: frozenset[str] = frozenset({"high", "medium", "low"})
 
 
 # ---------- Vocabulary content (SD §5.5.1) ----------

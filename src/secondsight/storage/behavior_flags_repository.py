@@ -23,11 +23,9 @@ from typing import Any
 import sqlalchemy as sa
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from secondsight.analysis.schemas import BehaviorFlag, BehaviorFlagType
+from secondsight.analysis.schemas import VALID_CONFIDENCE, BehaviorFlag, BehaviorFlagType
 from secondsight.storage.behavior_flags_table import behavior_flags, metadata
 from secondsight.storage.db_engine import DBEngine
-
-_VALID_CONFIDENCE: frozenset[str] = frozenset({"high", "medium", "low"})
 
 _logger = logging.getLogger(__name__)
 
@@ -150,10 +148,10 @@ class BehaviorFlagsRepository:
         # Confidence first — Literal[...] is harder to detect after
         # model_construct because Pydantic v2 doesn't enforce Literals
         # on raw assignments.
-        if flag.confidence not in _VALID_CONFIDENCE:
+        if flag.confidence not in VALID_CONFIDENCE:
             raise ValueError(
                 f"BehaviorFlag.confidence={flag.confidence!r} must be "
-                f"one of {sorted(_VALID_CONFIDENCE)}"
+                f"one of {sorted(VALID_CONFIDENCE)}"
             )
 
         # flag_type may be a BehaviorFlagType instance OR a raw string

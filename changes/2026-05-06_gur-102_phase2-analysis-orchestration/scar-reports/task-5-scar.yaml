@@ -1,0 +1,339 @@
+task_id: task-5
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      SegmentAnalysis collection for the summary step uses option (d'): orchestrator
+      calls agent.analyze_segments once per segment and then runs the validate+promote+
+      insert logic from behavior.py directly (via the now-public validate_draft_pre_insert
+      and promote_draft helpers). This replicates the behavior.py detection logic
+      in _persist_segment_flags. If behavior.py's validation rules change (new guard,
+      new field), _persist_segment_flags must also be updated. The replication is
+      intentional to avoid doubling LLM calls (option c) or modifying task-3 files
+      (option b). Documented in module docstring under "SegmentAnalysis collection"
+      decision log.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Sequential per-segment detect calls. No concurrent batching in v1. The
+      agent.analyze_segments batched form (len > 1) is the seam where concurrency
+      would land. GUR-103 may add concurrent segment processing; this orchestrator's
+      loop is the correct place for that change (not inside detect_segment_flags).
+      Cost: for sessions with many segments, the total wall-clock time scales
+      linearly with segment count x per-LLM-call latency.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      _verify_session_complete checks only for event count > 0, not for the
+      presence of a SESSION_END event. This is intentional (see module docstring):
+      an absent SESSION_END may be valid at trigger time, and checking it would
+      produce false positives. However, a session that was partially ingested
+      (has events but not SESSION_END) will pass the verifier and receive a
+      partial analysis. The partial analysis is not detectable from the
+      orchestrator layer alone.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      STALE_DIRECTIVES_THRESHOLD_DAYS = 30 is hard-coded with a TODO comment.
+      Configurable via analysis_config.toml (SD §11 line 1392) is deferred.
+      Mirroring task-4's DEFAULT_CONVENTION_TOP_N pattern: the constant is
+      named and exported so callers can see it, but there is no runtime override
+      path yet.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      Circular import between analysis/__init__.py (which re-exports orchestrator
+      symbols) and storage repositories (which import analysis.schemas). Resolved
+      by guarding repository type imports under TYPE_CHECKING in orchestrator.py.
+      Same pattern as task-3 (behavior.py) and task-4 (aggregator.py).
+      Runtime duck-typing suffices; mypy/pyright enforce static types.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      Filesystem JSON backup failure propagates to the outer pipeline boundary
+      and causes stage='failed'. The DB record is the authoritative source; the
+      filesystem backup is secondary. If the backup path's parent directory cannot
+      be created (e.g., permissions, disk full), the entire analysis run fails --
+      even though the DB already has the SessionReport. This is a conservative
+      choice: failing loudly is preferable to silently omitting the backup.
+      Operators who do not use the filesystem backup path may consider this
+      over-strict.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      _log_if_directives_stale reads get_active_conventions() in the hot path of
+      analyze_and_aggregate's short-circuit. If the directives table is large
+      (many active conventions), this adds a DB read on every zero-flag short-circuit.
+      In v1 with top_n=15, the table has at most 15 active rows per project, so
+      the read cost is negligible. This assumption is documented here; if the
+      table grows (multi-project, high cardinality), the read should be scoped
+      to COUNT or limited.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      SQLite stores datetime without timezone. The _ensure_utc() helper normalizes
+      naive datetimes to UTC by attaching timezone.utc. This works correctly as
+      long as all DB writes use UTC-aware datetimes (verified: all repository writes
+      use datetime.now(tz=timezone.utc)). If a future migration or manual SQL edit
+      writes a non-UTC naive datetime, _ensure_utc would silently misinterpret it
+      as UTC, producing a wrong stale-directives comparison.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      _check_already_analyzed reads the LATEST run for the session. If multiple
+      concurrent analyze_session calls are made for the same session_id (race
+      condition in GUR-103's trigger), both may pass the idempotency check before
+      either inserts a run row. Both would proceed to start_run and run the full
+      pipeline in parallel. The DB constraints (UPSERT on session_id in
+      session_reports) would preserve one report, but two analysis_runs rows would
+      exist and two sets of LLM calls would be made. This is acceptable for v1
+      where GUR-103 is expected to be a single-threaded trigger. The race condition
+      is now explicitly documented in _check_already_analyzed's docstring.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      record_failure inside the outer try/except has a nested try/except that
+      swallows inner exceptions from record_failure itself (DB connection lost,
+      etc.). If record_failure fails, the analysis_runs row remains at a non-terminal
+      stage (e.g., 'segmented') with no error_message, and count_recent_partial
+      will count it as a stuck run. The outer exception still propagates; the
+      only loss is the failure audit trail for that specific run. The dual-failure
+      semantics are now documented in analyze_session's docstring under
+      "Failure semantics".
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      validate_draft_pre_insert and promote_draft are importable from
+      secondsight.analysis.behavior at runtime (they are now public, defined at
+      module scope, and listed in behavior.py's __all__).
+    verified: true
+    note: >
+      Verified: both helpers are defined at module level in behavior.py and exported
+      via __all__. The import is tested by every test in test_orchestrator.py that
+      calls analyze_session with non-empty flags. Promoted from private (_prefix)
+      to public in the CRITICAL-1 fix.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      FakeAnalysisAgent.analyze_segments returns outputs[:len(prompts)] -- always
+      returning the first N outputs, NOT a rotating queue. Multi-segment tests
+      requiring distinct per-segment outputs need a custom stateful agent.
+    verified: true
+    note: >
+      Confirmed by reading _fake_agent.py line 98:
+      `return list(self._segment_outputs[: len(prompts)])`. This is a slice from
+      the start, not a dequeue. HP-5.A uses a custom _MultiSegmentAgent with a
+      call counter to test 2-segment sessions with distinct per-segment outputs.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      SECONDSIGHT_HOME environment variable overrides the default ~/.secondsight
+      home path for filesystem backup writes. Tests use patch.dict("os.environ",
+      {"SECONDSIGHT_HOME": str(tmp_path)}) to control the backup location.
+    verified: true
+    note: >
+      Confirmed: _write_filesystem_backup reads os.environ.get("SECONDSIGHT_HOME", "")
+      with fallback to Path.home() / ".secondsight". Matches the precedence chain
+      in cli/_home.py (CLI flag > env var > default). Tests pass with env override.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      analysis_runs_repo.get_latest_for_session returns the most recent run by
+      started_at DESC (with id DESC tiebreak). The idempotency check in
+      _check_already_analyzed relies on this to see the LATEST terminal stage,
+      not a prior failed stage from an earlier run.
+    verified: true
+    note: >
+      Confirmed: analysis_runs_repository.py get_latest_for_session orders by
+      started_at DESC, id DESC (task-1 hardening fix). HP-5.C (force re-run) and
+      DT-5.2 (idempotency check) both pass, confirming the ordering contract holds.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      The stale-conventions warning threshold comparison works correctly when
+      Directive.updated_at is returned from SQLite as a naive datetime (no tz info).
+      The _ensure_utc() helper normalizes naive datetimes to UTC.
+    verified: true
+    note: >
+      DT-5.5 passes: the stale directive with old_timestamp (UTC-aware at insertion)
+      is correctly detected as stale. _ensure_utc() is called in both the comparison
+      loop and on the min(updated_at) value used in the log message (SUGGESTION-2 fix).
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      The behavior.py-imported helpers (now public: validate_draft_pre_insert,
+      promote_draft) are stable across the behavior.py module -- they are the
+      canonical validation and promotion implementations. If they change (new
+      validation rule), both detect_segment_flags and _persist_segment_flags would
+      need updates. Now that both are in behavior.py's __all__, refactoring tools
+      and import-time errors make this coupling explicit.
+    verified: true
+    note: >
+      Promoted to public and added to __all__. The import-time coupling is now
+      visible to refactoring tools. The divergence scenario (behavior.py changes
+      while orchestrator.py doesn't update) still has no dedicated test, but the
+      explicit public API contract makes the dependency auditable.
+    deferred_to_feature_iteration: false
+
+debt_registered: true
+debt_location: >
+  src/secondsight/analysis/orchestrator.py -- two TODO comments:
+  (1) STALE_DIRECTIVES_THRESHOLD_DAYS = 30 references SD §11 line 1392 for
+  configurable threshold via analysis_config.toml (deferred to AnalysisConfig
+  plumbing work); (2) sequential per-segment loop references GUR-103 for
+  concurrent batching.
+
+narrative: >
+  Task-5 closes the orchestration layer (GUR-102 Phase 2). The key design decision
+  was how to collect SegmentAnalysis objects for the summary prompt step without
+  either doubling LLM calls (option c from the task spec) or modifying the
+  task-3 behavior.py files (option b). Option (d') was chosen: the orchestrator
+  calls agent.analyze_segments once per segment, then uses helpers from behavior.py
+  (validate_draft_pre_insert, promote_draft -- now public) to replicate the
+  validate+promote+insert pipeline directly.
+
+  Post-review fixes (2026-05-07):
+  - CRITICAL-1: Promoted _validate_draft_pre_insert and _promote_draft to public
+    (validate_draft_pre_insert, promote_draft) in behavior.py and added both to
+    __all__. Updated orchestrator.py import and all internal call sites.
+  - IMPORTANT-1: Renamed AnalyzeSessionResult.flags_inserted to flags_attempted
+    with a docstring note clarifying it counts LLM-emitted-and-validated flags,
+    not newly-persisted DB rows.
+  - IMPORTANT-3: Added Thread safety note to _check_already_analyzed docstring
+    documenting the check-then-act race condition and the v1 single-trigger assumption.
+  - IMPORTANT-4: Added Failure semantics block to analyze_session docstring
+    distinguishing record_failure-succeeds vs record_failure-also-fails cases.
+  - SUGGESTION-1: Added Protocol-violation guard after analyze_segments call;
+    returns AnalysisAgentError if result count != 1 (rather than IndexError).
+  - SUGGESTION-2: Applied _ensure_utc() to min(updated_at) in the stale-directives
+    log message so the isoformat() output is always UTC-aware.
+
+  The datetime timezone issue (_ensure_utc helper) was discovered during test
+  execution: SQLite stores datetimes without timezone, so naive datetimes from
+  the DB cannot be directly compared with UTC-aware threshold datetimes. The
+  helper was added and verified via DT-5.5.
+
+  All four DC closures (DC-1, DC-4, DC-7, DC-8) are verified by death tests.
+  The full suite passes at 640 tests.
+
+resolved_items:
+  - original_section: assumptions_made
+    original_description: >
+      _validate_draft_pre_insert and _promote_draft are importable from behavior.py.
+    resolution: >
+      Verified by successful test execution: all test_orchestrator.py tests that
+      exercise the flag-persistence path (DT-5.4, DT-5.6, HP-5.A, HP-5.C,
+      HP-5.D) import and use these helpers without ImportError.
+
+  - original_section: assumptions_made
+    original_description: >
+      FakeAnalysisAgent.analyze_segments returns outputs[:len(prompts)] (slice from
+      start, not rotating queue).
+    resolution: >
+      Confirmed by reading _fake_agent.py and by observing HP-5.A's initial failure
+      (flags_inserted=4 instead of 3 when both calls returned seg_0_analysis). Fixed
+      by using a custom _MultiSegmentAgent with a call counter in HP-5.A.
+
+  - original_section: assumptions_made
+    original_description: >
+      Stale-conventions threshold comparison works with naive datetimes from SQLite.
+    resolution: >
+      Added _ensure_utc() helper to normalize naive datetimes to UTC before comparison.
+      DT-5.5 verifies the warning fires correctly for directives with updated_at
+      35 days old.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      SQLite datetime timezone comparison would raise TypeError (naive vs aware).
+    resolution: >
+      _ensure_utc() normalizes DB-returned naive datetimes to UTC-aware before
+      comparison in _log_if_directives_stale. Verified by DT-5.5 passing.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      caplog.at_level(WARNING) would miss the INFO-level 'aggregator skipped' log.
+    resolution: >
+      Fixed test DT-5.5 to use caplog.at_level(logging.INFO) to capture both the
+      INFO-level 'aggregator skipped' message and the WARNING-level stale-conventions
+      message. Both assertions now pass.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      _get_project_id_for_session made a second get_session_events() call after
+      _verify_session_complete already read the same rows.
+    resolution: >
+      Self-iteration fix: merged _verify_session_complete and _get_project_id_for_session
+      into a single _verify_session_complete_and_get_project_id helper that reads
+      events once and returns both the validation result (raises on empty) and
+      project_id from the first row. Eliminates one redundant DB read per
+      analyze_session call. All 10 tests pass after this refactor.
+
+  - original_section: known_shortcuts
+    original_description: >
+      _persist_segment_flags imports private helpers (_validate_draft_pre_insert,
+      _promote_draft) from secondsight.analysis.behavior. Not in __all__, coupling
+      invisible to refactoring tools.
+    resolution: >
+      CRITICAL-1 fix (2026-05-07): renamed both helpers to public names
+      (validate_draft_pre_insert, promote_draft) in behavior.py. Added both to
+      behavior.py __all__. Updated orchestrator.py import and all internal call
+      sites. Updated internal call sites within behavior.py (detect_segment_flags).
+      The dependency is now import-visible and declared in behavior.py's public
+      contract.
+
+  - original_section: assumptions_made
+    original_description: >
+      behavior.py-imported helpers stable across module; ImportError is the safety
+      net if they change.
+    resolution: >
+      CRITICAL-1 promotion: helpers are now in __all__ and explicitly public.
+      Refactoring tools can see the dependency. Import-time breakage on rename
+      remains the safety net, now with the added protection that behavior.py's
+      __all__ signals the public contract.
+
+  - original_section: result_field_naming
+    original_description: >
+      AnalyzeSessionResult.flags_inserted claimed to count persisted flags but
+      actually counts len(drafts) (attempted, not newly-persisted).
+    resolution: >
+      IMPORTANT-1 fix (2026-05-07): renamed to flags_attempted throughout
+      orchestrator.py and test_orchestrator.py. Added docstring note to
+      AnalyzeSessionResult explaining the semantics. DB-layer field (analysis_runs
+      table) retains the name flags_inserted -- that column's semantics are
+      separately documented and out of this task's scope.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      Race condition in _check_already_analyzed undocumented at the code boundary.
+    resolution: >
+      IMPORTANT-3 fix (2026-05-07): added Thread safety note to
+      _check_already_analyzed docstring naming the check-then-act race and the
+      v1 single-trigger assumption.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      outer record_failure failure leaves analysis_runs row at non-terminal stage;
+      dual-failure semantics undocumented.
+    resolution: >
+      IMPORTANT-4 fix (2026-05-07): added Failure semantics block to
+      analyze_session docstring distinguishing record_failure-succeeds vs
+      record_failure-also-fails outcomes.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      analyze_segments Protocol violation (len != 1) would produce IndexError
+      rather than AnalysisAgentError.
+    resolution: >
+      SUGGESTION-1 fix (2026-05-07): added explicit guard after
+      self._agent.analyze_segments([prompt]) that raises AnalysisAgentError with
+      a descriptive message if len(results) != 1.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      _log_if_directives_stale used min(d.updated_at).isoformat() without
+      _ensure_utc, potentially producing a non-UTC string for naive SQLite returns.
+    resolution: >
+      SUGGESTION-2 fix (2026-05-07): applied _ensure_utc() to the min(updated_at)
+      result before .isoformat() in the stale-directives log message.

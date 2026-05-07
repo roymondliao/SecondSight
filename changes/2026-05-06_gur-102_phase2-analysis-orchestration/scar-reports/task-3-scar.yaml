@@ -1,0 +1,235 @@
+task_id: task-3
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      Pre-insert _guard validation in behavior.py duplicates the defensive
+      guard already present in BehaviorFlagsRepository._guard. This is
+      intentional defense-in-depth (validation at boundary + at sink), not
+      a shortcut — but it creates a drift risk: if BehaviorFlagsRepository
+      extends its validation logic (e.g., new enum constraints), behavior.py
+      would lag behind until manually updated. Drift is mitigated by the
+      repository still raising ValueError on any bad flag that slips through
+      behavior.py — a regression here will surface as a task-1 death-test
+      failure, not silent data corruption.
+
+      CRITICAL-3 (re-review fix): The parallel _VALID_CONFIDENCE definitions
+      that created drift risk have been resolved — both modules now import
+      VALID_CONFIDENCE from schemas.py. The dual-guard drift is now limited to
+      structural validation logic, not the confidence value set.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      intent_summary is filled from FLAG_DEFINITIONS[flag_type].description
+      (frozen SD §5.5.1 content). The BehaviorFlagDraft (LLM output) does not
+      carry intent_summary, so the orchestrator layer supplies it from the
+      static vocabulary. If FLAG_DEFINITIONS and BehaviorFlagType ever drift
+      (new enum member without a FLAG_DEFINITIONS entry), FLAG_DEFINITIONS.get()
+      returns None and intent_summary becomes "". The prompt builder (behavior.py
+      render_flag_definitions) would catch this earlier as a KeyError — so in
+      practice the empty-string fallback is unreachable, but it is not verified.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      analyze_segments is called with a single-element list per segment (the
+      Protocol's len==1 form). The orchestrator (task-5) may eventually batch
+      multi-segment calls for concurrency. At that point detect_segment_flags
+      remains single-segment — the batch boundary moves up to the orchestrator.
+      This is documented in behavior.py's module docstring and the call site now
+      has an inline comment (SUGGESTION-1 re-review fix).
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      insert_many return value semantics: the function returns len(input), NOT
+      the count of newly persisted rows. An idempotent re-run that inserts 0
+      new rows still returns 2 (or N). Callers that use this return value as
+      "confirmed new rows" will silently overcount. Documented in behavior.py
+      and test HP-3.B, but the orchestrator (task-5) must be separately warned.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      If analysis/behavior.py is re-exported from analysis/__init__.py (as it
+      now is), and any downstream import chain hits analysis/__init__.py before
+      storage/behavior_flags_repository.py has finished initializing, a circular
+      import can occur. This was observed and fixed during implementation by
+      using TYPE_CHECKING guard for the BehaviorFlagsRepository import. However,
+      if future code adds a non-TYPE_CHECKING import of storage from behavior.py,
+      the circular import will re-emerge silently (tests fail at collection time,
+      not at runtime).
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      BehaviorFlagsRepository.insert_many returns len(input) always (not
+      new-row count), matching the project-wide convention documented in
+      EventsRepository.insert_many and the task-1 scar report.
+    verified: true
+    note: >
+      Verified by reading behavior_flags_repository.py lines 59-88. The docstring
+      explicitly states "return value == len(input) ALWAYS" and the code does
+      `return len(rows)` unconditionally.
+
+  - assumption: >
+      Calling analyze_segments([prompt]) with a single-element list returns
+      exactly one SegmentAnalysis; indexing results[0] is safe.
+    verified: true
+    note: >
+      Verified via AnalysisAgent Protocol docstring ("len(out) == len(in)")
+      and FakeAnalysisAgent behavior (DT-2.3 in test_agent_protocol.py). If
+      len==0 prompts were passed (empty list), analyze_segments returns [] and
+      results[0] would raise IndexError — but detect_segment_flags always
+      passes exactly one prompt, so this is safe.
+
+  - assumption: >
+      pytest-asyncio is configured in strict mode (asyncio_mode=Mode.STRICT)
+      requiring @pytest.mark.asyncio on every async test. No asyncio_mode=auto.
+    verified: true
+    note: >
+      Verified by reading pyproject.toml (asyncio_mode = "strict") and
+      confirmed by running all task-3 async tests successfully with
+      @pytest.mark.asyncio markers.
+
+  - assumption: >
+      Deterministic flag IDs via sha256(session_id + "|" + segment_index + "|"
+      + sorted(event_ids).join(",") + "|" + flag_type.value + "|" + reason)[:32]
+      are stable across Python versions and platforms.
+    verified: true
+    note: >
+      SHA-256 is deterministic and platform-independent by design. The [:32]
+      truncation selects the first 128 bits (32 hex chars) of the digest, which
+      is stable. Verified by HP-3.B: two calls with identical inputs produce
+      the same IDs and the DB shows 2 rows (not 4).
+      IMPORTANT-1 (re-review fix): hash now includes ALL event_ids (sorted) and
+      reason, not just first event_id. HP-3.B still passes because same agent
+      output → same reason → same hash.
+
+  - assumption: >
+      draft.event_ids is always non-empty when the LLM emits a flag.
+    verified: true
+    note: >
+      CRITICAL-2 (re-review fix): resolved — _validate_draft_pre_insert now
+      explicitly raises ValueError("Flag[N].event_ids is empty — flags must
+      reference at least one event") for empty event_ids. The schema still has
+      no min_length constraint (Pydantic allows []); enforcement is at the
+      validation boundary. DT-3.5 verifies this path. The "no-event" literal
+      fallback in _promote_draft has been removed as unreachable.
+
+debt_registered: true
+debt_location: >
+  src/secondsight/analysis/behavior.py — _validate_draft_pre_insert maintains
+  a parallel guard against BehaviorFlagsRepository._guard for flag_type and
+  confidence. Any changes to the repository's validation rules must be
+  co-applied here. Comment in behavior.py names the debt explicitly.
+
+  VALID_CONFIDENCE is now a single source of truth in schemas.py (CRITICAL-3
+  resolved). The remaining drift surface is structural validation logic only
+  (flag_type enum membership check), not the value set.
+
+narrative: >
+  Re-review hardening pass (CRITICAL/IMPORTANT/SUGGESTION fixes after initial
+  DC-2 closure).
+
+  CRITICAL-1: _minimal_segment helper had a dead event_ids parameter that was
+  built into `ids` but never passed to SegmentData (which takes events objects,
+  not string IDs). No call site used the parameter, so option (b) was chosen:
+  removed the parameter entirely. Docstring added to explain where flag
+  event_ids come from (BehaviorFlagDraft, not SegmentData.events).
+
+  CRITICAL-2: Empty event_ids in a BehaviorFlagDraft was a silent-rot path
+  that caused ID collision via the "no-event" literal anchor. Fixed by
+  rejecting empty event_ids in _validate_draft_pre_insert before any insert.
+  The "no-event" fallback in _promote_draft was deleted as now unreachable.
+  DT-3.5 was added to cover this path.
+
+  CRITICAL-3: _VALID_CONFIDENCE was independently defined in behavior.py and
+  behavior_flags_repository.py. Resolved by adding VALID_CONFIDENCE (public,
+  no underscore) to schemas.py near BehaviorFlagType, exporting it from
+  analysis/__init__.py, and importing it in both modules. Both private copies
+  deleted. Adding a new confidence level now requires one edit only.
+
+  IMPORTANT-1: _make_flag_id's hash was too narrow (only first event_id).
+  Broadened to include all event_ids (sorted) and draft.reason. HP-3.B still
+  passes because same agent output → same reason and event_ids → same hash.
+  Function signature updated; call site in _promote_draft updated.
+
+  IMPORTANT-2: Return value semantics ambiguity. Added a NOTE comment block at
+  the return site in detect_segment_flags explicitly warning the task-5
+  orchestrator caller about the attempted-count vs confirmed-rows distinction.
+
+  SUGGESTION-1: Added inline comment at analyze_segments([prompt]) call site
+  explaining the single-element list pattern.
+
+  SUGGESTION-2: Removed AnalysisAgentError import from behavior.py (was only
+  in docstrings/comments; __init__.py already re-exports it). The noqa: F401
+  tag is gone.
+
+resolved_items:
+  - original_section: silent_failure_conditions
+    original_description: >
+      Circular import risk when behavior.py imports from storage package.
+    resolution: >
+      Resolved during initial implementation by using TYPE_CHECKING guard.
+      Full suite passes (611 tests, 0 failures after re-review pass).
+
+  - original_section: assumptions_made
+    original_description: >
+      BehaviorFlagsRepository.insert_many return value semantics (len(input)
+      not new-row count).
+    resolution: >
+      Verified by reading behavior_flags_repository.py source code. The docstring
+      and implementation explicitly confirm len(rows) is returned unconditionally.
+      HP-3.B test documents and asserts this semantic.
+
+  - original_section: assumptions_made
+    original_description: >
+      Deterministic flag IDs via sha256 are stable across Python versions.
+    resolution: >
+      Verified by HP-3.B: two calls with identical inputs produce same IDs;
+      DB shows 2 rows (not 4), confirming idempotency. SHA-256 is
+      platform-independent by standard. Hash broadened (IMPORTANT-1) to include
+      all event_ids (sorted) and reason; HP-3.B still passes.
+
+  - original_section: known_shortcuts
+    original_description: >
+      analyze_segments called with single-element list — no inline explanation.
+    resolution: >
+      SUGGESTION-1: added inline comment at call site explaining the pattern.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      Deterministic ID collision when two flags share same flag_type and first
+      event_id — second flag silently dropped by ON CONFLICT DO NOTHING.
+    resolution: >
+      IMPORTANT-1: hash broadened to include ALL event_ids (sorted) and reason,
+      making collisions near-impossible for genuinely distinct flags. Same-input
+      re-runs remain idempotent (same agent output → same hash).
+
+  - original_section: assumptions_made
+    original_description: >
+      draft.event_ids assumed non-empty; empty list caused "no-event" ID anchor
+      and silent ID collision.
+    resolution: >
+      CRITICAL-2: _validate_draft_pre_insert now raises ValueError for empty
+      event_ids before any insert. "no-event" fallback in _promote_draft
+      deleted as unreachable. DT-3.5 covers this death path.
+
+  - original_section: known_shortcuts
+    original_description: >
+      _VALID_CONFIDENCE split between behavior.py and behavior_flags_repository.py
+      with no shared import.
+    resolution: >
+      CRITICAL-3: VALID_CONFIDENCE moved to schemas.py (public, co-located with
+      BehaviorFlagType). Both private copies deleted. Exported from __init__.py.
+      Single source of truth enforced.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      insert_many return value semantics ambiguity — deferred to task-5 warning.
+    resolution: >
+      IMPORTANT-2: added NOTE comment block at return site in detect_segment_flags
+      explicitly naming the attempted-count vs rows-confirmed distinction and
+      directing the task-5 orchestrator caller to use get_session_flags/count_by_type
+      for confirmed-persistence checks. Deferred flag updated: still deferred to
+      task-5 for behavioral contract, but inline warning is now in place.
+    deferred_to_feature_iteration: true

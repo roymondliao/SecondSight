@@ -1,0 +1,262 @@
+task_id: task-4
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      All-or-nothing per project run is simpler than partial-commit with
+      reconciliation. Cost: one LLM failure on flag_type N requires re-running
+      flag_types 1..N-1. Acceptable because per-call cost is small (Haiku) and
+      total fan-out is bounded (≤ 7 flag types in v1). A partial-commit design
+      would need a transactional staging table or two-phase merge, which is
+      disproportionate to the problem size at v1.
+      NOTE: this shortcut applies to Step 2 (LLM fan-out) only. Step 3 (DB
+      UPSERTs) is per-row transactional, not atomic across the loop — see
+      silent_failure_conditions for the Step 3 partial-write entry.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      DEFAULT_CONVENTION_TOP_N=15 hard-coded with a TODO comment.
+      Configurable via analysis_config.toml (SD §11 line 1392) is deferred
+      to the pre-thinking G2 rationale. The constant is named and exported
+      so callers can override via the top_n parameter; the default is not
+      buried in magic.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      BehaviorFlag.intent_summary → FlagSummary.segment_summary field name
+      adaptation. The FlagSummary Pydantic model (prompts/aggregate.py) uses
+      segment_summary; BehaviorFlag (schemas.py) uses intent_summary. The
+      aggregator bridges this at the Step-1 mapping site with an inline comment.
+      If FlagSummary's field is ever renamed, this adaptation site will silently
+      break at runtime (Pydantic will reject the unknown field name). Verified:
+      FlagSummary has model_config = ConfigDict(extra="forbid"), so a wrong field
+      name raises ValidationError at construction — NOT silently accepted.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Circular import between analysis/__init__.py and storage repositories.
+      Resolved by guarding BehaviorFlagsRepository and DirectivesRepository
+      imports under TYPE_CHECKING in aggregator.py. Runtime duck-typing suffices
+      since the repositories are passed as arguments (not constructed inside
+      the module). mypy/pyright enforce the type contract statically.
+      Cost: if someone imports BehaviorFlagsRepository from analysis.aggregator
+      at runtime, they get an ImportError. That path doesn't exist in the current
+      codebase; it's an architectural oddity to document.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      Step 3 (DB UPSERTs) is per-row transactional, NOT atomic across the
+      loop. Each directive UPSERT is its own engine.begin() transaction. If the
+      K-th UPSERT raises (DB lock timeout, _guard ValueError, IntegrityError,
+      disk full), K-1 directives have been written and N-K have not. The caller
+      receives an exception, not an AggregateProjectResult. Retry is
+      idempotent-safe (UPSERT by identity_key converges), but the caller cannot
+      distinguish Step 2 vs. Step 3 failure from the exception type alone.
+      Documented in module docstring Failure semantics section (task-5
+      orchestrator contract).
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Top-N tie-break uses Python's tuple sort on (flag_type.value ASC,
+      pattern_description ASC). If BehaviorFlagType enum values are changed
+      or new values added with names that sort differently, the tie-break
+      order changes — silently producing different directive selections across
+      versions without any error. The affected surface is narrow (only ties
+      at the top_n boundary) and the impact is cosmetic (different but equally
+      valid directives selected), not data corruption.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      frequency = occurrence_count / flags_read. If flags_read=0 (empty
+      project), frequency=0.0 as documented. However, occurrence_count > 0
+      with flags_read=0 is geometrically impossible (patterns emerge from
+      flags, so no flags means no patterns). The guard is there for defensive
+      completeness, not a reachable case in well-formed inputs.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      aggregate_project_flags iterates BehaviorFlagType enum members in
+      definition order (Python enum iteration order). If the enum is ever
+      re-ordered (e.g., a new member inserted between existing members),
+      the iteration order changes, changing which flag_type LLM call is made
+      first. Since the all-or-nothing contract propagates on the FIRST failure,
+      re-ordering could change which partial work was done before a failure —
+      affecting retry cost. This is acceptable because the output (directives)
+      is order-independent; only the failure recovery footprint changes.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      FakeAnalysisAgent used in tests keyed by prompt string verbatim.
+      If build_aggregate_prompt changes its output format (e.g., field ordering
+      in JSON changes, new section added), all tests that pre-compute prompt
+      keys will start raising KeyError — failing loudly. This is a good failure
+      mode (tests break, not production), but it means a prompt builder change
+      requires updating all test prompt-key computations.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      BehaviorFlag.intent_summary is the correct field to map to
+      FlagSummary.segment_summary (verified by reading schemas.py line 98
+      and prompts/aggregate.py FlagSummary definition).
+    verified: true
+    note: >
+      Confirmed: schemas.py defines `intent_summary: str` on BehaviorFlag
+      (line 98). prompts/aggregate.py defines `segment_summary: str` on
+      FlagSummary (line 45). The adaptation is explicit at the Step-1
+      mapping site in aggregator.py.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      BehaviorFlagType enum iteration via `for flag_type in BehaviorFlagType`
+      produces a stable, well-defined order.
+    verified: true
+    note: >
+      Python enums iterate in definition order. BehaviorFlagType is defined
+      in schemas.py with six members in a fixed order. This is stable across
+      Python 3.11+ (CPython guarantees definition order for str Enum).
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      upsert_with_identity_key raises ValueError on empty identity_key, not
+      silently no-ops. (DC-6 depends on this guard.)
+    verified: true
+    note: >
+      Confirmed: directives_repository.py line 159-164 raises ValueError
+      explicitly when identity_key is empty.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      The all-or-nothing contract works because no database writes occur
+      until Step 3. Step 2 only calls the LLM and accumulates patterns in
+      memory. This is verified by the implementation structure.
+    verified: true
+    note: >
+      Confirmed: aggregator.py collects all_patterns in a list during Step 2
+      (memory only) and only calls directives_repo.upsert_with_identity_key
+      in Step 3 after all LLM calls succeed.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      The circular import between analysis/__init__.py (which re-exports
+      aggregator symbols) and storage.behavior_flags_repository (which imports
+      analysis.schemas) can be broken by guarding storage imports under
+      TYPE_CHECKING without breaking runtime behavior.
+    verified: true
+    note: >
+      Verified: full test suite passes (628 tests) with the TYPE_CHECKING guard.
+      The repositories are only referenced as type annotations in function
+      signatures; at runtime they are passed as arguments and accessed via
+      duck typing. No isinstance() checks on the repo types in aggregator.py.
+    deferred_to_feature_iteration: false
+
+debt_registered: true
+debt_location: >
+  src/secondsight/analysis/aggregator.py — TODO comment on DEFAULT_CONVENTION_TOP_N
+  references SD §11 line 1392 for configurable top_n via analysis_config.toml.
+  Deferred to AnalysisConfig plumbing work (pre-thinking G2 rationale).
+
+narrative: >
+  Task-4 implements the cross-session aggregator (SD §5.5.3) closing death cases
+  DC-3, DC-5, DC-6. The critical design decision was the circular import between
+  the analysis package (which re-exports aggregator symbols in __init__.py) and
+  the storage repositories (which import analysis.schemas). This was discovered
+  during the full-suite run and resolved by guarding repository type imports under
+  TYPE_CHECKING — a standard Python pattern for breaking import cycles while
+  preserving static type checking.
+
+  The field name adaptation (BehaviorFlag.intent_summary → FlagSummary.segment_summary)
+  was noted in the task description and verified against both schemas before
+  implementation. The adaptation is a single explicit mapping in Step 1 with an
+  inline comment.
+
+  DT-4.3 required a custom _PartialFailureAgent (not the shared FakeAnalysisAgent)
+  because FakeAnalysisAgent's raise_on_aggregate_call is all-or-nothing (all calls
+  fail). A partial-failure scenario (first succeeds, second fails) needed a
+  stateful call counter.
+
+resolved_items:
+  - original_section: assumptions_made
+    original_description: >
+      BehaviorFlag.intent_summary is the correct field to map to
+      FlagSummary.segment_summary.
+    resolution: >
+      Verified by reading schemas.py (BehaviorFlag.intent_summary line 98)
+      and prompts/aggregate.py (FlagSummary.segment_summary line 45).
+      Documented at the adaptation site in aggregator.py Step-1 mapping.
+
+  - original_section: assumptions_made
+    original_description: >
+      The circular import can be broken by guarding storage imports under
+      TYPE_CHECKING.
+    resolution: >
+      Implemented and verified via full test suite (628 passed). The
+      TYPE_CHECKING guard in aggregator.py breaks the import cycle while
+      preserving mypy/pyright static type checking.
+
+  - original_section: known_shortcuts
+    original_description: >
+      BehaviorFlag.intent_summary → FlagSummary.segment_summary field name
+      adaptation silently breaks if FlagSummary's field is renamed.
+    resolution: >
+      Verified that FlagSummary has model_config = ConfigDict(extra="forbid"),
+      so a wrong field name raises ValidationError immediately at construction
+      (not silent). The failure mode is loud, not silent. Documented in scar.
+
+  # --- Items resolved in hardening pass (reviewer IMPORTANT-1/2 + SUGGESTION-1/2/3) ---
+
+  - original_section: module_docstring (IMPORTANT-1)
+    original_description: >
+      Module docstring claimed all-or-nothing for the entire pipeline, but
+      Step 3 is actually per-row transactional. Task-5 orchestrator would read
+      incorrect retry semantics.
+    resolution: >
+      Module docstring rewritten with explicit "Failure semantics" section
+      distinguishing Step 2 (all-or-nothing, LLM, safe to retry) vs Step 3
+      (per-row transactional, UPSERT idempotent, but partial state possible).
+      Step 3 partial-write also added to silent_failure_conditions. The
+      known_shortcuts entry for all-or-nothing now carries a clarifying NOTE
+      scoping it to Step 2 only.
+
+  - original_section: aggregator.py:186 (IMPORTANT-2)
+    original_description: >
+      Redundant `flags_read = flags_read_total` alias at line 186 adds noise
+      and creates two names for the same value. The empty-project short-circuit
+      hardcoded flags_read=0 literal rather than using the accumulated variable.
+    resolution: >
+      Removed the alias. `flags_read_total` is used directly throughout
+      (frequency division, both return sites). The empty-project short-circuit
+      now uses flags_read=flags_read_total (invariant is explicit, not relying
+      on literal 0 matching the accumulator value).
+
+  - original_section: schemas.py Directive docstring (SUGGESTION-1)
+    original_description: >
+      Directive docstring in schemas.py restated the sha256 hash formula,
+      duplicating compute_identity_key's docstring. Two locations to update
+      if formula changes.
+    resolution: >
+      Directive docstring updated to reference compute_identity_key by
+      fully-qualified name as the single source of truth for the hash formula.
+      Formula no longer stated in schemas.py.
+
+  - original_section: top_n parameter (SUGGESTION-2)
+    original_description: >
+      top_n parameter range unstated in docstring. Negative values would
+      silently produce incorrect results via Python list slicing.
+    resolution: >
+      Added Args block in aggregate_project_flags docstring stating valid
+      range (>= 0) and behavior for 0 (no-op) vs negative (ValueError).
+      Added ValueError guard at function entry for top_n < 0 with informative
+      message. Added DT-4.7 (2 tests): negative raises ValueError, zero
+      produces 0 directives without error. Full suite: 630 passed.
+
+  - original_section: compute_identity_key public surface (SUGGESTION-3)
+    original_description: >
+      compute_identity_key exported in __all__ but task-5 (the named consumer)
+      hasn't landed yet. Public surface commitment without documented intent.
+    resolution: >
+      compute_identity_key docstring now explicitly states it is public for
+      the task-5 orchestrator and future verifiers/auditing tools. The
+      aggregator is the only production caller today. No public/private
+      hopscotch — surface intent documented rather than renamed.
