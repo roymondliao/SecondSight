@@ -1,0 +1,509 @@
+# Ship Manifest — GUR-102 Phase 2 Analysis Orchestration
+# Validate-and-ship gate complete on 2026-05-07.
+
+delivered_capability: >
+  The orchestration layer for SecondSight's Phase 2 analysis pipeline:
+  three new modules (orchestrator.py composer, behavior.py segment detector,
+  aggregator.py cross-session pipeline), a typed AnalysisAgent Protocol
+  contract that GUR-103 will implement on PydanticAI, two new storage
+  tables (analysis_runs for pipeline-progress audit, session_reports for
+  artifact persistence), an additive directives.identity_key column with
+  UNIQUE(project_id, identity_key) for stable-identity UPSERT, and the
+  filesystem JSON backup writer per SD §7.2. Closes 8 silent-failure
+  surfaces (DC-1 through DC-8) named in the kickoff. NO LLM calls (the
+  Protocol is the seam), NO HTTP surface (consumers are GUR-103/104/106).
+
+# --- What was built ---
+production_modules:
+  - id: P2-8a
+    path: src/secondsight/storage/analysis_runs_{table,repository}.py
+    closes: >
+      Pipeline-progress audit. start_run inserts at stage='pending' BEFORE
+      any side effect (closes DC-1: KILL between stages still leaves audit
+      row). advance_stage validates the stage enum at the repository layer
+      (mirrors GUR-100 D1 pattern). count_recent_partial surfaces stuck
+      runs to the operator. _row_to_run wraps AnalysisRunStage(...) with
+      run_id+session_id context on corrupt DB stage strings (round 1 fix).
+
+  - id: P2-8b
+    path: src/secondsight/storage/session_reports_{table,repository}.py
+    closes: >
+      Artifact persistence with session_id UNIQUE for UPSERT semantics.
+      _guard validates key_findings <= 5 and headline bounds before write
+      (round 1 fix). On re-run with force=True, UPSERT updates
+      analysis_run_id+headline+key_findings+body+updated_at while
+      preserving created_at — same identity-key pattern as directives.
+
+  - id: P2-8c
+    path: src/secondsight/storage/directives_{table,repository}.py
+    closes: >
+      Additive identity_key column + UNIQUE(project_id, identity_key)
+      constraint. upsert_with_identity_key path returns the canonical
+      INSERT ON CONFLICT(project_id, identity_key) DO UPDATE SET
+      instruction, frequency, source_sessions, updated_at — preserving
+      status, type, source_flag_type, created_at on UPDATE. insert
+      wraps IntegrityError → ValueError naming the constraint when an
+      empty identity_key collides with the (project_id, "") slot
+      (round 1 yin Critical fix). Empty identity_key rejected at the
+      _guard boundary.
+
+  - id: P2-8d
+    path: src/secondsight/analysis/agent.py
+    closes: >
+      Typed seam (Protocol contract) between GUR-102 and GUR-103.
+      Async-first, three explicit methods (analyze_segments batched form
+      to absorb future concurrency without Protocol churn,
+      aggregate_flag_type single-call, summarize_session single-call).
+      AnalysisAgentError exception type. @runtime_checkable for
+      isinstance support; documented signature-blindness limitation at
+      Protocol definition site (round 1 fix).
+
+  - id: P2-9
+    path: src/secondsight/analysis/behavior.py
+    closes: >
+      Segment-level detector. Pre-insert _guard validation closes DC-2:
+      validate-then-promote-then-insert atomicity (raises on bad
+      flag_type / confidence / empty event_ids BEFORE any DB write).
+      Deterministic SHA-256 IDs over (session_id, segment_index,
+      sorted(event_ids), flag_type.value, draft.reason) for re-call
+      idempotency under temperature=0 (round 1 fix broadened from
+      single-event_id to full sorted set + reason). validate_draft_pre_insert
+      and promote_draft promoted to public in __all__ for orchestrator
+      reuse without cross-module private imports (security-review fix).
+
+  - id: P2-10
+    path: src/secondsight/analysis/aggregator.py
+    closes: >
+      Cross-session aggregator implementing SD §5.5.3 verbatim.
+      Step 1 group by flag_type (single grouping policy in v1).
+      Step 2 one LLM call per non-empty group; ALL-OR-NOTHING on
+      AnalysisAgentError (no partial directive writes on Step 2 failure).
+      Step 3 sort by occurrence_count DESC with deterministic tie-break
+      (flag_type.value ASC, pattern_description ASC) — closes DC-3 silent
+      tie-truncation. compute_identity_key now hashes (project_id,
+      flag_type.value, sorted(repr_session_ids)) for structural
+      cross-project isolation in the hash itself (security-review
+      MEDIUM-3 fix). top_n < 0 raises ValueError; top_n=0 valid no-op.
+      DEFAULT_CONVENTION_TOP_N=15 hard-coded with TODO referencing
+      analysis_config.toml (G2 deferral).
+
+  - id: P2-8 (composer)
+    path: src/secondsight/analysis/orchestrator.py
+    closes: >
+      Composer with three async entrypoints: analyze_session,
+      aggregate_project, analyze_and_aggregate. Closes DC-1 (start_run
+      at entry), DC-4 (force=True required for completed sessions),
+      DC-7 (consumer-not-recoverer principle: _verify_session_complete
+      raises rather than re-running GUR-99 backfill), DC-8 (zero-flag
+      short-circuit + stale-conventions WARNING disclosure).
+      _write_filesystem_backup hardened with is_safe_id guards on
+      project_id and session_id + Path.resolve().relative_to
+      containment check (security-review HIGH-1 fix).
+      _sanitize_failure_message bounds the analysis_runs.error_message
+      column to 200 chars + exception class name (security-review
+      MEDIUM-2 fix). Outer try/except Exception is the ONE acceptable
+      catch-all in this PR — records analysis_runs.stage='failed'
+      before re-raise; documented at module docstring.
+
+  - id: schemas
+    path: src/secondsight/analysis/schemas.py
+    closes: >
+      Extended GUR-100's schema module: AnalysisRun, SessionReport,
+      AnalysisRunStage enum, TERMINAL_STAGES public frozenset (single
+      source of truth shared by analysis_runs_repository), and
+      VALID_CONFIDENCE public frozenset (single source of truth shared
+      by behavior.py and behavior_flags_repository — round 1 fix).
+      identity_key column added to Directive Pydantic model;
+      docstring references compute_identity_key by name rather than
+      restating the formula (round 1 DRY fix).
+
+# --- Verification chain ---
+verification:
+  acceptance_passed: 17  # of 17 scenarios in acceptance.yaml
+  acceptance_breakdown:
+    death_paths: >
+      9/9 silent-failure scenarios (DT-1.1 through DT-1.9): KILL audit
+      row, validate-before-insert atomicity, deterministic top_n
+      tie-break, force=True for re-runs, identity_key collision
+      across emerged patterns, consumer-not-recoverer raises,
+      summary failure leaves resumable state, flags_read disclosure
+      for retention-window dependency, short-circuit logs when
+      directives stale.
+    degradation: >
+      2/2 (DG-2.1 partial step-2 writes nothing; DG-2.2 segment
+      failure halts session at the failing segment).
+    happy_paths: >
+      4/4 (HP-3.1 full-pipeline evidence chain; HP-3.2 aggregate
+      then re-run idempotent via identity_key; HP-3.3 zero-flag
+      short-circuit; HP-3.4 force re-run idempotent with audit trail).
+    additional_unit_coverage: >
+      task-2 Protocol contract (DT-2.1 to 2.7 + 6 happy);
+      task-3 detector (DT-3.1 to 3.5 + 2 happy);
+      task-4 aggregator (DT-4.1 to 4.7 + 7 happy + cross-project
+      hash isolation added in security-review fix).
+  task_test_suite: >
+    +49 net new tests across 5 tasks. Final count: 641 passed, 1
+    skipped, 184 warnings (pre-existing pytest-asyncio warnings
+    on legacy tests; not introduced by this issue).
+  full_suite: "641/641 passing on developer macbook in ~20s; 0 regressions"
+  reconciliation_drift:
+    intentional_acknowledged_in_plan_or_review:
+      - "task-3: hash inputs broadened from (flag_type, event_ids[0]) to (sorted event_ids, reason) — round 1 yin Important fix; preserved idempotency for genuine re-runs."
+      - "task-3: VALID_CONFIDENCE elevated from per-module private to schemas.py public frozenset — round 1 quality DRY+Coupling fix."
+      - "task-3: validate_draft_pre_insert + promote_draft promoted to public in __all__ — round 1 quality Critical fix on cross-module private import."
+      - "task-4: aggregator's compute_identity_key signature changed (project_id added) — security-review MEDIUM-3 fix; all 9 call sites in tests updated."
+      - "task-4: Step 3 framing scope clarified — 'all-or-nothing' applies to Step 2 only; Step 3 is per-row transactional with UPSERT-idempotent retry. Documented in module docstring; downgraded from Important to Suggestion."
+      - "task-5: AnalyzeSessionResult.flags_inserted renamed to flags_attempted — round 1 yin Important on naming honesty; AnalysisRun.flags_inserted (DB column) preserved."
+      - "task-5: outer try/except records sanitized message via _sanitize_failure_message instead of str(exc) — security-review MEDIUM-2 fix."
+      - "task-5: _write_filesystem_backup added is_safe_id guards + Path.resolve containment — security-review HIGH-1 fix."
+
+# --- Known failure modes (yin: what can rot) ---
+known_failure_modes:
+  - mode: >
+      Step 3 of aggregator is per-row transactional, not atomic across
+      the loop. If upsert_with_identity_key raises mid-loop (DB lock
+      timeout, IntegrityError on a constraint we did not name, disk
+      full), K-1 of N directives have been written and N-K have not.
+      Caller receives an exception (not AggregateProjectResult) and
+      cannot distinguish Step 2 vs. Step 3 failure from the exception
+      type alone. UPSERT idempotency makes retry safe but the failure
+      mode is asymmetric with Step 2's all-or-nothing.
+    severity: silent_corruption
+    detection: >
+      Module docstring explicitly documents the Step 2 vs. Step 3
+      distinction and directs callers to inspect via
+      DirectivesRepository.get_active_conventions() to disambiguate.
+      No automated detection. Future: introduce typed Step3WriteError
+      wrapper at the aggregator boundary (deferred Suggestion).
+
+  - mode: >
+      _persist_segment_flags in orchestrator.py duplicates the pipeline
+      orchestration scaffolding (empty-drafts short-circuit, created_at
+      assignment) from behavior.py:detect_segment_flags. Helpers
+      (validate_draft_pre_insert, promote_draft) are now public and
+      single-sourced — divergence on validation rules is closed. But
+      orchestration-level changes still require lockstep updates at
+      both call sites.
+    severity: degradation
+    detection: >
+      Module docstring at orchestrator.py:42-52 names the duplication
+      and the lockstep requirement. No runtime detection. Quality
+      reviewer downgraded from Important to Suggestion after public-
+      helper promotion.
+
+  - mode: >
+      Race condition: two concurrent analyze_session calls for the same
+      session_id can both pass _check_already_analyzed before either
+      calls start_run, producing two analysis_runs rows and doubled
+      LLM cost. UPSERT on session_reports keeps a single report row;
+      both analysis_runs rows reach summary_written; no permanent
+      stuck state but the cost doubles per concurrent trigger.
+    severity: degradation
+    detection: >
+      _check_already_analyzed docstring documents the TOCTOU race and
+      names the v1 single-trigger assumption (GUR-103 invokes from a
+      single trigger per session). No runtime detection. count_recent_partial
+      surfaces both runs for audit.
+
+  - mode: >
+      LLM determinism dependency: deterministic flag IDs in behavior.py
+      hash include `draft.reason`. Idempotency on force-rerun assumes
+      the LLM produces the same `reason` string for identical input
+      (true at temperature=0; degrades at temperature > 0). Default
+      Haiku is temperature-zero per SD §5.7.1, but a future model
+      switch may break the assumption.
+    severity: degradation
+    detection: >
+      behavior.py module docstring documents the dependency. No
+      runtime detection. Symptom would be: behavior_flags row count
+      growing on each force-rerun rather than staying constant.
+
+  - mode: >
+      Sync insert_many inside async detect_segment_flags (and the
+      analogous orchestrator helpers) blocks the event loop during
+      DB writes. Pre-existing from GUR-100; tolerable at the documented
+      0.5–2 events/sec rate (SD §3.2). Concurrency may need
+      asyncio.to_thread wrapping at GUR-103's trigger boundary.
+    severity: degradation
+    detection: >
+      Yin reviewer flagged on task-3 review; no automated detection.
+      Symptom would be: orchestrator latency anomalies under
+      concurrent session-end triggers.
+
+  - mode: >
+      Aggregator reads ALL flags for a project per flag_type with no
+      LIMIT clause. Bounded by BehaviorFlagType cardinality (7 types)
+      but not by per-type flag count. A project accumulating 10K+
+      flags of one type would load all into memory and pass to the
+      LLM in one prompt.
+    severity: degradation
+    detection: >
+      Per-call cost growth in LLM-router monitoring (when GUR-103
+      lands). No code-level detection. Mitigated by retention purger
+      (GUR-147) keeping flag history bounded at 365 days.
+
+  - mode: >
+      Filesystem JSON backup is best-effort. If write_text raises
+      (disk full, permissions, race with cleanup), the outer
+      try/except records analysis_runs.stage='failed' even though
+      the DB session_reports row was already UPSERTed successfully.
+      Caller sees pipeline failure for what is actually a backup-only
+      issue.
+    severity: degradation
+    detection: >
+      analysis_runs.stage='failed' with error_message naming the
+      filesystem path. Operator can grep the error_message column
+      for OSError/PermissionError.
+
+  - mode: >
+      _log_if_directives_stale is informational only — emits WARNING
+      via _logger.warning when active conventions are older than 30
+      days. If logs are not aggregated to a monitoring system, the
+      WARNING is silently dropped.
+    severity: degradation
+    detection: >
+      Grep runtime logs for the literal substring
+      "aggregator skipped: zero flags inserted" + "stale conventions"
+      to spot frequency. No structured alerting in v1.
+
+  - mode: >
+      @runtime_checkable on AnalysisAgent Protocol checks method names
+      only — not signatures, parameter types, return types, or async-
+      ness. A sync class with the right method names will pass
+      isinstance() but fail at await-time. Documented at the Protocol
+      definition site.
+    severity: degradation
+    detection: >
+      mypy/pyright catch the rest at type-check time when GUR-103
+      declares a class against the Protocol. No runtime detection.
+
+  - mode: >
+      record_failure-also-fails edge case: if the inner try/except in
+      analyze_session catches a record_failure failure (DB connection
+      lost mid-failure), the analysis_runs row remains at the last-set
+      non-terminal stage with completed_at NULL. Caller still sees the
+      original pipeline exception; audit trail is incomplete.
+    severity: silent_corruption
+    detection: >
+      count_recent_partial surfaces stuck non-terminal runs to the
+      operator. Documented in analyze_session docstring's Failure
+      semantics block.
+
+# --- Accepted risks (carry forward; need re-evaluation) ---
+accepted_risks:
+  - risk: >
+      Three LOW security findings accepted as ship-manifest risks per
+      board option (A) on security review:
+      (1) _row_to_run ValueError echoes session_id + raw_stage in
+      message; propagates to logs if caller logs the exception;
+      (2) directives.insert IntegrityError → ValueError translation
+      echoes identity_key (sha256 hash, not raw session ids) in
+      error message;
+      (3) _logger.info logs session_id at INFO on zero-flag short-
+      circuit (acceptable for local single-user tool; defense-in-
+      depth concern if logs ever ship to remote aggregator).
+    accepted_by: "human (local-board) — security review option (A)"
+    expires: "2026-08-07"
+    rationale: >
+      All three are defense-in-depth concerns, not direct exploits.
+      session_ids are opaque hashes in normal operation; identity_key
+      is a one-way hash. Re-evaluate when a remote log aggregator
+      (Sentry, Datadog) is introduced.
+
+  - risk: >
+      Step 3 of aggregator has no Step3WriteError typed wrapper; caller
+      cannot distinguish Step 2 (retry-safe) vs. Step 3 (idempotent-
+      safe-retry-via-UPSERT) failure from the exception type. Quality
+      reviewer Suggestion deferred.
+    accepted_by: "human (local-board) — security review option (A)"
+    expires: "2026-08-07"
+    rationale: >
+      Documentation-only fix is sufficient because the failure source
+      is now disclosed (not hidden). Implementing the wrapper is a
+      larger refactor that GUR-103's orchestrator-trigger code can
+      take on if it needs the distinction.
+
+  - risk: >
+      _persist_segment_flags in orchestrator.py duplicates orchestration
+      scaffolding from detector. Helpers public and single-sourced;
+      orchestration-level lockstep requirement remains.
+    accepted_by: "human (local-board) — implement gate accept"
+    expires: "2026-08-07"
+    rationale: >
+      Refactoring detector to return tuple[int, SegmentAnalysis] would
+      be cleaner but ripples through task-3 tests. Deferred to feature
+      iteration. Lockstep risk is bounded by module docstring + public
+      helpers.
+
+  - risk: >
+      Race condition on _check_already_analyzed — TOCTOU between read
+      and start_run insert, no DB-level lock. Bounded by GUR-103's
+      single-trigger assumption.
+    accepted_by: "human (local-board) — plan gate accept"
+    expires: "2026-11-07"  # re-evaluate when GUR-103 trigger lands
+    rationale: >
+      v1 deployment is single-process per session via session-end
+      hook. If GUR-103 ever introduces multi-trigger or external
+      replay, atomic check+insert needed. Re-evaluate at GUR-103
+      ship gate.
+
+  - risk: >
+      LLM determinism dependency: behavior.py flag IDs hash
+      `draft.reason`. Force-rerun idempotency depends on
+      temperature=0 (default Haiku per SD §5.7.1).
+    accepted_by: "human (local-board) — plan gate accept"
+    expires: "2026-08-07"
+    rationale: >
+      Acceptable for v1 with Haiku default. Re-evaluate if SD §5.7
+      adds non-zero temperature models or if GUR-103 introduces
+      caller-selectable temperature.
+
+  - risk: >
+      Branch accumulation: paperclip-experiment now ~254 files /
+      ~47k insertions vs main. Shipping GUR-102 as a merge to main
+      would also land all prior phases (GUR-96/97/98/99/100/101/107/
+      111/112/113/147) that have not yet merged. Each prior phase
+      had its own ship-manifest accepting this same branch risk.
+    accepted_by: "human (local-board) — pending choice in this gate"
+    expires: "N/A — resolved at branch-completion choice (A/B/C/D)"
+    rationale: >
+      Per memory feedback `feedback_branch_accumulation`, the
+      recommended default is (C) Keep branch — never default-merge
+      to main. Merge is a deliberate decision the user makes; this
+      manifest does not pre-commit to it.
+
+# --- Silent failure surface ---
+silent_failure_surface: high
+# Computed from scar reports: 30 unique silent_failure_conditions across
+# 5 task scar reports (task-1=4, task-2=2, task-3=5, task-4=9, task-5=10).
+# Per format guide: >7 = high.
+# As with GUR-100, most entries are documented as LOUD failure modes
+# (raises with named message; emits WARNING log). The honest-but-strict
+# count rounds to "high" because the breadth of the orchestration layer
+# (5 modules + 2 tables + 1 Protocol) creates many small failure surfaces
+# even when each is individually well-handled.
+
+# --- Monitoring hooks ---
+monitoring_hooks:
+  - >
+    CI gate: pytest tests/ — 641 tests with deterministic fixtures.
+    Failures here block merge. Specific test files for GUR-102:
+    tests/analysis/test_{agent_protocol,behavior,aggregator,orchestrator}.py
+    + tests/storage/test_{analysis_runs,session_reports}_repository.py.
+  - >
+    Log signals: grep runtime logs for these literal substrings to
+    detect rot:
+      "aggregator skipped: zero flags inserted"
+      "stale conventions"
+      "outside enum" (BehaviorFlagType drift)
+      "FakeAnalysisAgent contract violation" (test-only sanity check)
+      "validate_draft_pre_insert" with stack frame in production
+      "_promote_draft" with stack frame in production
+    Frequency spikes are the canary.
+  - >
+    DB-state signal: count_recent_partial query on the analysis_runs
+    table surfaces stuck non-terminal pipeline runs. Operator should
+    run this periodically: rows older than 5 minutes in stage NOT IN
+    ('summary_written', 'aggregated', 'failed') indicate either a
+    record_failure-also-failed scenario or a process that died
+    without record_failure being reached.
+  - >
+    Disable-on-arrival rate (deferred Phase 2 ship gate per D8):
+    once GUR-106 dashboard ships, "directives marked disabled within
+    24h of created_at" must be ≤ 30% across the first 20 sessions.
+    Blocks GUR-104 directive-lifecycle work from starting until
+    verified.
+  - >
+    Schema-contract drift signal: `git diff main -- docs/system_design.md`
+    must continue to include §5.5.2 (confidence), §7.4 (disabled_at,
+    disabled_reason, identity_key) edits. Future SD update needed for
+    analysis_runs + session_reports tables (deferred to GUR-104/106
+    ship cycle since those are the primary consumers).
+
+# --- Kill switch ---
+kill_switch: >
+  Disable orchestrator: rename src/secondsight/analysis/orchestrator.py
+  → orchestrator.disabled. The orchestrator is NOT yet imported by any
+  production code path (api/, observation/, daemon.py, cli/) — it is
+  consumed only by tests and (eventually) GUR-103's session-end trigger.
+  Renaming surfaces no production breakage today.
+
+  Disable per-task modules independently: same rename pattern works for
+  behavior.py, aggregator.py, agent.py — they are leaf modules with no
+  cross-imports outside the analysis/ package.
+
+  Disable storage-layer writes: revert src/secondsight/analysis/__init__.py
+  to remove the new re-exports (Orchestrator, AnalysisAgent, etc.) and
+  src/secondsight/storage/__init__.py to remove AnalysisRunsRepository
+  + SessionReportsRepository. The new tables are created lazily via
+  metadata.create_all(checkfirst=True); a fresh intelligence.db will
+  not contain them unless the repository is instantiated.
+
+  Disable directives.identity_key migration: the column has
+  server_default="" so existing rows would not break, but any
+  upsert_with_identity_key call would fail constraint check. Roll back
+  by reverting bf36268's directives_table.py + directives_repository.py
+  changes.
+
+  Full removal: `rm -rf src/secondsight/analysis/{orchestrator,behavior,
+  aggregator,agent}.py src/secondsight/storage/{analysis_runs,session_reports}_*.py
+  tests/analysis/test_{agent_protocol,behavior,aggregator,orchestrator}.py
+  tests/analysis/_fake_agent.py tests/storage/test_{analysis_runs,
+  session_reports}_repository.py changes/2026-05-06_gur-102_phase2-analysis-orchestration/`
+  + git revert bf36268 fd02802.
+
+# --- Provenance ---
+provenance:
+  branch: paperclip-experiment
+  commits:
+    - "bf36268 GUR-102 implement: Phase 2 Analysis Orchestration (5 tasks, P2-8/9/10)"
+    - "fd02802 GUR-102 hardening: resolve HIGH-1 + MEDIUM-2 + MEDIUM-3 from security review"
+  base_branch: main
+  diff_scope_for_this_feature: >
+    40 files (8 production .py modified or created + 7 test .py + 5 scar
+    reports + research/plan/index/overview/acceptance/security-review/
+    ship-manifest docs); ~10,184 insertions + 9 deletions across the
+    two GUR-102 commits.
+  branch_diff_scope_vs_main: >
+    254 files / ~47k insertions (cumulative across GUR-96 through
+    GUR-102 plus 147; each prior phase had its own ship-manifest).
+  validated_at: "2026-05-07"
+  validated_by: "Karpathy (claude_local) via samsara:validate-and-ship"
+  review_chain:
+    samsara_planning: "kickoff (accepted) + pre-thinking rev 2 (accepted) + plan (accepted) — 3 board gates"
+    samsara_implement: "5 tasks × 2 reviewers (yin + quality) × initial-then-fix cycles = 18 reviewer dispatches; 1 Critical + 8 Important + 8 Suggestion findings; all closed"
+    samsara_security_privacy_review: "1 round; 1 HIGH + 2 MEDIUM closed; 3 LOW accepted as risk"
+
+# --- Cross-references ---
+references:
+  research:
+    - "changes/2026-05-06_gur-102_phase2-analysis-orchestration/1-kickoff.md"
+    - "changes/2026-05-06_gur-102_phase2-analysis-orchestration/problem-autopsy.md"
+  planning:
+    - "changes/2026-05-06_gur-102_phase2-analysis-orchestration/2-pre-thinking.md"
+    - "changes/2026-05-06_gur-102_phase2-analysis-orchestration/2-plan.md"
+    - "changes/2026-05-06_gur-102_phase2-analysis-orchestration/acceptance.yaml"
+    - "changes/2026-05-06_gur-102_phase2-analysis-orchestration/overview.md"
+    - "changes/2026-05-06_gur-102_phase2-analysis-orchestration/index.yaml"
+  peer_reviews:
+    - "changes/2026-05-06_gur-102_phase2-analysis-orchestration/peer-review-sebastian.md"
+    - "changes/2026-05-06_gur-102_phase2-analysis-orchestration/peer-review-followup-sebastian.md"
+  tasks:
+    - "changes/2026-05-06_gur-102_phase2-analysis-orchestration/tasks/task-{1..5}.md"
+  scar_reports:
+    - "changes/2026-05-06_gur-102_phase2-analysis-orchestration/scar-reports/task-{1..5}-scar.yaml"
+  spec:
+    - "docs/system_design.md §5.5.2 (Segment-level analysis prompt — consumer)"
+    - "docs/system_design.md §5.5.3 (Cross-session aggregation prompt — consumer)"
+    - "docs/system_design.md §5.6 (Analysis 執行時機 + chained 第一層→第二層)"
+    - "docs/system_design.md §7.2 (Filesystem layout for session_report.json)"
+    - "docs/system_design.md §7.3 (behavior_flags table — consumer)"
+    - "docs/system_design.md §7.4 (directives table — patched with identity_key in pending GUR-104 SD update)"
+  upstream_dependencies_satisfied:
+    - "GUR-100 (storage + segmenter + metrics + schemas) — DONE"
+    - "GUR-101 (prompt builders for behavior + aggregate + summary) — DONE"
+    - "GUR-99 (Phase 1 e2e + backfill contract that GUR-102's _verify_session_complete consumes) — DONE"
+  downstream_blockers_now_unblocked:
+    - "GUR-103 (PydanticAI Agent + LLM Router + session-end trigger) — implements AnalysisAgent Protocol GUR-102 froze"
+    - "GUR-104 (Directive lifecycle + REST API) — consumes new analysis_runs + session_reports tables; gated on disable-on-arrival ≤30% from Phase 2 dogfooding"
+    - "GUR-106 (Phase 3A Dashboard) — consumes session_reports + directives.identity_key; waits on GUR-104"
