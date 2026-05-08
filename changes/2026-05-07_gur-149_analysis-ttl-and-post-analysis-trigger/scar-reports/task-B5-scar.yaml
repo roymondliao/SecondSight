@@ -43,14 +43,18 @@ scar_items:
       raw_traces still exists — operator could not re-derive the analysis
       from raw_traces (since the analyzer needs raw events).
     decision_taken: >
-      Documented in cleanup() inline comment + module docstring. A future
-      contributor who reverses the order without reading docs would fail
-      no test currently — adding an order-pinning test was considered but
-      deferred since the two purgers operate on disjoint table sets and a
-      regression test would require simulating crash mid-loop.
-    deferred_to_feature_iteration: true
-    deferral_rationale: "Order-pinning test would mirror the DC-B6 spy pattern from B2; defer until a real failure mode emerges."
-    resolved_items: []
+      ITERATION ROUND 1 (2026-05-08, board-approved): added
+      `TestB5OrderingPin::test_per_project_raw_traces_runs_before_analysis`
+      that monkeypatches both `_purge_for_project` and
+      `_analysis_purge_for_project` with spies recording invocation
+      order, seeds expired data on BOTH sides of the same project, runs
+      the CLI, and asserts the recorded sequence is exactly
+      `["raw_traces:p1", "analysis:p1"]`. A future refactor that swaps
+      the two `if outcome.expired:` / `if outcome.expired_analyses:`
+      blocks in `cleanup()` would fail this test loudly.
+    deferred_to_feature_iteration: false
+    resolved_items:
+      - "iteration-round-1-fix-1: added TestB5OrderingPin in tests/cli/test_cleanup.py pinning per-project ordering contract"
 
   - id: scar-B5-2
     severity: medium

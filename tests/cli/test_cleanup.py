@@ -710,3 +710,116 @@ class TestB5StructuredLogPerProject:
         assert "raw_traces_source=builtin_default" in line
         assert "analysis_ttl_days=365" in line
         assert "analysis_ttl_source=builtin_default" in line
+
+
+# ===========================================================================
+# Iteration round 1 — fix for scar-B5-1
+# ===========================================================================
+
+
+class TestB5OrderingPin:
+    """Pin the per-project purger ordering contract: raw_traces FIRST,
+    analysis SECOND.
+
+    Rationale (scar-B5-1, deferred at task-B5, fixed in iteration round 1):
+    if raw_traces purge fails mid-run, the analysis purger still attempts
+    its own set; if analysis fails after raw_traces succeeded, the
+    raw_traces are already gone but the analysis enumeration remains
+    re-attemptable on the next CLI invocation. The reverse order would
+    leave a partial state where analysis_results is gone but raw_traces
+    still exists — operator could not re-derive the analysis from raw
+    events (the analyzer needs them).
+
+    A future refactor that swaps the two `if outcome.expired:` /
+    `if outcome.expired_analyses:` blocks in `cleanup()` would not
+    break any other test — it would only break this one. That's the
+    whole point: this test exists to fail loudly on order regressions.
+    """
+
+    def test_per_project_raw_traces_runs_before_analysis(
+        self,
+        home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from secondsight.analysis.schemas import (
+            BehaviorFlag,
+            BehaviorFlagType,
+            SessionReport,
+        )
+        from secondsight.api.registry import ProjectRegistry
+        from secondsight.cli import cleanup as cleanup_mod
+        from secondsight.storage.behavior_flags_repository import (
+            BehaviorFlagsRepository,
+        )
+        from secondsight.storage.session_reports_repository import (
+            SessionReportsRepository,
+        )
+
+        # Seed raw_traces side: expired session events.
+        old = datetime(2026, 5, 6, 12, 0, 0, tzinfo=UTC) - timedelta(days=400)
+        _seed(home, project_id="p1", session_id="s-raw", last_ts=old)
+
+        # Seed analysis side: expired session_reports + behavior_flags.
+        registry = ProjectRegistry(secondsight_home=home)
+        resources = registry._build_resources("p1")  # noqa: SLF001
+        reports_repo = SessionReportsRepository(resources.db_engine)
+        reports_repo.create_schema()
+        flags_repo = BehaviorFlagsRepository(resources.db_engine)
+        flags_repo.create_schema()
+        reports_repo.upsert(SessionReport(
+            id="rep-old",
+            project_id="p1",
+            session_id="s-analysis",
+            analysis_run_id="run-old",
+            headline="old session",
+            key_findings=["f"],
+            body="body",
+            created_at=old,
+            updated_at=old,
+        ))
+        flags_repo.insert(BehaviorFlag(
+            id="flag-old",
+            project_id="p1",
+            session_id="s-analysis",
+            segment_index=0,
+            flag_type=BehaviorFlagType.UNNECESSARY_READ,
+            event_ids=["evt-x"],
+            intent_summary="x",
+            reason="x",
+            confidence="medium",
+            created_at=old,
+        ))
+        resources.db_engine.dispose()
+
+        # Per-project config: aggressive analysis_ttl so analysis side fires.
+        proj_cfg = home / "projects" / "p1" / "config.toml"
+        proj_cfg.write_text("[retention]\nanalysis_ttl_days = 30\n")
+
+        # Spy on both purge helpers; record invocation order.
+        call_order: list[str] = []
+        real_raw = cleanup_mod._purge_for_project
+        real_analysis = cleanup_mod._analysis_purge_for_project
+
+        def spy_raw(home_arg, pid, expired):  # type: ignore[no-untyped-def]
+            call_order.append(f"raw_traces:{pid}")
+            return real_raw(home_arg, pid, expired)
+
+        def spy_analysis(home_arg, pid, expired):  # type: ignore[no-untyped-def]
+            call_order.append(f"analysis:{pid}")
+            return real_analysis(home_arg, pid, expired)
+
+        monkeypatch.setattr(cleanup_mod, "_purge_for_project", spy_raw)
+        monkeypatch.setattr(
+            cleanup_mod, "_analysis_purge_for_project", spy_analysis
+        )
+
+        result = runner.invoke(root_app, ["cleanup", "--format", "json"])
+        assert result.exit_code == 0, result.output
+
+        # The whole point: raw_traces FIRST, analysis SECOND. Reverse order
+        # would mean analysis_results is reaped before raw_traces — the
+        # operator could not re-derive analyses from raw events on retry.
+        assert call_order == ["raw_traces:p1", "analysis:p1"], (
+            f"Per-project purger ordering violated. Expected "
+            f"[raw_traces, analysis], got: {call_order!r}"
+        )
