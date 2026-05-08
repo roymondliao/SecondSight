@@ -478,3 +478,82 @@ class TestHappyPath:
         # Fresh row untouched.
         assert reports_repo.get_for_session("sess-fresh") is not None
         assert len(flags_repo.get_session_flags("sess-fresh")) == 1
+
+
+# ======================================================================
+# Security review GUR-149 finding 2: defense-in-depth session_id gate
+# ======================================================================
+
+
+class TestSecurityFinding2SessionIdGate:
+    """Pin the defense-in-depth contract added in response to GUR-149
+    security review finding 2: AnalysisResultsPurger MUST validate
+    session_id via is_safe_session_id BEFORE issuing any DELETE.
+
+    The threat model: a future enumerator (or direct DB tampering)
+    bypasses `enumerate_expired_analyses` and feeds an adversarial
+    session_id into the purger. SQLAlchemy parameterization already
+    prevents SQL injection on the DELETE — this gate is the
+    GUR-147-established pattern of "fail loud at the destructive site"
+    so a session_id that contains traversal characters or is otherwise
+    malformed cannot reach the destructive stage even if upstream
+    validation is bypassed.
+    """
+
+    def test_unsafe_session_id_is_rejected_as_purge_failure(
+        self,
+        reports_repo: SessionReportsRepository,
+        flags_repo: BehaviorFlagsRepository,
+        purger: AnalysisResultsPurger,
+    ) -> None:
+        """Unsafe session_id → PurgeFailure(stage=database) recorded;
+        no DB statement issued; purge completes without raising.
+
+        Use a session_id with a forward slash — the regex
+        `[A-Za-z0-9_\\-:.]+` rejects '/' so the gate fires.
+        """
+        old_ts = NOW - timedelta(days=400)
+        unsafe_sid = "../../etc/passwd"  # contains '/' which the regex rejects
+        result = purger.purge([
+            ExpiredAnalysis(
+                session_id=unsafe_sid,
+                report_created_at=old_ts,
+            ),
+        ])
+
+        # Failure recorded, no purge.
+        assert result.had_failures is True
+        assert unsafe_sid not in result.purged_session_ids
+        assert any(
+            f.session_id == unsafe_sid
+            and f.stage == "database"
+            and "unsafe session_id" in f.error
+            for f in result.failures
+        ), f"Expected unsafe session_id failure, got: {result.failures!r}"
+
+    def test_purge_continues_after_unsafe_id_rejection(
+        self,
+        reports_repo: SessionReportsRepository,
+        flags_repo: BehaviorFlagsRepository,
+        purger: AnalysisResultsPurger,
+    ) -> None:
+        """An unsafe session_id in the input list does not abort the
+        whole purge — subsequent safe session_ids in the same call must
+        still be reaped (per-row isolation contract)."""
+        old_ts = NOW - timedelta(days=400)
+        # Seed a safe session.
+        reports_repo.upsert(_make_report(session_id="sess-safe", created_at=old_ts))
+
+        # 'evil/path' contains '/' which the is_safe_session_id regex rejects.
+        unsafe_sid = "evil/path"
+        result = purger.purge([
+            ExpiredAnalysis(session_id=unsafe_sid, report_created_at=old_ts),
+            ExpiredAnalysis(session_id="sess-safe", report_created_at=old_ts),
+        ])
+
+        # Unsafe rejected, safe purged.
+        assert "sess-safe" in result.purged_session_ids
+        assert unsafe_sid not in result.purged_session_ids
+        assert any(f.session_id == unsafe_sid for f in result.failures)
+        # Safe session actually gone.
+        assert reports_repo.get_for_session("sess-safe") is None

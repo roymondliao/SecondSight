@@ -29,25 +29,37 @@ test_results: "4 new tests pass; analysis+storage+cli suite 394 pass (was 390 af
 scar_items:
   - id: scar-B6-1
     severity: medium
-    title: "Factory has NO production caller — documented dead-but-correct gap"
+    title: "Factory's DC-B4 guard is bypassed by cli/analyze.py (cross-ticket gap)"
     description: >
-      `build_orchestrator` exists as the canonical wiring helper but no
-      production code currently calls it. Verified via `Grep -p Orchestrator\\(`
-      across `src/` returning zero matches outside tests. The orchestrator
-      has no production entry point yet — analyze_session is invoked only
-      from test fixtures. Task-B6.md explicitly anticipates this state:
-      "If no production construction site exists yet... document that as
-      a gap; the wiring will land later when the orchestrator gets a
-      real entry point."
+      CORRECTION (security review GUR-149 finding 1, 2026-05-08): the
+      original verification claim ("zero matches outside tests") was
+      factually wrong. `src/secondsight/cli/analyze.py` (GUR-103
+      territory) constructs `Orchestrator(...)` directly at the
+      `_build_in_process_trigger` site, BYPASSING this factory. The
+      DC-B4 guard, the `cleanup_after_analysis` config wiring, and the
+      async-callback fail-closed check are silently absent on this
+      path. An operator who sets `[retention].cleanup_after_analysis
+      = true` in their TOML config and triggers analysis via
+      `secondsight analyze` will see no eager cleanup and no error —
+      exactly the silent-failure pattern DC-B4 was designed to close.
     decision_taken: >
-      Factory is built as the seam future entry points (CLI analyze
-      command, HTTP analyze endpoint) MUST use to get DC-B4-correct
-      wiring. Bypassing the factory would silently re-introduce the
-      DC-B4 silent-failure mode. Documented in module docstring +
-      this scar so any future contributor adding an entry point sees
-      the canonical wiring path.
+      Cross-ticket coordination required. `cli/analyze.py` is owned
+      by GUR-103, not GUR-149. The fix is for GUR-103 to route through
+      `factory.build_orchestrator` rather than constructing
+      `Orchestrator` directly. Reaching into GUR-103's CLI from
+      GUR-149 would overstep ticket boundaries. Carry forward as
+      accepted risk: ship GUR-149 with the factory built and DC-B4
+      guard exercised in tests, but `cleanup_after_analysis = true`
+      is operationally inert on the CLI analyze path until GUR-103
+      adopts the factory.
     deferred_to_feature_iteration: true
-    deferral_rationale: "Production caller arrives with a future analyze entry point (CLI/HTTP); not GUR-149 scope."
+    deferral_rationale: >
+      Cross-ticket fix (GUR-103 owns the bypassing call site); ship-
+      manifest must surface this as accepted risk. The two NEW
+      surfaces shipped by GUR-149 — (i) the `secondsight cleanup` CLI
+      with `analysis_ttl_days` enforcement, and (ii) the trigger
+      consumer + DC-B4 guard — are both functional. The gap is the
+      orchestrator entry-point wire-up.
     resolved_items: []
 
   - id: scar-B6-2

@@ -47,6 +47,7 @@ import sqlalchemy as sa
 from loguru import logger
 
 from secondsight.storage.behavior_flags_table import behavior_flags
+from secondsight.storage.raw_trace_store import is_safe_session_id
 from secondsight.storage.retention import PurgeFailure, PurgeResult
 from secondsight.storage.session_reports_table import session_reports
 
@@ -234,6 +235,34 @@ class AnalysisResultsPurger:
 
         for entry in expired:
             sid = entry.session_id
+
+            # Defense-in-depth (security review GUR-149 finding 2): mirror
+            # the GUR-147 `RawTracesPurger` pattern of validating session_id
+            # via `is_safe_session_id` before any destructive operation.
+            # SQLAlchemy parameterization already prevents SQL injection on
+            # the DELETE statements below, but the GUR-147 review established
+            # the pattern that any per-session destructive primitive must
+            # gate the input even though direct adversarial paths are not
+            # currently reachable. A future enumerator that bypasses
+            # `enumerate_expired_analyses` and feeds raw input here would
+            # otherwise reach the destructive site without re-validation.
+            if not is_safe_session_id(sid):
+                logger.error(
+                    "analysis_results purge: rejected unsafe session_id="
+                    "{sid!r}; refusing to issue DELETE",
+                    sid=sid,
+                )
+                failures.append(
+                    PurgeFailure(
+                        session_id=sid,
+                        stage="database",
+                        error=(
+                            "ValueError: unsafe session_id "
+                            "(stage=validation)"
+                        ),
+                    )
+                )
+                continue
 
             # Stage 1: behavior_flags. Idempotent rowcount 0 on absent rows.
             try:
