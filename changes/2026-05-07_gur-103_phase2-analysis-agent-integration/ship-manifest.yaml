@@ -1,0 +1,411 @@
+# Ship Manifest — GUR-103 Phase 2 Analysis Agent Integration
+# Validate-and-ship gate complete on 2026-05-08.
+# Commits: d47c89f (implement bundle) + 77e2e6b (security-review fix loop round 1)
+
+delivered_capability: >
+  The PydanticAI-backed Analysis Agent that binds GUR-102's orchestration
+  pipeline to a real LLM, plus three trigger paths so the pipeline actually
+  runs. Ships: AnalysisTools (sandbox + denylist + size-cap + binary
+  detection on read_project_file), LLMRouter (transport-error-only fallback
+  allowlist via LiteLLM-compatible providers), pure select_model() (auto
+  is opt-in), PydanticAIAnalysisAgent (per-method tool scoping enforces
+  D4 — aggregate_flag_type literally cannot reach read_project_file),
+  Trigger + Sweeper + secondsight analyze CLI. Closes 8 death cases
+  (DC-1 through DC-8) named in the kickoff. NO new database tables
+  (reuses GUR-102's analysis_runs); api/hooks.py unmodified; no schema
+  migrations.
+
+# --- What was built ---
+production_modules:
+  - id: P2-11
+    path: src/secondsight/analysis/{tools,config}.py
+    closes: >
+      AnalysisTools: read_traces (pass-through), read_project_file
+      (the LLM-leak surface — sandboxed via Path.resolve(strict=True) +
+      is_relative_to re-check, case-insensitive component-level denylist
+      with ancestor-directory matching, full-bytes binary detection
+      BEFORE truncation, D8 enabled-flag kill switch),
+      query_structured_store (closed kind vocabulary; rejects unknown
+      kinds before any repo call), read_historical_flags. AnalysisConfig:
+      Pydantic dataclass + TOML loader; built-in denylist + extra_denylist
+      additive merge; size_cap_kb. Closes DC-1 (symlink), DC-2 (case +
+      ancestor).
+
+  - id: P2-13
+    path: src/secondsight/sdk/{router,_specs}.py
+    closes: >
+      LLMRouter with transport-error-only fallback allowlist
+      (Timeout/ConnectError/RemoteProtocolError/RateLimitError/
+      APIConnectionError/ServiceUnavailableError/5xx; ProviderAuthError
+      once-per-(provider,class)). _classify walks BOTH __cause__ AND
+      __context__ chains to detect ValidationError-anywhere → terminal
+      (DC-3 cost-leak control). Empty fallback chain logs WARN at
+      construction and surfaces the chain config in the exhaustion error
+      (DC-8). RouterConfig public read API exposes the model chain
+      without private-attribute coupling. Logging schema:
+      provider, model, tokens_in, tokens_out, duration_ms, attempt,
+      total_attempts, outcome (North Star sub-metric depends on this).
+      ModelSpec single source of truth in _specs.py (shared with
+      model_selection).
+
+  - id: P2-14
+    path: src/secondsight/sdk/model_selection.py
+    closes: >
+      Pure select_model(project_id, project_config, global_config,
+      events_repo) -> (primary, fallbacks). Resolution order: project
+      override > global agent_type config > _ADAPTER_DEFAULTS. D7:
+      default_agent='claude_code' is the default; 'auto' is opt-in.
+      Auto + no events RAISES ModelSelectionError with suggested_config
+      TOML snippet (no silent fall-back to claude_code). agent_type
+      sanitized against _KNOWN_AGENT_TYPES frozenset before getattr lookup
+      — garbage strings from events_repo never flow into model selection.
+      _verify_adapter_registry_consistency() runs at module import
+      enforcing ModelsConfig ↔ _ADAPTER_DEFAULTS coupling.
+
+  - id: P2-12
+    path: src/secondsight/sdk/agent.py
+    closes: >
+      PydanticAIAnalysisAgent implementing the frozen AnalysisAgent
+      Protocol from analysis/agent.py. Per-method tool scoping (D4):
+      _scoped_tools dict keyed by method name; each PydanticAI Agent
+      receives only its method's tool list, so aggregate_flag_type
+      cannot reach read_project_file at the toolset registry level.
+      Constructor decomposed into _extract_router_config (uses public
+      RouterConfig), _build_scoped_tools, _build_sub_routers — each
+      with a single death-reason. analyze_segments uses exc.add_note
+      (Python 3.11+) instead of wrapping, preserving RouterTerminalError /
+      RouterChainExhaustedError subclass identity through the failure path.
+
+  - id: P2-15
+    path: src/secondsight/sdk/trigger.py + src/secondsight/cli/analyze.py
+          + src/secondsight/observation/pipeline.py (callback hook)
+          + src/secondsight/api/server.py (lifespan + _ServerSweepCoordinator)
+          + src/secondsight/api/registry.py (materialized_project_ids)
+          + src/secondsight/storage/events_repository.py (find_stale_session_candidates)
+    closes: >
+      Three trigger paths converging on Trigger.dispatch with per-session
+      dedup via _active_sessions set + _in_memory_dispatched timestamps
+      (closes DC-4 trigger race; asyncio.Lock alone insufficient because
+      gather() runs cooperatively without suspension — discovered during
+      DT-5.1). Sweeper class with public EventsRepository.find_stale_session_candidates
+      (closes DC-6 — uses last_event_ts as PRIMARY filter, not absence
+      of session_end). _ServerSweepCoordinator wired in api/server.py
+      lifespan logs WARNING for stale sessions (closes the Sweeper-not-
+      started silent placeholder; full dispatch wiring deferred to v2).
+      Pipeline post-ingest callback mechanism added without modifying
+      api/hooks.py (D3). CLI: secondsight analyze with server-mode +
+      in-process fallback; HTTPStatusError exits cleanly without silent
+      retry; already-analyzed exits code 2 with explicit message
+      (DC-7); 300s timeout returns DispatchResult(reason='timed-out')
+      so success isn't claimed when tasks were cancelled.
+
+# --- Failure budget review (aggregated from 5 scar reports) ---
+
+failure_budget:
+  total_silent_failure_conditions: 14
+  total_unverified_assumptions: 8
+  resolved_via_fix_loops: 5  # one fix-loop round per task; all closed Critical
+  classification: >
+    HIGH silent-failure surface by template count (>7), but every item
+    is observable via WARN/ERROR log, scar-disclosed, or bounded by an
+    upstream contract. No HIDDEN rot. The high count reflects feature
+    complexity (5 disjoint subsystems), not poor coverage.
+
+# --- Known failure modes ---
+
+known_failure_modes:
+  - mode: >
+      Sweeper coordinator finds stale sessions but cannot dispatch
+      analysis (LLM credentials + per-project orchestrator config not
+      wired at server context yet)
+    severity: degradation
+    detection: >
+      WARNING-level logs at server.py:254-262 with project_id,
+      session_id, last_event_ts. Operator sees stale-session
+      accumulation in log stream and runs `secondsight analyze
+      --session <id>` manually. Sweep is observable, not silent.
+
+  - mode: >
+      Project not yet materialized by ProjectRegistry is not scanned
+      by the coordinator
+    severity: degradation
+    detection: >
+      Manual CLI (secondsight analyze) covers the unmaterialized case.
+      Documented in api/server.py docstring and scar.
+
+  - mode: >
+      _ensure_utc duplicated between trigger.py and orchestrator.py;
+      if one copy is patched without the other, in-flight guard and
+      stale-detection diverge silently on timezone handling
+    severity: silent_corruption
+    detection: >
+      None today — copies are byte-for-byte identical. Mitigation:
+      both sites have explicit "if you change this, change the other"
+      docstring comments. Promote to shared utility in feature
+      iteration (planned).
+
+  - mode: >
+      add_note() context (prompt-index) does not appear in str(exc);
+      callers reading str(exc) for the failed prompt index lose that
+      context (must check exc.__notes__)
+    severity: degradation
+    detection: >
+      Failure paths in analyze_segments also emit WARN log including
+      the prompt index, so the index is observable independently of
+      __notes__ inspection.
+
+  - mode: >
+      Production caller passing a custom agent_factory to
+      PydanticAIAnalysisAgent loses end-to-end D4 tool scoping
+      (becomes static-registry-only enforcement)
+    severity: degradation
+    detection: >
+      Constructor logs WARNING when override_factory is provided
+      ("override_factory provided — this is expected in test contexts;
+      production usage degrades D4 enforcement"). Audit in dogfooding.
+
+  - mode: >
+      LLM provider rename of _function_toolset.tools attribute (e.g.,
+      future pydantic-ai breaking change) breaks DT-4.1 static-tool-
+      registry inspection
+    severity: crash
+    detection: >
+      AttributeError raised at test time (NOT production — the static
+      check happens only in tests after the proxy-Agent removal).
+      Production tool scoping is enforced via _scoped_tools dict, not
+      pydantic-ai internals.
+
+  - mode: >
+      Pathological model name with embedded quasi-credential characters
+      could surface in INFO log lines (provider, model fields)
+    severity: silent_corruption
+    detection: >
+      None today. Low likelihood — operators don't typically embed
+      auth material in model names. Defensive regex on model spec
+      construction is a feature-iteration item.
+
+  - mode: >
+      size_cap_kb config value with no upper bound could let a
+      pathological [analysis.read_project_file] size_cap_kb=1000000000
+      (~1 TB) cause read_project_file to read multi-GB into memory
+      before truncation
+    severity: degradation
+    detection: >
+      Out-of-memory on read_bytes. Mitigation: built-in default 256
+      KiB; operator must explicitly override. Add upper bound (16 MiB)
+      in feature iteration.
+
+# --- Accepted risks (carry forward to next review cycle) ---
+
+accepted_risks:
+  - risk: >
+      ProjectRegistry.materialized_project_ids() reads _cache._values
+      directly — same private-attribute pattern Samsara caught 4× during
+      implementation; deferred to feature iteration where
+      LazyCacheWithLocking gains a public keys()/snapshot_keys() method
+    accepted_by: human
+    expires: "2026-08-08"  # 3-month re-evaluation
+
+  - risk: >
+      Full Sweeper dispatch wiring (per-project Orchestrator + LLM
+      credentials at server lifespan startup) deferred to v2; current
+      v1 surfaces stale sessions via WARNING log only — operators run
+      CLI manually
+    accepted_by: human
+    expires: "2026-08-08"
+
+  - risk: >
+      GlobalAnalysisConfig TOML loader not yet implemented; CLI
+      in-process construction uses GlobalAnalysisConfig() defaults
+      (claude_code adapter, default fallback chain). Operator's
+      ~/.secondsight/config.toml is silently ignored for model
+      selection in v1
+    accepted_by: human
+    expires: "2026-08-08"
+
+  - risk: >
+      Four-class trigger.py file (LockRegistry, DispatchResult, Trigger,
+      Sweeper) — cohesion violation deferred to feature iteration where
+      the file split (trigger.py + sweeper.py) lands without import
+      churn
+    accepted_by: human
+    expires: "2026-08-08"
+
+  - risk: >
+      _ServerSweepCoordinator placement in api/server.py mixes HTTP
+      serving and background-sweep coordination; refactor to dedicated
+      module deferred
+    accepted_by: human
+    expires: "2026-08-08"
+
+  - risk: >
+      Test scaffolding partial migration: tests/_factories.py exists
+      but test_trigger.py and test_analyze.py still use module-local
+      _make_event helpers with different default constants
+    accepted_by: human
+    expires: "2026-08-08"
+
+  - risk: >
+      Deferred test for in-process CLI orchestrator construction
+      end-to-end — would have caught the security-review Medium-1+2
+      kwargs typo before ship; the fix-loop closed those bugs but a
+      smoke test should land in feature iteration
+    accepted_by: human
+    expires: "2026-07-08"  # earlier expiry — high preventability
+
+  - risk: >
+      SECONDSIGHT_SERVER_URL env var has no scheme/host validation
+      in CLI; CLI POSTs session_id + project_id to whatever URL the
+      env var contains. Operator-controlled threat surface
+    accepted_by: human
+    expires: "2026-09-08"
+
+# --- Silent failure surface ---
+
+silent_failure_surface: high
+# Reason: 14 unique silent-failure conditions across 5 task scar reports
+# AND 8 unverified assumptions. Honestly classified as high. Mitigated by:
+# (a) every item is logged at WARN/ERROR or bounded by upstream contract;
+# (b) all items disclosed in scar reports (no hidden rot);
+# (c) feature iteration tracking dates (above) for re-evaluation.
+
+# --- Monitoring hooks ---
+
+monitoring_hooks:
+  - >
+      Router INFO logs (provider, model, tokens_in, tokens_out,
+      duration_ms, attempt, total_attempts, outcome) — used by future
+      aggregator sub-metric "fallback_chain_success_rate". Schema is
+      machine-parseable (key=value).
+  - >
+      analysis_runs.stage column — terminal stages (summary_written /
+      aggregated / failed) and completed_at timestamp — used by future
+      dashboard to surface stuck/failed analyses.
+  - >
+      Sweeper coordinator WARNING logs (project_id, session_id,
+      last_event_ts) — used by operator to spot timeout-fallback
+      candidates.
+  - >
+      ProjectFileToolError WARN logs on every denylist or sandbox
+      rejection — preserves the resolved path AND the original
+      relative_path so audits can detect paths attempting escape.
+  - >
+      ModelSelectionError raise messages include suggested_config
+      TOML snippet — operator gets actionable guidance directly from
+      the error.
+  - >
+      DT-1.5b death test (binary check on full bytes before
+      truncation) regression-protects against the binary-truncation
+      ordering vulnerability.
+
+# --- Kill switches ---
+
+kill_switch: >
+  Per-feature kill switches available without code changes:
+  (a) [analysis.read_project_file] enabled = false in
+      ~/.secondsight/projects/{project_id}/config.toml — disables
+      read_project_file tool for that project (D8 escape valve);
+      implemented as first check in tools.py:264, raises
+      ProjectFileToolError("read_project_file is disabled by project
+      config") with NO FS access attempted.
+  (b) Set [analysis.models.fallback] fallback_models = [] in global
+      config — disables fallback routing globally (router logs WARN at
+      construction; primary failure raises immediately, never silent
+      fallback to a different provider).
+  (c) Stop the API server (`secondsight serve --stop`) — disables the
+      Sweeper coordinator (timeout-fallback inactive); event-driven
+      trigger also stops because pipeline.ingest is server-bound.
+      Manual CLI (secondsight analyze) still works.
+  (d) Comment out
+      `pipeline.add_post_ingest_callback(trigger.handle_session_end)`
+      in api/server.py lifespan — disables the event-driven trigger
+      while keeping the server running. Sweeper + manual CLI still work.
+
+# --- Acceptance validation result ---
+
+acceptance:
+  full_suite: "818 passed (uv run pytest tests/ -q), 0 failed, ~38s"
+  death_path_scenarios:
+    DC_1_symlink_sandbox_bypass: PASS  # DT-1.1
+    DC_2_denylist_case_bypass: PASS  # DT-1.2
+    DC_2b_denylist_ancestor_dir: PASS  # DT-1.3
+    DC_3_validation_in_cause_chain: PASS  # DT-2.1
+    DC_4_trigger_race_duplicate: PASS  # DT-5.1
+    DC_5_blocking_io_to_thread: PASS  # DT-5.2
+    DC_6_sweeper_uses_last_event_ts: PASS  # DT-5.3
+    DC_7_already_analyzed_exit_2: PASS  # DT-5.4
+    DC_8_empty_fallback_chain_error: PASS  # DT-2.2
+  degradation_scenarios:
+    DG_1_1_fallback_logs_degradation: PASS
+    DG_1_2_in_process_fallback_logged: PASS
+  happy_path_scenarios:
+    HP_1_1_event_driven_evidence_chain: PASS
+    HP_1_2_analyze_segments_batch: PASS
+    HP_1_3_project_override_beats_global: PASS
+    HP_1_4_read_project_file_happy_path: PASS
+
+# --- Reconciliation against 2-plan.md ---
+
+reconciliation:
+  intentional_deviations:
+    - finding: >
+        Path B chosen for agent (agent owns three sub-routers)
+        instead of pre-built Agent introspection layer
+      rationale: >
+        Plan §4.MH-4 left this as a load-bearing design choice. Path B
+        eliminated the inert proxy Agents (DT-4.1 now inspects the
+        live _scoped_tools).
+
+    - finding: >
+        analysis_runs table reused from GUR-102; no new state table
+      rationale: >
+        Plan §2.D2 already pinned this. Confirmed during pre-thinking
+        when I discovered the table existed.
+
+    - finding: >
+        Sweeper full dispatch wiring deferred to v2 (logs but doesn't
+        run analysis)
+      rationale: >
+        Plan §3.DC-6 specified the sweeper but didn't pin the LLM-credential
+        plumbing path for per-project orchestrator construction at server
+        startup. Deferring to v2 with explicit operator visibility (WARNING
+        log) was judged acceptable by yin reviewer under death-test logic.
+
+  unintentional_drifts: none
+
+# --- Notes for next phase ---
+
+notes_for_phase_3:
+  - >
+      Recurring private-attribute coupling pattern caught 4× during
+      this issue (LLMRouter._primary, EventsRepository._db,
+      LazyCacheWithLocking._values, original agent.py inert proxies).
+      Each fix added a public read API on the source module. Phase 3
+      should consider whether the standard module shape needs an
+      explicit "configuration view" public API by default — or
+      whether a project-wide convention codifies this expectation.
+  - >
+      D7 'auto' mode is implemented as opt-in but currently always
+      raises ModelSelectionError because events.agent_type column
+      doesn't exist. When that schema migration lands (deferred from
+      P1 scope), the test
+      test_events_repository_get_latest_session_agent_type_always_returns_none
+      becomes the marker — its failure signals the migration landed and
+      the auto-mode behavior must be re-validated against real data.
+  - >
+      LLMRouter logging schema (provider/model/tokens_in/tokens_out/
+      duration_ms/attempt/total_attempts/outcome) is the contract
+      Phase 3 dashboard's fallback_chain_success_rate sub-metric will
+      parse. Keep this schema STABLE across refactors. Test
+      DT-2.5/DT-2.5b protect the keys-present invariant; values-correct
+      protection is a feature-iteration item.
+
+# --- Sign-off ---
+
+reviewers:
+  yin_review_passes: 5  # one per task (after fix-loop)
+  quality_review_passes: 5  # one per task (after fix-loop)
+  security_review: PASS  # after round-1 fix-loop on Medium-1 + Medium-2
+  cumulative_critical_findings_resolved: 24  # 5+9+6+9+5 across tasks 1-5
+
+ship_decision: pending  # awaits human gate (4 options)
