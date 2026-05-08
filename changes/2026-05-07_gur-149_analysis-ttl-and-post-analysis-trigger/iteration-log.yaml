@@ -1,0 +1,94 @@
+# Iteration Log — GUR-149 (analysis_ttl_days enforcement + post-analysis cleanup trigger)
+#
+# Level-2 iteration after implementation phase B1-B6 completed (commit c285d12).
+
+feature: gur-149-analysis-ttl-and-post-analysis-trigger
+
+# signal_lost_initial: count of remaining items at iteration entry
+# (deferred_to_feature_iteration: true OR resolved_items: []).
+# 23 of 24 total scar items remained at entry.
+signal_lost_initial: 23
+
+budget:
+  max_rounds: 3
+  reviewer_retry_limit: 2
+
+rounds:
+  - round: 1
+    signal_lost_before: 23
+    budget_context:
+      remaining_rounds_at_start: 2
+      stagnation_count_at_start: 0
+      net_rot_previous_round: 0
+      strategy_hint: minimal_fix
+    items_triaged: 23
+    triage_result:
+      fix:
+        - "scar-B5-1: Per-project purger ordering (raw_traces first, analysis second) had no test pin — material un-pinned crash-recovery contract"
+      accept:
+        - description: "scar-B2-1: PurgeFailure.stage Literal type loses per-stage distinction for analysis purger; current `error` string suffix carries the diagnostic"
+          expiry_date: "conditional — revisit when (a) a 3rd purger lands needing the same vocabulary, OR (b) a structured alerting consumer materializes that needs to programmatically distinguish stages"
+          rationale: "Widening the Literal touches GUR-147 surface; cross-task type widening not warranted while only 2 purgers exist and no alerting consumer demands programmatic stage access"
+        - description: "scar-B2-2 + scar-B6-3 + scar-B6-4 (bundle): SLF001 `_db.engine` access pattern at 6+ sites; quality reviewers suggested formalizing via `_HasDbEngine` Protocol"
+          expiry_date: "conditional — revisit when (a) a 7th site emerges, OR (b) ProjectRegistry undergoes its own refactor and the change can be co-located"
+          rationale: "Pattern is established and visible (SLF001 noqa annotations); refactor would touch GUR-147 code and inflate this iteration's diff without proportional risk reduction"
+      defer:
+        # 20 items: design pins + future-work markers tied to specific
+        # external preconditions (other tickets, perf hotspots, rule-of-three).
+        - "scar-B1-1: Field rename `source` → `raw_traces_source` is a soft API break (resolved within tree; design pin)"
+        - "scar-B1-2: `_validate_ttl` error message generalized; `field_name` suffix preserves observability (design pin)"
+        - "scar-B1-3: CLI cleanup.py JSON `ttl_source` key (RESOLVED IN B5; documented as design-pin remnant)"
+        - "scar-B2-3: Project-scoped enumeration deferred to caller (per-project DB isolation assumption; refactor only if storage model changes)"
+        - "scar-B2-4: DC-B6 partial-failure spy uses monkeypatch.setattr on helper function (resolved with deterministic spy in B2 fix round; design pin)"
+        - "scar-B3-1: Callback invocation INSIDE outer try/except in analyze_session (design pin; DC-B3 death test enforces the contract)"
+        - "scar-B3-2: Callback receives session_id only (accepted gap [gap-callback-arity]; widen when consumer demands)"
+        - "scar-B3-3: DC-B3 test asserts on log message text 'on_analysis_complete' (intentional contract pin)"
+        - "scar-B4-1: Trigger does one extra DB read per analysis to fetch last_event_at (perf trade-off; only matters at high-volume cleanup_after_analysis=true installs)"
+        - "scar-B4-2: FS-collision INFO log uses 'session_report.json' literal (pragmatic; dual-substring assertion accepts either form)"
+        - "scar-B4-3: Trigger logs WARNING (not ERROR) on purge failure (design choice; double-ERROR rejected for failure-trail readability)"
+        - "scar-B4-4: asyncio.run for FS seeding in tests (matches GUR-147 pattern; refactor only if test count grows)"
+        - "scar-B5-3: ProjectRegistry only wires events; CLI lazily creates analysis schemas (architectural assumption; refactor cross-cuts GUR-147)"
+        - "scar-B5-4: Two purges per project use two separate ProjectRegistry._build_resources calls (engine reuse refactor would touch GUR-147)"
+        - "scar-B5-5: Render text table grew to 7-11 columns (pragmatic; JSON is canonical for agents)"
+        - "scar-B5-14: Cross-framework alerting gap (loguru vs stdlib logging; cross-cutting infra concern, out of GUR-149 scope)"
+        - "scar-B5-15: DRY max(timestamp) in two places (different callers, different perf profiles; rule-of-three not met)"
+        - "scar-B6-1: Factory has NO production caller (documented dead-but-correct gap; production caller arrives with future analyze entry point)"
+        - "scar-B6-2: Config schema expanded with `cleanup_after_analysis: bool` (documentation pin)"
+        - "scar-B6-5: DC-B4 test uses monkeypatch on private helper `_build_cleanup_trigger` (intentional seam; documented in scar)"
+        - "scar-B6-10: RawTracesPurger construction duplicated in factory + cli/cleanup.py (rule-of-three not met; only 2 sites today)"
+    fixes_applied: 1
+    fixes_scar_count: 0  # the iteration fix itself produced no new scar items (purely additive test)
+    budget_spent:
+      implementer_dispatches: 0  # main agent applied the fix inline (test-only, no implementer dispatch needed)
+      reviewer_dispatches: 0     # no per-fix code review needed: the fix is purely a test addition with no production code change
+      reviewer_retries: 0
+      validation_runs: 1         # full regression on analysis+storage+cli excluding the unrelated GUR-103 test_analyze.py
+    evidence_gained:
+      - "TestB5OrderingPin::test_per_project_raw_traces_runs_before_analysis pins the per-project ordering contract via spy on both helpers"
+      - "395 tests pass in tests/analysis/ + tests/storage/ + tests/cli/ (was 394; +1 for the new ordering pin test)"
+      - "Per-fix commit 42f1b69 references scar-B5-1 explicitly"
+    residual_risk:
+      - "Accepted (scar-B2-1): structured alerting consumer cannot programmatically distinguish behavior_flags vs session_reports purge failures — must parse `error` string suffix"
+      - "Accepted (scar-B2-2 bundle): 6+ SLF001 sites accessing `repo._db.engine` directly; refactor when 7th site emerges or ProjectRegistry refactors independently"
+      - "20 deferred items: each has a documented expiry condition (specific other-ticket dependency, perf hotspot, or rule-of-three threshold)"
+    signal_lost_after: 22  # 23 - 1 (scar-B5-1 resolved); 2 accepts + 20 defers remain as known risks
+    decision: stop  # 1 actionable fix completed, 2 accepts documented with expiries, all defers tied to external preconditions
+
+# Iteration summary (post-round-1):
+#
+# - 1 round executed
+# - signal_lost: 23 → 22 (1 fixed; 2 accepted with expiry; 20 deferred)
+# - 0 new scar items generated by the fix (purely additive test)
+# - No safety valve triggered
+# - 2 commits landed: c285d12 (implementation B1-B6), 42f1b69 (iteration round 1)
+#
+# Per-fix commit discipline: the iteration fix landed as a separate
+# commit (42f1b69) NOT batched with implementation. Per Samsara skill
+# rule "Per-fix commit: each fix is an independent commit."
+#
+# The 2 accepts carry conditional expiries tied to concrete events
+# (third purger, alerting consumer, ProjectRegistry refactor) rather
+# than dates — the risk acceptance is bounded by the next event that
+# would change the cost/benefit calculus.
+#
+# Next gate: samsara:security-privacy-review
