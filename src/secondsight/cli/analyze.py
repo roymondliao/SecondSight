@@ -354,7 +354,7 @@ def _build_orchestrator(
 
     # Load per-project config (absent file → built-in defaults, never raises).
     project_config_path = project_dir / "config.toml"
-    analysis_config = AnalysisConfig.load(project_config_path)
+    analysis_config = AnalysisConfig.load(config_path=project_config_path)
 
     # NOTE: Global config loading (secondsight_home / "config.toml") is not yet
     # implemented for model selection. GlobalAnalysisConfig and ProjectAnalysisConfig
@@ -373,12 +373,18 @@ def _build_orchestrator(
     )
 
     router = LLMRouter(primary=primary, fallbacks=fallbacks)
+    # AnalysisTools constructor uses `flags_repo`, not `behavior_flags_repo`,
+    # and accepts the AnalysisConfig fields explicitly (not the whole config object).
+    # This wiring plumbs the operator's [analysis.read_project_file] settings —
+    # the D8 kill switch, extra_denylist, and size_cap — into the tool.
     tools = AnalysisTools(
         events_repo=events_repo,
-        behavior_flags_repo=flags_repo,
+        flags_repo=flags_repo,
         directives_repo=directives_repo,
         project_root=project_dir,
-        config=analysis_config,
+        extra_denylist=analysis_config.extra_denylist,
+        size_cap_bytes=analysis_config.size_cap_kb * 1024,
+        read_project_file_enabled=analysis_config.read_project_file_enabled,
     )
     agent = PydanticAIAnalysisAgent(router=router, tools=tools)
 
