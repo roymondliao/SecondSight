@@ -1,0 +1,184 @@
+# Ship manifest — GUR-149 (analysis_ttl_days enforcement + post-analysis cleanup trigger)
+#
+# Carry-forward of GUR-107b per ship-manifest a0a92005.
+# Implementation phase: commits c285d12 (B1-B6) → 42f1b69 (iter R1) → b1f71df (iter log)
+#                       → 2330caf (security review fix + scar correction).
+
+delivered_capability: |
+  Analysis-side retention enforcement for SecondSight, completing the GUR-107
+  scope split that GUR-147 explicitly held back:
+
+    1. `analysis_ttl_days` config field — resolved through RetentionConfig.load()
+       with the same per-project → global → builtin precedence chain as
+       `raw_traces_ttl_days`. Default 365 days per SD §3.10.1. Independent
+       source attribution (raw_traces_ttl_source / analysis_ttl_source).
+
+    2. AnalysisResultsPurger — destructive primitive that reaps expired
+       `session_reports` + `behavior_flags` rows. Order: behavior_flags FIRST,
+       session_reports SECOND (D4 — prevents orphan flags on partial failure).
+       Defense-in-depth `is_safe_session_id` gate before any DELETE
+       (security review finding 2 fix).
+
+    3. Orchestrator.on_analysis_complete callback hook — single-subscriber
+       Callable[[str], None] | None. Construction-time fail-closed guard against
+       `async def` callbacks (would silently no-op without await). Runtime
+       swallow of callback exceptions inside `_invoke_on_analysis_complete`
+       so callback failures CANNOT poison a successful analysis (DC-B3).
+
+    4. PostAnalysisCleanupTrigger — opt-in (config: `cleanup_after_analysis`)
+       canonical consumer of the orchestrator callback. Synthesizes one
+       ExpiredSession from the just-completed session_id and calls
+       GUR-147's RawTracesPurger.purge() to eagerly reap raw traces.
+       Disclosure log line names `session_report.json` FS backup as also
+       removed (gap-fs-collision accepted per planning).
+
+    5. `secondsight cleanup` CLI extension — drives BOTH purgers per project.
+       Structured INFO log per project naming both TTL values + sources
+       (B-S1 detection contract for typo silent-fall-through). New JSON
+       shape: `raw_traces_ttl_source` (renamed from `ttl_source`) +
+       `analysis_*` keys. Per-purger try/except so a raw_traces failure
+       does not silently strand the analysis purger.
+
+    6. `factory.build_orchestrator` — canonical wiring helper with DC-B4
+       boot-time guard (raises OrchestratorWiringError if config opts in
+       but the trigger-builder produces None).
+
+  6 tasks, 3 waves, 24 scar items (2 iteration-resolved, 18 design pins or
+  documented deferrals, 4 in-task Critical/Important resolutions during
+  review fix rounds). All 7 documented death cases (DC-B1..DC-B7) covered
+  by tests; 397 tests passing in analysis+storage+cli suites.
+
+known_failure_modes:
+  - mode: >
+      Operator typos `analysis_ttl_days` (e.g. `analysis_ttl_day = 30`)
+      in TOML; loader silently falls through to 365d builtin default.
+    severity: degradation
+    detection: >
+      Structured INFO log line per project at every cleanup invocation
+      names the resolved source attribution: `analysis_ttl_source=builtin_default`.
+      Operator who expected `per_project_config` sees the mismatch.
+
+  - mode: >
+      Eager-cleanup post-analysis path destroys the orchestrator's
+      `session_report.json` filesystem backup alongside raw_traces
+      (gap-fs-collision; same `sessions/{session_id}/` directory tree).
+    severity: degradation
+    detection: >
+      Disclosure INFO log line on success: "...note: FS session_report.json
+      backup also removed; DB row remains in session_reports". DB row in
+      session_reports is authoritative.
+
+  - mode: >
+      Post-analysis callback exception (e.g., trigger's purger fails)
+      is swallowed by orchestrator; analysis_runs row stays at
+      summary_written even though downstream cleanup didn't fire.
+    severity: degradation
+    detection: >
+      ERROR log line at orchestrator boundary names sanitized exception.
+      Next scheduled `secondsight cleanup` invocation re-detects the
+      session as expired (per analysis_ttl_days) and retries the reap.
+
+  - mode: >
+      `PurgeFailure.stage` Literal ("filesystem" / "database") cannot
+      programmatically distinguish behavior_flags failure from
+      session_reports failure. Per-stage info lives in `error` string
+      suffix "(stage=behavior_flags)" / "(stage=session_reports)".
+    severity: degradation
+    detection: >
+      Operator/alerting code parsing `error` string sees the suffix.
+      Documented in scar-B2-1 with conditional expiry tied to a 3rd
+      purger landing or a structured alerting consumer materializing.
+
+  - mode: >
+      Operators who set `[retention].cleanup_after_analysis = true`
+      AND trigger analysis via `secondsight analyze` (CLI) get silent
+      inactivity — no eager cleanup, no error. cli/analyze.py
+      (GUR-103 territory) constructs Orchestrator(...) directly,
+      bypassing factory.build_orchestrator's DC-B4 guard.
+    severity: silent_corruption  # bypasses DC-B4 entirely on this path
+    detection: >
+      Operator who opts in and notices growing `home/projects/*/sessions/`
+      sizes despite cleanup_after_analysis=true would discover this.
+      Default config has cleanup_after_analysis=false, so unaffected by
+      default. Documented in scar-B6-1 (CORRECTION applied 2026-05-08).
+
+accepted_risks:
+  - risk: >
+      cli/analyze.py:_build_in_process_trigger constructs Orchestrator
+      directly, bypassing factory.build_orchestrator. cleanup_after_analysis=true
+      is operationally inert on the CLI analyze path until GUR-103 routes
+      through the factory. Default config (false) is unaffected. Security
+      review finding 1 (PASS_WITH_CONCERNS); board accepted as
+      carry-forward 2026-05-08 via comment f00a2446.
+    accepted_by: "human (board, comment f00a2446 'Ok, doing (A)')"
+    expires: "conditional — when GUR-103 (or a follow-up) adopts factory.build_orchestrator, OR when an operator first opts into cleanup_after_analysis=true on a CLI-analyze-driven install"
+
+  - risk: >
+      PurgeFailure.stage Literal (`Literal["filesystem", "database"]`)
+      preserves per-stage info only in `error` string suffix for the
+      analysis purger. Structured alerting consumers cannot
+      programmatically distinguish behavior_flags vs session_reports
+      failure modes. Documented in scar-B2-1; iteration round 1
+      board-approved accept (comment edb7dacc).
+    accepted_by: "human (board, comment edb7dacc 'Approval, please keep working on ticket')"
+    expires: "conditional — revisit when (a) a 3rd purger lands needing the same vocabulary, OR (b) a structured alerting consumer materializes that needs programmatic stage distinction"
+
+  - risk: >
+      SLF001 `_db.engine` direct-access pattern at 6+ sites across
+      retention.py, analysis_retention.py, cli/cleanup.py, factory.py.
+      Quality reviewers across B2/B4/B6 suggested a `_HasDbEngine`
+      Protocol formalization. Bundled scars: scar-B2-2, B6-3, B6-4.
+      Iteration round 1 board-approved accept.
+    accepted_by: "human (board, comment edb7dacc)"
+    expires: "conditional — revisit when (a) a 7th SLF001 site emerges, OR (b) ProjectRegistry undergoes its own refactor and the change can be co-located"
+
+silent_failure_surface: medium
+# Rationale: 1 silent_corruption mode (factory bypass) is opt-in only and
+# defaults off; 4 degradation modes have explicit detection contracts (logs,
+# DB rows, structured assertions). Default config produces no silent
+# failures. Operator who opts into cleanup_after_analysis=true must be
+# aware of finding 1 via this manifest.
+
+monitoring_hooks:
+  - >
+    Structured INFO log line per project at every `secondsight cleanup`
+    invocation: `retention resolved: project_id=... raw_traces_ttl_days=...
+    raw_traces_source=... analysis_ttl_days=... analysis_ttl_source=...`
+    — primary detection surface for typo-driven silent-fall-through (DC-B1).
+
+  - >
+    Disclosure INFO log line on eager-cleanup path: names session_id +
+    last_event_at + the gap-fs-collision side effect. Operators correlating
+    raw_traces sizes with analysis completion timeline read this.
+
+  - >
+    Structured ERROR log line on PurgeFailure (raw_traces or analysis):
+    names session_id + stage + truncated exception. Non-zero CLI exit
+    code on any per-project failure (DC-5 propagation, inherited from
+    GUR-147).
+
+  - >
+    `analysis_runs.error_message` DB column persists sanitized
+    exception text on pipeline failure (orchestrator's
+    `_sanitize_failure_message`). Queryable for post-mortem inspection;
+    bounded to 200 chars to prevent LLM-prompt fragment leakage.
+
+kill_switch: |
+  Three layers of operator control:
+
+    1. `[retention].cleanup_after_analysis = false` (default) disables
+       the eager-cleanup post-analysis trigger entirely. Existing
+       `secondsight cleanup` CLI continues to run on its own schedule.
+
+    2. Set `analysis_ttl_days` to a very large value (e.g. 36500 = 100
+       years) to effectively disable the analysis-side purger without
+       removing the code path. The CLI will enumerate zero expired
+       analyses on every run.
+
+    3. Comment out or remove the `[retention]` TOML section entirely;
+       all defaults apply (raw_traces_ttl_days=90, analysis_ttl_days=365,
+       cleanup_after_analysis=false). Removes operator opt-ins; the
+       feature reverts to its safest configuration.
+
+  Note: kill switches do NOT prevent already-purged data from being
+  recovered. Operators must back up before opting into eager cleanup.
