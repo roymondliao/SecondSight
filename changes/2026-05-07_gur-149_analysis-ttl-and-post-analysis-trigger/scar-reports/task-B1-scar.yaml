@@ -1,0 +1,146 @@
+task: task-B1
+title: "Extend RetentionConfig with analysis_ttl_days field + DC-B1"
+status: review_passed
+review_outcomes:
+  yin: "PASS_WITH_CONCERNS — 1 Important (resolved), 2 Suggestions (1 resolved, 1 documented)"
+  quality: "PASS — 2 Suggestions (1 resolved, 1 documented)"
+death_cases_covered:
+  - id: DC-B1
+    description: "TTL config typo silently uses default — detection via source attribution"
+    tests:
+      - "TestDCB1AnalysisTtlTypoFallsThroughToDefault::test_per_project_typo_in_key_falls_through_to_builtin"
+      - "TestDCB1AnalysisTtlTypoFallsThroughToDefault::test_global_typo_in_key_falls_through_to_builtin"
+
+tests_written:
+  total: 13
+  new_in_this_task:
+    - "TestDCB1AnalysisTtlTypoFallsThroughToDefault (2)"
+    - "TestAnalysisTtlPrecedence (3)"
+    - "TestAnalysisTtlValidation (3)"
+    - "TestIndependentSourceAttribution (1)"
+  modified_in_this_task:
+    - "All existing TestPrecedenceAndSourceAttribution tests + TestDC6bFreshInstallNoConfig::test_only_per_project_dir_missing_uses_global: cfg.source → cfg.raw_traces_source"
+test_results: "47 retention tests pass; full suite 650 pass"
+
+scar_items:
+  - id: scar-B1-1
+    severity: medium
+    title: "Field rename `source` → `raw_traces_source` is a soft API break"
+    description: >
+      The `source` attribute on `RetentionConfig` is renamed to `raw_traces_source`
+      to make room for `analysis_ttl_source`. Within the codebase only one
+      production call site (`cli/cleanup.py:139`) and 7 test sites referenced it,
+      and all were updated. However any external consumer (operator tooling,
+      downstream scripts) reading `cfg.source` would break silently.
+      Justification for rename: keeping `source` ambiguous in a 2-TTL world
+      would itself be a silent-rot path — operators reading logs would not know
+      which TTL the source applied to.
+    decision_taken: "Rename. Single in-tree call site; alternatives (alias property, dict-of-sources) considered and rejected for symmetry."
+    deferred_to_feature_iteration: false
+    resolved_items: []
+
+  - id: scar-B1-2
+    severity: low
+    title: "_validate_ttl error message generalized; loses 'raw_traces_ttl_days' literal"
+    description: >
+      Previously the error message hardcoded "raw_traces_ttl_days" which was
+      semantically wrong but visually informative. The new message reads
+      "TTL value in {path} :: {field_name} must be a positive integer" — the
+      field name is now in the source_label suffix rather than the leading text.
+      Existing tests assert "raw_traces_ttl_days" is in the message; this still
+      passes because the source_label includes "raw_traces_ttl_days". The risk:
+      a future refactor that drops the source_label suffix would silently break
+      observability without breaking the existing tests.
+    decision_taken: "Documented in this scar report; future refactors must preserve the field-name suffix in source_label."
+    deferred_to_feature_iteration: false
+    resolved_items: []
+
+  - id: scar-B1-3
+    severity: low
+    title: "CLI cleanup.py JSON output keeps 'ttl_source' key; drops symmetry with two-TTL world"
+    description: >
+      `cli/cleanup.py:139` still emits `"ttl_source"` (now sourcing from
+      `cfg.raw_traces_source`). For task-B1 scope we did not extend the CLI
+      JSON shape; task-B5 will add `analysis_ttl_source` and likely rename
+      `ttl_source` → `raw_traces_ttl_source` for symmetry. This is intentional
+      task-scoping: B1 is config-only, B5 owns the CLI surface.
+    decision_taken: "Defer CLI JSON shape changes to task-B5 per planned wave 3."
+    deferred_to_feature_iteration: false
+    resolved_items: []
+
+assumptions_made:
+  - id: asm-B1-1
+    description: "Builtin default for analysis_ttl_days is 365 per SD §3.10.1; not configurable at the code level."
+    risk: "If SD §3.10.1 is revised, this constant must move with it. Detection: SD review at security-privacy-review gate."
+
+  - id: asm-B1-2
+    description: "`tomllib` is available (Python 3.14 pinned); no fallback for older Python."
+    risk: "low — already a hard dependency of the existing module."
+
+  - id: asm-B1-3
+    description: "Independent source attribution per field is the correct model (operator may override one but not the other)."
+    risk: "If an operator expects `[retention]` to be all-or-nothing, mixed sources may surprise them. Mitigated by structured INFO log line at cleanup invocation (task-B5)."
+
+  - id: scar-B1-4
+    severity: low
+    title: "Asymmetric naming convention: `raw_traces_source` vs `analysis_ttl_source`"
+    description: >
+      Yin reviewer flagged that the two source-attribution fields use different
+      naming conventions: `raw_traces_source` names the data subject; `analysis_ttl_source`
+      names the field-name prefix. The symmetric pair would be either
+      `raw_traces_ttl_source` / `analysis_ttl_source` or `raw_traces_source` / `analysis_source`.
+      The asymmetry is inherited from the plan (`2-plan.md §2.1`).
+    decision_taken: >
+      Keep as-is for v1. Convention chosen: source-attribution fields use the prefix
+      that matches the corresponding `*_ttl_days` field name minus the `_ttl_days` suffix
+      where unambiguous, OR the data subject where `_ttl_days` is part of the canonical
+      domain term. For the next contributor: if a third TTL field is added, prefer
+      `<field-prefix>_source` (i.e. drop `_ttl` for symmetry with `raw_traces_source`).
+    deferred_to_feature_iteration: true
+    deferral_rationale: "Cosmetic; renaming requires a second source-rename pass affecting all call sites. Bundle with task-B5 if it touches CLI JSON output naming."
+    resolved_items: []
+
+  - id: scar-B1-5
+    severity: low
+    title: "Acceptance B-S1's log-emission clause is task-B5 territory"
+    description: >
+      B-S1 in `acceptance.md` requires both (a) source attribution returns
+      `builtin_default` on typo AND (b) a structured INFO log line at cleanup
+      invocation surfaces it. Task-B1 covers (a) only; (b) is the cleanup
+      CLI's responsibility (task-B5). The yin reviewer noted that without an
+      explicit deferral marker, a future gate reviewer could mistake B-S1 as
+      fully verified at task-B1's boundary.
+    decision_taken: "Document deferral here; task-B5 will close (b) and reference this scar item."
+    deferred_to_feature_iteration: false
+    resolved_items: []
+
+  - id: scar-B1-6
+    severity: low
+    title: "retention.py module carries three death-reasons; intended split deferred"
+    description: >
+      Quality reviewer flagged that `retention.py` now hosts policy resolution
+      (RetentionConfig + helpers), expiry enumeration (enumerate_expired_sessions),
+      and raw-traces destruction (RawTracesPurger). Task-B1 deepens the
+      policy-resolution surface, widening the cohesion gap. The plan already
+      separates the future analysis purger into `analysis_retention.py`
+      (task-B2), confirming awareness of the fault line.
+    decision_taken: >
+      Defer module split to a future cleanup. Task-B2 lands in a separate file
+      (analysis_retention.py) per plan; if that task surfaces shared helpers
+      that would benefit from extraction, revisit then.
+    deferred_to_feature_iteration: true
+    deferral_rationale: "Pre-existing structural debt; no actionable B1-scope cleanup. Evaluate cohesion after task-B2 lands."
+    resolved_items: []
+
+self_iteration_pass:
+  reviewed: true
+  fixes_applied:
+    - id: fix-B1-A
+      addresses_review: "yin Important: BUILTIN_DEFAULT_ANALYSIS_TTL_DAYS missing from __all__"
+      change: "Added BUILTIN_DEFAULT_ANALYSIS_TTL_DAYS to retention.py:__all__ (alphabetically before BUILTIN_DEFAULT_TTL_DAYS)"
+    - id: fix-B1-B
+      addresses_review: "quality Suggestion: O — mark the bet at the call site"
+      change: "Added 6-line comment block at retention.py:108-113 naming the marked bet (every TTL field uses the same chain)"
+  rationale: "Two fixes applied this round. Three remaining items (B1-4 asymmetric naming, B1-5 B-S1 log clause, B1-6 module cohesion) documented as scar items rather than fixed: B1-4 affects a future rename, B1-5 owned by task-B5, B1-6 is pre-existing structural debt acknowledged by plan."
+
+next_action: "Update index.yaml task-B1 status: planned → completed (review passed). Comment to board summarizing task-B1 outcome and surfacing the 4 deferred scar items."

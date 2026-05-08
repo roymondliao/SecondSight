@@ -77,10 +77,12 @@ Stale directives threshold:
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -222,7 +224,56 @@ class Orchestrator:
         agent: AnalysisAgent,
         *,
         segmenter: Segmenter | None = None,
+        on_analysis_complete: Callable[[str], None] | None = None,
     ) -> None:
+        """Construct an Orchestrator.
+
+        on_analysis_complete: optional single-subscriber callback invoked
+            once at the end of ``analyze_session`` after the audit row
+            transitions to ``summary_written`` and BEFORE
+            ``AnalyzeSessionResult`` is returned. Receives the
+            just-completed ``session_id``.
+
+        Failure policy (DC-B3, GUR-149 task-B3): if the callback raises,
+        the exception is caught at the orchestrator boundary, an ERROR is
+        logged with a sanitized message, and the analysis result is
+        returned normally. The analysis itself succeeded; cleanup is a
+        downstream concern that must NOT retroactively poison a successful
+        analysis. The next scheduled CLI cleanup will retry whatever the
+        callback was attempting.
+
+        Single-subscriber rationale (D2 in 2-plan.md): keeping this as
+        a single ``Callable`` rather than a list/event-bus is intentional.
+        If GUR-101 (or a successor) ever grows a real publish/subscribe
+        surface, this callback becomes a single subscriber registered
+        against it — a refactor, not a redesign.
+
+        Async-callback guard (yin review B3 Important fix): the type
+        annotation ``Callable[[str], None]`` does not prevent a caller
+        from registering ``async def callback(sid)`` because Python
+        treats coroutine functions as ``Callable``. Inside
+        ``analyze_session``, calling a coroutine function synchronously
+        constructs the coroutine and discards it without awaiting —
+        silently no-op'ing the cleanup. Fail-loud at construction time
+        with ``TypeError`` so the operator sees the misuse at boot, not
+        after analyses silently skip cleanup for weeks. A future
+        iteration may widen the signature to
+        ``Callable[[str], None | Awaitable[None]]``; until then this is
+        a fail-closed contract.
+
+        Raises:
+            TypeError: ``on_analysis_complete`` is a coroutine function.
+        """
+        if on_analysis_complete is not None and inspect.iscoroutinefunction(
+            on_analysis_complete
+        ):
+            raise TypeError(
+                "on_analysis_complete must be a synchronous callable "
+                "(Callable[[str], None]); a coroutine function was passed. "
+                "Async callbacks are not supported in v1 because Orchestrator "
+                "would not await the coroutine, silently no-op'ing the "
+                "post-analysis trigger. See Orchestrator.__init__ docstring."
+            )
         self._events_repo = events_repo
         self._behavior_flags_repo = behavior_flags_repo
         self._directives_repo = directives_repo
@@ -231,6 +282,7 @@ class Orchestrator:
         self._agent = agent
         # Allow DI of a fake segmenter for testing; default to real Segmenter.
         self._segmenter: Segmenter = segmenter or Segmenter(events_repo)
+        self._on_analysis_complete = on_analysis_complete
 
     # ------------------------------------------------------------------
     # Public entrypoints
@@ -348,6 +400,14 @@ class Orchestrator:
             # Step 8: advance to terminal stage.
             self._analysis_runs_repo.advance_stage(run_id, "summary_written")
 
+            # Step 9 (GUR-149 task-B3): post-analysis callback hook.
+            # Sits inside the outer try/except boundary, but the callback's
+            # own exception is swallowed inside _invoke_on_analysis_complete
+            # (DC-B3) — it CANNOT raise from this line and therefore CANNOT
+            # reach the outer except below. record_failure must never be
+            # called for a callback failure: the analysis itself succeeded.
+            self._invoke_on_analysis_complete(session_id)
+
         except Exception as exc:
             # Outer pipeline boundary catch-all (see module docstring rationale).
             # record_failure sets stage='failed' + completed_at = now().
@@ -425,6 +485,43 @@ class Orchestrator:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _invoke_on_analysis_complete(self, session_id: str) -> None:
+        """Invoke the post-analysis callback if one was registered.
+
+        Failure policy (DC-B3, GUR-149 task-B3): callback exceptions are
+        SWALLOWED here — they do NOT propagate to the outer
+        ``analyze_session`` try/except, so they cannot trigger
+        ``record_failure`` for a successful analysis. The audit row stays
+        at ``summary_written``. An ERROR log line names the full exception
+        type and message so an operator can correlate it with downstream
+        retry behavior.
+
+        Without this swallow, a callback that raises (e.g., a
+        ``PostAnalysisCleanupTrigger`` whose FS purge fails) would flip
+        the analysis_runs row to ``stage='failed'`` — the caller would
+        retry the whole pipeline, doubling LLM cost AND eventually
+        succeeding cleanup on retry, leaving the operator confused
+        about which run actually completed.
+
+        Logging note: this ERROR line uses the full exception repr (matching
+        ``RawTracesPurger`` in retention.py:407-412) rather than
+        ``_sanitize_failure_message``. The sanitizer is bound for the
+        ``analysis_runs.error_message`` DB column where unbounded LLM
+        prompt fragments must not persist; an ephemeral cleanup-callback
+        log line is operator-facing and must not lose diagnostic detail.
+        """
+        if self._on_analysis_complete is None:
+            return
+        try:
+            self._on_analysis_complete(session_id)
+        except Exception as exc:  # noqa: BLE001 — boundary owns the catch
+            _logger.error(
+                "on_analysis_complete callback raised for session_id=%r: %s: %s",
+                session_id,
+                type(exc).__name__,
+                exc,
+            )
 
     def _verify_session_complete_and_get_project_id(self, session_id: str) -> str:
         """Raise SessionIncompleteError if session has zero events (DC-7).

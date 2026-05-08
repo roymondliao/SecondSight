@@ -1,0 +1,383 @@
+task: task-B5
+title: "Extend `secondsight cleanup` CLI to also reap analysis_results"
+status: review_passed
+review_outcomes:
+  yin: "FAIL → resolved: 4 Critical fixed, 5 Important resolved/documented, 1 Suggestion documented. Re-run requested but plan acceptance pinned."
+  quality: "PASS_WITH_CONCERNS → 2 Important resolved (engine lifecycle + silent partial enumeration), 1 Suggestion documented"
+
+death_cases_covered:
+  - id: DC-B1
+    description: "TTL config typo silently uses default — CLI logging half (B-S1) lands here"
+    tests:
+      - "TestB5DcB1AnalysisTypoFallsThroughVisibleInOutput::test_analysis_ttl_typo_surfaces_as_builtin_default_in_output"
+    note: "Closes the deferral noted in scar-B1-5: B-S1's log-emission half is now satisfied via JSON output exposing analysis_ttl_source=builtin_default."
+
+  - id: DC-B7
+    description: "Empty install — CLI exits 0 with empty enumerations on both sides"
+    tests:
+      - "TestB5EmptyInstallExitsZero::test_empty_db_real_run_exits_zero_with_zero_counts"
+
+tests_written:
+  total: 5
+  classes:
+    - TestB5AnalysisResolutionVisible (1)
+    - TestB5DcB1AnalysisTypoFallsThroughVisibleInOutput (1)
+    - TestB5AnalysisPurgerReapsExpiredAnalysisRows (1)
+    - TestB5DryRunDoesNotInvokeAnalysisPurger (1)
+    - TestB5EmptyInstallExitsZero (1)
+  modified:
+    - "TestConfigSourceVisible (existing): cfg.source asserts → cfg.raw_traces_ttl_source + cfg.analysis_ttl_source"
+test_results: "17 CLI tests pass; analysis+storage+cli suite 387 pass (was 382 after B4)"
+
+scar_items:
+  - id: scar-B5-1
+    severity: medium
+    title: "Per-project purger ordering: raw_traces first, analysis second"
+    description: >
+      Within one project, raw_traces purger runs before analysis purger.
+      Rationale: if raw_traces fails mid-run, analysis is independent and
+      still attempts its own set; if analysis fails after raw_traces
+      succeeded, the raw_traces are already gone but analysis enumeration
+      remains re-attemptable on the next CLI invocation. The reverse order
+      would leave a partial state where analysis_results is gone but
+      raw_traces still exists — operator could not re-derive the analysis
+      from raw_traces (since the analyzer needs raw events).
+    decision_taken: >
+      Documented in cleanup() inline comment + module docstring. A future
+      contributor who reverses the order without reading docs would fail
+      no test currently — adding an order-pinning test was considered but
+      deferred since the two purgers operate on disjoint table sets and a
+      regression test would require simulating crash mid-loop.
+    deferred_to_feature_iteration: true
+    deferral_rationale: "Order-pinning test would mirror the DC-B6 spy pattern from B2; defer until a real failure mode emerges."
+    resolved_items: []
+
+  - id: scar-B5-2
+    severity: medium
+    title: "JSON shape changed: ttl_source removed, raw_traces_ttl_source added"
+    description: >
+      The CLI's JSON output renamed `ttl_source` → `raw_traces_ttl_source`
+      to make room for `analysis_ttl_source`. Any downstream tool reading
+      `ttl_source` would break silently (KeyError / None). One existing
+      test (TestConfigSourceVisible) was updated. This closes the deferral
+      noted in scar-B1-3.
+    decision_taken: >
+      Soft API break for the pre-1.0 CLI JSON shape; documented in the
+      module docstring's JSON-shape section. Operator-facing tools
+      consuming this CLI output should migrate to the new field names.
+    deferred_to_feature_iteration: false
+    resolved_items:
+      - "scar-B1-3 (deferred from task-B1; resolved by the rename)"
+      - "scar-B1-5 (B-S1 log half deferred from task-B1; CLI now surfaces analysis_ttl_source in output, satisfying the detection contract)"
+
+  - id: scar-B5-3
+    severity: low
+    title: "ProjectRegistry only wires events; CLI lazily creates analysis schemas"
+    description: >
+      The existing ProjectRegistry only constructs the events table when
+      building per-project resources. The CLI's analysis enumeration and
+      purge paths now create session_reports + behavior_flags schemas
+      on-the-fly via `create_schema()` (idempotent). This is a load-bearing
+      lazy initialization: a fresh project that has never been analyzed
+      still reports a clean enumeration via the CLI.
+    decision_taken: >
+      Acceptable: create_schema is idempotent; the cost is one extra DDL
+      check per CLI invocation per project. A future ProjectRegistry that
+      eagerly wires up all schemas would simplify this site.
+    deferred_to_feature_iteration: true
+    deferral_rationale: "Architectural change to ProjectRegistry; out of GUR-149 scope."
+    resolved_items: []
+
+  - id: scar-B5-4
+    severity: low
+    title: "Two purges per project use two separate ProjectRegistry._build_resources calls"
+    description: >
+      _purge_for_project (raw_traces) and _analysis_purge_for_project
+      each construct their own ProjectRegistry resources, dispose at the
+      end. This means two engine instantiations per project per CLI run.
+      For SQLite this is cheap; for a future remote-DB backend it would
+      double the connection overhead.
+    decision_taken: >
+      Mirrors the existing GUR-147 pattern. Combining into a single
+      build-resources call would require threading the resources through
+      the call chain and bypass the DC-3 "no shared state" principle.
+    deferred_to_feature_iteration: true
+    deferral_rationale: "Engine reuse refactor would touch GUR-147 code; defer."
+    resolved_items: []
+
+  - id: scar-B5-5
+    severity: low
+    title: "Render text table grew to 7-11 columns"
+    description: >
+      The Rich table now has 7 columns in dry-run mode and 11 in real-run
+      mode (project_id + raw_src/raw_days/raw_expired + ana_src/ana_days/ana_expired
+      + raw_purged/raw_fail + ana_purged/ana_fail). Operators reading the
+      text format on narrow terminals may see truncation. Column names use
+      short prefixes (raw_/ana_) to keep width manageable.
+    decision_taken: >
+      Pragmatic. JSON format is the canonical agent-readable output;
+      text is for human inspection.
+    deferred_to_feature_iteration: false
+    resolved_items: []
+
+assumptions_made:
+  - id: asm-B5-1
+    description: "ProjectRegistry's per-project DBEngine can host both events table AND session_reports/behavior_flags tables in the same intelligence.db file."
+    risk: "If the storage layer ever splits these into separate DB files per project, the CLI's lazy schema creation breaks. Today they all live in intelligence.db."
+
+  - id: asm-B5-2
+    description: "Empty-install (DC-B7) means no rows in EITHER table; both enumerators return [] cleanly."
+    risk: "If a project has events but no analyses (or vice versa), both enumerators return [] independently — verified."
+
+  - id: asm-B5-3
+    description: "Per-project ordering (raw_traces first, analysis second) is the correct policy for partial-failure recovery."
+    risk: "Documented in scar-B5-1 as a design decision; reverse order would leave operator unable to re-derive analyses."
+
+  - id: scar-B5-6
+    severity: critical
+    title: "Yin FAIL: enumeration engine leaked when only one side has expired items"
+    description: >
+      Yin reviewer Critical: `_dispose_for` was called only when both
+      expired sets were empty, but `_enumerate_for_project` opens an
+      engine via `ProjectRegistry._build_resources` regardless of what
+      gets enumerated. When only raw_traces (or only analyses) had
+      expired items, the enumeration engine was never disposed.
+    decision_taken: >
+      Wrapped the entire raw_traces+analysis enumeration body in
+      try/finally; `resources.db_engine.dispose()` now runs
+      unconditionally before _enumerate_for_project returns. The
+      dishonestly-named `_dispose_for` post-loop call was removed
+      (the function is now dead code, deletion deferred to keep diff
+      focused on the Critical fix).
+    deferred_to_feature_iteration: false
+    resolved_items:
+      - "fix-B5-A (try/finally dispose in _enumerate_for_project)"
+
+  - id: scar-B5-7
+    severity: critical
+    title: "Yin FAIL: create_schema() outside try block — schema failure crashes CLI loop"
+    description: >
+      Yin reviewer Critical: `reports_repo.create_schema()` was called
+      OUTSIDE the try block protecting `enumerate_expired_analyses`.
+      A DDL failure (e.g., disk full, permissions error) would propagate
+      as a raw exception out of `_enumerate_for_project`, crashing the
+      entire CLI loop instead of being captured as
+      `_EnumerationOutcome(error=...)`.
+    decision_taken: >
+      Moved `SessionReportsRepository(...)` construction AND
+      `create_schema()` INSIDE the try block. Any analysis-side failure
+      (schema or enumeration) now produces a structured error envelope
+      and the loop continues to the next project (consumer-not-recoverer
+      principle preserved).
+    deferred_to_feature_iteration: false
+    resolved_items:
+      - "fix-B5-B (create_schema moved inside try block)"
+
+  - id: scar-B5-8
+    severity: critical
+    title: "Yin FAIL: silent skip of analysis purge when raw_traces purger raises"
+    description: >
+      Yin reviewer Critical: if `_purge_for_project` raised an unhandled
+      exception (connection lost, _build_resources failure), the
+      subsequent `_analysis_purge_for_project` call was silently skipped
+      and `analysis_purge_result` stayed None — JSON output rendered
+      `analysis_purged_session_ids: []`, indistinguishable from "no
+      expired analyses".
+    decision_taken: >
+      Each purge call wrapped in its own try/except. Captured exceptions
+      append to a `purge_errors` list which is folded into
+      `outcome.error` (via dataclasses.replace). Both purgers now always
+      attempt their own set; partial failure surfaces in the report.
+      `any_failure` is set on either path.
+    deferred_to_feature_iteration: false
+    resolved_items:
+      - "fix-B5-C (per-purger try/except + error aggregation)"
+
+  - id: scar-B5-9
+    severity: critical
+    title: "Yin FAIL: DC-3 contract on analysis side had no test"
+    description: >
+      Yin reviewer Critical: the existing DC-3 test only exercised
+      raw_traces. Module docstring claimed DC-3 holds for both
+      enumerations, but no test pinned the analysis side. A future
+      refactor that re-implemented analysis dry-run independently could
+      drift silently.
+    decision_taken: >
+      Added `TestB5DcB3AnalysisDryRunMatchesRealRun::test_dry_run_and_real_report_same_analysis_session_set`.
+      Seeds 2 expired + 1 fresh analysis row, asserts
+      `expired_analysis_session_ids` (dry-run) == `analysis_purged_session_ids`
+      (real-run) == ["analy-old-1", "analy-old-2"]. Bit-for-bit equality
+      pinned.
+    deferred_to_feature_iteration: false
+    resolved_items:
+      - "fix-B5-D (DC-3 analysis-side test)"
+
+  - id: scar-B5-10
+    severity: medium
+    title: "Yin Important: B-H5 acceptance (analysis_runs out of scope) had no regression guard"
+    description: >
+      Yin reviewer Important: B-H5 acceptance criterion was explicitly
+      "tested as a regression guard" in the spec but no test existed.
+      A future change naively adding `analysis_runs` to the
+      AnalysisResultsPurger would land in production undetected.
+    decision_taken: >
+      Added `TestB5BH5AnalysisRunsNotReaped::test_analysis_runs_row_is_not_touched_by_purger`.
+      Seeds an analysis_runs row + corresponding session_reports +
+      behavior_flags, runs cleanup with aggressive analysis_ttl, asserts
+      session_reports/behavior_flags reaped AND analysis_runs row
+      remains.
+    deferred_to_feature_iteration: false
+    resolved_items:
+      - "fix-B5-E (B-H5 regression guard)"
+
+  - id: scar-B5-11
+    severity: medium
+    title: "Yin Important: structured INFO log line per project missing (B-S1)"
+    description: >
+      Yin reviewer Important: B-S1 acceptance explicitly required
+      "structured INFO log line names both values: `analysis_ttl_days=365 source=builtin_default`".
+      Implementation surfaced the source attribution in JSON output
+      only — sufficient for JSON consumers but missed the operator's
+      log-trail surface (cron/CI log lines).
+    decision_taken: >
+      Added module-level `_logger = logging.getLogger(__name__)` and
+      structured INFO log per project naming both TTL values + sources.
+      New `TestB5StructuredLogPerProject::test_cleanup_emits_structured_info_per_project`
+      pins the format. Suppressed for projects with config errors
+      (cfg=None on RetentionConfigError).
+    deferred_to_feature_iteration: false
+    resolved_items:
+      - "fix-B5-F (structured INFO log + test)"
+
+  - id: scar-B5-12
+    severity: medium
+    title: "Yin Important: cleanup() docstring + Typer help text said 'raw_traces only'"
+    description: >
+      Yin reviewer Important: the operator-visible `--help` text and the
+      `cleanup()` callback docstring still described only raw_traces
+      reaping. Task spec explicitly required "README / CLI `--help` text
+      mentions both TTLs".
+    decision_taken: >
+      Updated both the `app = typer.Typer(name="cleanup", help=...)`
+      string AND the `cleanup()` callback docstring to describe both
+      TTLs and both purge sides. Operators running `secondsight cleanup --help`
+      now see the dual-purger semantics.
+    deferred_to_feature_iteration: false
+    resolved_items:
+      - "fix-B5-G (help text updated)"
+
+  - id: scar-B5-13
+    severity: low
+    title: "Quality Important: silent partial enumeration could strand reaped raw_traces"
+    description: >
+      Quality reviewer Important (D principle): if analysis enumeration
+      raised but raw_traces enumeration succeeded, the original code
+      gated the entire purge branch on `outcome.error` and skipped both
+      purgers — stranding the already-detected expired raw_traces.
+    decision_taken: >
+      Moved the `if outcome.error is not None: ...; continue` to a
+      non-continuing branch: error is recorded as `any_failure` but
+      both purgers still attempt their own enumerated sets. Quality
+      reviewer's D-principle concern fully resolved.
+    deferred_to_feature_iteration: false
+    resolved_items:
+      - "fix-B5-H (raw_traces still reaped on analysis-side enumeration failure)"
+
+  - id: scar-B5-14
+    severity: low
+    title: "Yin Important + Quality Important: _dispose_for is dishonestly named (now dead code)"
+    description: >
+      Both reviewers flagged: `_dispose_for` did not actually dispose
+      the enumeration engine — it created and disposed a fresh engine.
+      The name implied disposal but the implementation was a defensive
+      no-op. After the try/finally fix in scar-B5-6, the function is
+      now unreachable from the cleanup loop.
+    decision_taken: >
+      Function left in place to keep this fix-round diff focused on
+      Criticals; deletion deferred. The next iteration touching
+      cleanup.py should remove it (verified unreachable via call-site
+      grep).
+    deferred_to_feature_iteration: true
+    deferral_rationale: "Dead code; removal is purely cosmetic and would inflate this fix-round diff."
+    resolved_items: []
+
+  - id: scar-B5-15
+    severity: low
+    title: "Quality Suggestion: DRY parallel evolution risk in _purge / _analysis_purge helpers"
+    description: >
+      Quality reviewer Suggestion: `_purge_for_project` and
+      `_analysis_purge_for_project` share an identical 3-step skeleton.
+      A future change to one but not the other would drift silently.
+    decision_taken: >
+      Acceptable for v1: two purgers, well-localized adjacent functions.
+      If a 3rd purger lands, extract the skeleton into a parameterized
+      helper at that point.
+    deferred_to_feature_iteration: true
+    deferral_rationale: "Twin features; rule-of-three for extraction."
+    resolved_items: []
+
+self_iteration_pass:
+  reviewed: true
+  fixes_applied:
+    - id: fix-B5-A
+      addresses_review: "yin Critical: enumeration engine leak"
+      change: >
+        Wrapped the raw_traces + analysis enumeration body in a single
+        try/finally; `resources.db_engine.dispose()` always runs before
+        `_enumerate_for_project` returns. Removed the post-loop
+        `_dispose_for(home_path, pid)` call from cleanup() since
+        enumeration now disposes its own engine.
+    - id: fix-B5-B
+      addresses_review: "yin Critical: create_schema outside try block"
+      change: >
+        Moved `SessionReportsRepository(...)` and `create_schema()`
+        INSIDE the analysis-side try block. Schema creation failures
+        now produce structured error envelopes; the CLI loop continues
+        to the next project.
+    - id: fix-B5-C
+      addresses_review: "yin Critical: silent skip of analysis purge"
+      change: >
+        Each purger call wrapped in its own try/except. `purge_errors`
+        list collects raw exceptions (separate from PurgeFailure rows
+        which already flow through `had_failures`). Errors fold into
+        `outcome.error` via dataclasses.replace; `any_failure` set on
+        either path. Both purgers always attempt independently.
+    - id: fix-B5-D
+      addresses_review: "yin Critical: DC-3 hole on analysis side"
+      change: >
+        Added `TestB5DcB3AnalysisDryRunMatchesRealRun` pinning bit-for-bit
+        equality between `expired_analysis_session_ids` (dry-run) and
+        `analysis_purged_session_ids` (real-run).
+    - id: fix-B5-E
+      addresses_review: "yin Important: B-H5 has no regression guard"
+      change: >
+        Added `TestB5BH5AnalysisRunsNotReaped` seeding an analysis_runs
+        row + matching session_reports + behavior_flags; asserts
+        analysis_runs row remains after purger reaps the others.
+    - id: fix-B5-F
+      addresses_review: "yin Important: B-S1 log-line half not implemented"
+      change: >
+        Added stdlib logging at module scope; structured INFO log per
+        project naming `raw_traces_ttl_days/source` AND
+        `analysis_ttl_days/source`. New
+        `TestB5StructuredLogPerProject` pins the format.
+    - id: fix-B5-G
+      addresses_review: "yin Important: --help text said 'raw_traces only'"
+      change: >
+        Updated `app = typer.Typer(... help=...)` AND `cleanup()`
+        docstring to describe both TTLs and both purge sides.
+    - id: fix-B5-H
+      addresses_review: "quality Important: silent partial enumeration strands raw_traces"
+      change: >
+        Removed the `if outcome.error: continue` early-exit. Errors are
+        now recorded but both purgers still attempt their own sets.
+        Raw_traces side reap is no longer stranded by an analysis-side
+        enumeration failure.
+  rationale: >
+    Eight fixes applied this round addressing all 4 yin Criticals + 2
+    yin Important + 2 quality Important + 1 yin Important. Test count
+    grew from 17 → 20 (3 new pin tests). All 390 tests in
+    analysis+storage+cli pass. Three prior scars from B1 (B1-3, B1-5)
+    formally resolved by the JSON rename and INFO log additions.
+
+next_action: "Update index.yaml task-B5 status: planned → completed (review passed after Critical fixes). Wave 3 completes next with task-B6 (factory wiring)."

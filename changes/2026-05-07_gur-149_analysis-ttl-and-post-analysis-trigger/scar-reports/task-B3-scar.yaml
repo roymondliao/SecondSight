@@ -1,0 +1,182 @@
+task: task-B3
+title: "Orchestrator on_analysis_complete callback + DC-B3"
+status: review_passed
+review_outcomes:
+  yin: "PASS_WITH_CONCERNS — 1 Important (resolved: async-callback guard added), 3 Suggestions (1 resolved, 2 documented)"
+  quality: "PASS — 1 Suggestion (resolved: log no longer over-sanitizes)"
+
+death_cases_covered:
+  - id: DC-B3
+    description: "Callback exception poisons analysis result — must swallow + log, not re-raise"
+    tests:
+      - "TestB3OnAnalysisCompleteCallback::test_b3_dc_b3_callback_exception_does_not_poison_analysis"
+
+tests_written:
+  total: 3
+  classes:
+    - TestB3OnAnalysisCompleteCallback (3)
+  list:
+    - test_b3_callback_invoked_with_session_id_after_summary_written
+    - test_b3_callback_not_invoked_when_none
+    - test_b3_dc_b3_callback_exception_does_not_poison_analysis
+test_results: "3 new tests pass; analysis+storage+cli suites = 371 pass"
+
+scar_items:
+  - id: scar-B3-1
+    severity: low
+    title: "Callback invocation is INSIDE the outer try/except in analyze_session"
+    description: >
+      The post-analysis callback is invoked at the end of the same outer
+      try/except boundary that catches all pipeline exceptions and calls
+      record_failure. To prevent a callback exception from poisoning a
+      successful analysis (DC-B3), the swallow happens INSIDE
+      _invoke_on_analysis_complete (not via a separate try/except at the
+      call site). This means the outer except is never triggered by the
+      callback — but a future refactor that moves the try/except boundary
+      could accidentally route callback exceptions through record_failure.
+    decision_taken: >
+      Swallow internally to keep the call site clean. The class docstring
+      and helper docstring both name DC-B3 as the load-bearing reason. A
+      future contributor who removes the try/except in the helper without
+      reading the docs would silently break the contract — but the death
+      test test_b3_dc_b3_callback_exception_does_not_poison_analysis would
+      fail immediately.
+    deferred_to_feature_iteration: false
+    resolved_items: []
+
+  - id: scar-B3-2
+    severity: low
+    title: "Callback receives session_id only — not full AnalyzeSessionResult"
+    description: >
+      Per accepted gap [gap-callback-arity] from index.yaml, the callback
+      signature is Callable[[str], None]. A consumer that needs more
+      context (e.g., last_event_at for the post-analysis cleanup trigger)
+      must do a separate DB lookup. Documented at the v1 cost; widening
+      to Callable[[AnalyzeSessionResult], None] is non-breaking when needed.
+    decision_taken: "Match plan §2.3. Widen later if needed."
+    deferred_to_feature_iteration: true
+    deferral_rationale: "Cosmetic API surface. Only widen when a real consumer demands it."
+    resolved_items: []
+
+  - id: scar-B3-3
+    severity: low
+    title: "DC-B3 test asserts on log message text 'on_analysis_complete'"
+    description: >
+      The DC-B3 test checks for 'on_analysis_complete' in the ERROR log
+      text. Renaming the helper or the log message format would break the
+      test. This is intentional (the test pins the contract) but makes
+      the helper name + log format part of an implicit interface.
+    decision_taken: "Pinned by test. Future renames must update both."
+    deferred_to_feature_iteration: false
+    resolved_items: []
+
+assumptions_made:
+  - id: asm-B3-1
+    description: "Callback is synchronous (Callable[[str], None]); orchestrator is async but the callback runs in the same call stack."
+    risk: "If a future consumer is a coroutine, the orchestrator must adapt — currently it would call the coroutine and not await it, leaving an un-awaited coroutine warning. Mitigation: documented in __init__ docstring; widening signature is a non-breaking change."
+
+  - id: asm-B3-2
+    description: "ERROR-level log capture via caplog is reliable for the project's logging config."
+    risk: "If a future test changes propagation rules, this may break. Standard pytest caplog idiom used."
+
+  - id: scar-B3-4
+    severity: medium
+    title: "Async-callback silent no-op risk closed by construction-time guard"
+    description: >
+      Yin reviewer flagged Important: the type annotation
+      `Callable[[str], None]` does not prevent a caller from registering
+      `async def callback(sid)`. Inside `analyze_session`,
+      `self._on_analysis_complete(session_id)` on a coroutine function
+      would construct the coroutine and discard it without awaiting —
+      silently no-op'ing the cleanup. The DC-B3 swallow contract would
+      hide the misuse (no exception logged, audit row clean, but
+      cleanup never happens).
+    decision_taken: >
+      Added `inspect.iscoroutinefunction(on_analysis_complete)` guard at
+      the END of __init__ that raises TypeError with a message naming
+      the constraint and the workaround. Fail-loud at construction time
+      means an operator sees the misuse at boot, not after weeks of
+      silent cleanup skips. New death test
+      `test_b3_async_callback_rejected_at_construction_time` pins the
+      contract.
+    deferred_to_feature_iteration: false
+    resolved_items:
+      - "fix-B3-B (added guard + new death test)"
+
+  - id: scar-B3-5
+    severity: low
+    title: "Log line over-sanitization (quality reviewer Suggestion)"
+    description: >
+      Quality reviewer flagged: `_invoke_on_analysis_complete` was using
+      `_sanitize_failure_message(exc)` for the ERROR log line. That
+      sanitizer is bound for the `analysis_runs.error_message` DB column
+      where unbounded LLM prompt fragments must not persist. An ephemeral
+      cleanup-callback log line is operator-facing and must not lose
+      diagnostic detail (200-char truncation, whitespace-collapse).
+    decision_taken: >
+      Replaced with direct `f"{type(exc).__name__}: {exc}"` formatting
+      (matches `RawTracesPurger` pattern in retention.py:407-412). Module
+      docstring now explains why the two paths diverge in their treatment
+      of exception messages.
+    deferred_to_feature_iteration: false
+    resolved_items:
+      - "fix-B3-C (log uses direct exception formatting)"
+
+  - id: scar-B3-6
+    severity: low
+    title: "Misleading inline comment 'if record_failure is ever needed'"
+    description: >
+      Yin reviewer flagged: inline comment above the callback invocation
+      said "if record_failure is ever needed" — the phrasing implied that
+      `record_failure` might legitimately fire from the callback path.
+      The actual contract is the opposite: the callback's own exception
+      CANNOT reach the outer except, and `record_failure` MUST never be
+      called for a callback failure.
+    decision_taken: >
+      Tightened to: "the callback's own exception is swallowed inside
+      _invoke_on_analysis_complete (DC-B3) — it CANNOT raise from this
+      line and therefore CANNOT reach the outer except below.
+      record_failure must never be called for a callback failure: the
+      analysis itself succeeded."
+    deferred_to_feature_iteration: false
+    resolved_items:
+      - "fix-B3-D (comment tightened)"
+
+self_iteration_pass:
+  reviewed: true
+  fixes_applied:
+    - id: fix-B3-A
+      addresses_review: "self-iteration during initial implementation"
+      change: >
+        First-pass implementation placed the bare `self._on_analysis_complete(session_id)`
+        call inside the outer try/except, which would have routed callback
+        exceptions through `record_failure` — flipping the audit row to
+        `stage='failed'` for a successful analysis. Caught during STEP 0
+        review of the placement choice; refactored to a `_invoke_on_analysis_complete`
+        helper that swallows internally.
+    - id: fix-B3-B
+      addresses_review: "yin Important: async coroutine silently does nothing"
+      change: >
+        Added `inspect.iscoroutinefunction()` guard in __init__ that
+        raises TypeError when an async function is registered as the
+        callback. Imported `inspect` at the top of the module. New death
+        test pins the contract.
+    - id: fix-B3-C
+      addresses_review: "quality Suggestion: log over-sanitization"
+      change: >
+        Replaced `_sanitize_failure_message(exc)` in the log line with
+        direct `type(exc).__name__: {exc}` formatting. Updated helper
+        docstring to explain why the two error paths (DB column vs log
+        line) diverge in treatment.
+    - id: fix-B3-D
+      addresses_review: "yin Suggestion: misleading inline comment"
+      change: >
+        Tightened the inline comment above the callback invocation to
+        explicitly state CANNOT raise / CANNOT reach outer except.
+  rationale: >
+    Four fixes applied this round. Three resolve reviewer concerns; one
+    was an early self-iteration catch during initial implementation.
+    Test count grew from 3 → 4 (added async-rejection death test).
+    All 372 tests across analysis+storage+cli pass.
+
+next_action: "Update index.yaml task-B3 status: planned → completed (review passed). Proceed to task-B4 (PostAnalysisCleanupTrigger consumer)."

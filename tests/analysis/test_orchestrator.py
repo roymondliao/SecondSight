@@ -224,8 +224,9 @@ def _make_orchestrator(
     agent: FakeAnalysisAgent,
     *,
     fake_segmenter=None,
+    on_analysis_complete=None,
 ) -> Orchestrator:
-    """Build an Orchestrator with a fake segmenter if provided."""
+    """Build an Orchestrator with a fake segmenter and/or post-analysis callback if provided."""
     return Orchestrator(
         events_repo=events_repo,
         behavior_flags_repo=flags_repo,
@@ -234,6 +235,7 @@ def _make_orchestrator(
         session_reports_repo=reports_repo,
         agent=agent,
         segmenter=fake_segmenter,
+        on_analysis_complete=on_analysis_complete,
     )
 
 
@@ -936,3 +938,186 @@ class TestHappyPaths:
         # Agent was called for both segments and aggregation.
         assert flex_agent.segment_calls == 1
         assert flex_agent.aggregate_calls >= 1
+
+
+# =====================================================================
+# GUR-149 task-B3 — on_analysis_complete callback hook
+# =====================================================================
+
+
+class TestB3OnAnalysisCompleteCallback:
+    """Death + smoke tests for the post-analysis callback hook.
+
+    DC-B3 (silent failure path): if a callback exception is allowed to
+    propagate, a successful analysis appears to the caller as a failure
+    — caller retries, double-charges LLM tokens, reports operator-visible
+    "analysis failed" when it actually succeeded. The contract is:
+    swallow + log ERROR, do NOT re-raise; the analysis_runs row stays
+    at summary_written.
+    """
+
+    @pytest.mark.asyncio
+    async def test_b3_callback_invoked_with_session_id_after_summary_written(
+        self,
+        events_repo: EventsRepository,
+        flags_repo: BehaviorFlagsRepository,
+        directives_repo: DirectivesRepository,
+        runs_repo: AnalysisRunsRepository,
+        reports_repo: SessionReportsRepository,
+        tmp_path: Path,
+    ) -> None:
+        """Callback receives the same session_id passed to analyze_session,
+        and is invoked after the audit row hits summary_written (not before)."""
+        for evt in _make_session_start_end():
+            events_repo.insert(evt)
+
+        segments = [_make_segment()]
+        fake_segmenter = _FakeSegmenter(segments)
+        agent = FakeAnalysisAgent(
+            segment_outputs=[_make_segment_analysis_zero_flags()],
+            summary_output=_make_summary_output(),
+        )
+
+        callback_calls: list[tuple[str, AnalysisRunStage | None]] = []
+
+        def on_complete(sid: str) -> None:
+            # Capture session_id AND the audit row's stage at the moment
+            # the callback runs. Stage MUST be summary_written by now
+            # (DC-B3 invocation-site contract from 2-plan.md §2.3).
+            run = runs_repo.get_latest_for_session(sid)
+            callback_calls.append((sid, run.stage if run else None))
+
+        with patch.dict("os.environ", {"SECONDSIGHT_HOME": str(tmp_path)}):
+            orch = _make_orchestrator(
+                events_repo, flags_repo, directives_repo, runs_repo, reports_repo,
+                agent,
+                fake_segmenter=fake_segmenter,
+                on_analysis_complete=on_complete,
+            )
+            result = await orch.analyze_session(_SESSION_ID)
+
+        assert result.stage == AnalysisRunStage.SUMMARY_WRITTEN
+        assert callback_calls == [(_SESSION_ID, AnalysisRunStage.SUMMARY_WRITTEN)]
+
+    @pytest.mark.asyncio
+    async def test_b3_callback_not_invoked_when_none(
+        self,
+        events_repo: EventsRepository,
+        flags_repo: BehaviorFlagsRepository,
+        directives_repo: DirectivesRepository,
+        runs_repo: AnalysisRunsRepository,
+        reports_repo: SessionReportsRepository,
+        tmp_path: Path,
+    ) -> None:
+        """Default behavior (callback=None) MUST not invoke anything.
+        Smoke test ensuring the orchestrator is backwards-compatible."""
+        for evt in _make_session_start_end():
+            events_repo.insert(evt)
+        segments = [_make_segment()]
+        fake_segmenter = _FakeSegmenter(segments)
+        agent = FakeAnalysisAgent(
+            segment_outputs=[_make_segment_analysis_zero_flags()],
+            summary_output=_make_summary_output(),
+        )
+
+        with patch.dict("os.environ", {"SECONDSIGHT_HOME": str(tmp_path)}):
+            orch = _make_orchestrator(
+                events_repo, flags_repo, directives_repo, runs_repo, reports_repo,
+                agent, fake_segmenter=fake_segmenter,
+                # on_analysis_complete defaults to None.
+            )
+            result = await orch.analyze_session(_SESSION_ID)
+
+        assert result.stage == AnalysisRunStage.SUMMARY_WRITTEN
+
+    @pytest.mark.asyncio
+    async def test_b3_dc_b3_callback_exception_does_not_poison_analysis(
+        self,
+        events_repo: EventsRepository,
+        flags_repo: BehaviorFlagsRepository,
+        directives_repo: DirectivesRepository,
+        runs_repo: AnalysisRunsRepository,
+        reports_repo: SessionReportsRepository,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """DC-B3: callback raises → analyze_session returns normal
+        AnalyzeSessionResult, ERROR logged with sanitized message,
+        analysis_runs row stays at summary_written (NOT failed)."""
+        for evt in _make_session_start_end():
+            events_repo.insert(evt)
+        segments = [_make_segment()]
+        fake_segmenter = _FakeSegmenter(segments)
+        agent = FakeAnalysisAgent(
+            segment_outputs=[_make_segment_analysis_zero_flags()],
+            summary_output=_make_summary_output(),
+        )
+
+        def raising_callback(sid: str) -> None:
+            raise RuntimeError("simulated downstream cleanup failure")
+
+        with patch.dict("os.environ", {"SECONDSIGHT_HOME": str(tmp_path)}):
+            orch = _make_orchestrator(
+                events_repo, flags_repo, directives_repo, runs_repo, reports_repo,
+                agent,
+                fake_segmenter=fake_segmenter,
+                on_analysis_complete=raising_callback,
+            )
+            with caplog.at_level(logging.ERROR):
+                # The whole point: NO exception propagates.
+                result = await orch.analyze_session(_SESSION_ID)
+
+        # Analysis succeeded; result is well-formed.
+        assert result.stage == AnalysisRunStage.SUMMARY_WRITTEN
+        assert result.report_id is not None
+
+        # Audit row at summary_written (NOT failed) — analysis itself succeeded.
+        run = _get_latest_run(runs_repo)
+        assert run is not None
+        assert run.stage == AnalysisRunStage.SUMMARY_WRITTEN
+
+        # ERROR log was emitted naming the callback failure.
+        error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert any(
+            "on_analysis_complete" in r.getMessage()
+            for r in error_records
+        ), f"Expected ERROR log for callback failure, got: {[r.getMessage() for r in error_records]}"
+        # Sanitized message includes the exception class name.
+        assert any("RuntimeError" in r.getMessage() for r in error_records)
+
+    def test_b3_async_callback_rejected_at_construction_time(
+        self,
+        events_repo: EventsRepository,
+        flags_repo: BehaviorFlagsRepository,
+        directives_repo: DirectivesRepository,
+        runs_repo: AnalysisRunsRepository,
+        reports_repo: SessionReportsRepository,
+    ) -> None:
+        """Yin review fix: an `async def` callback would be silently
+        no-op'd by `self._on_analysis_complete(session_id)` (Python
+        constructs the coroutine and discards it without awaiting).
+        Without this guard, an operator who registers an async cleanup
+        trigger sees no errors but no cleanup happens.
+
+        Fail-loud at construction time so the misuse is visible at boot.
+        """
+        agent = FakeAnalysisAgent(
+            segment_outputs=[_make_segment_analysis_zero_flags()],
+            summary_output=_make_summary_output(),
+        )
+
+        async def async_callback(sid: str) -> None:
+            # Body never reached — constructor must reject this callable
+            # before analyze_session is even called.
+            pass  # pragma: no cover
+
+        with pytest.raises(TypeError) as exc_info:
+            _make_orchestrator(
+                events_repo, flags_repo, directives_repo, runs_repo, reports_repo,
+                agent,
+                on_analysis_complete=async_callback,
+            )
+        # Error message must name the constraint so the operator can
+        # locate the misuse without needing to read the source.
+        assert "coroutine" in str(exc_info.value).lower()
+        assert "on_analysis_complete" in str(exc_info.value)

@@ -1,0 +1,266 @@
+task: task-B4
+title: "PostAnalysisCleanupTrigger consumer + DC-B4 (deferred), DC-B5"
+status: review_passed
+review_outcomes:
+  yin: "PASS_WITH_CONCERNS — 2 Important (both resolved), 3 Suggestions (2 resolved, 1 documented)"
+  quality: "PASS_WITH_CONCERNS — 1 Important (resolved: Protocol added), 1 Suggestion (documented)"
+
+death_cases_covered:
+  - id: DC-B5
+    description: "Per-session eager purge races with scheduled CLI cleanup — must be idempotent"
+    tests:
+      - "TestDCB5IdempotentReInvocation::test_trigger_on_already_purged_session_returns_cleanly"
+      - "TestDCB5IdempotentReInvocation::test_trigger_called_twice_in_a_row_is_idempotent"
+
+death_cases_deferred:
+  - id: DC-B4
+    description: "Boot-time wiring guard: cleanup_after_analysis=true but trigger not registered"
+    deferred_to: task-B6
+    rationale: >
+      DC-B4 is a factory-level concern (operator configures
+      cleanup_after_analysis=true but the orchestrator factory drops the
+      callback wiring). Task-B4's scope is the trigger consumer itself;
+      the factory branch lives in task-B6. The trigger CAN be
+      constructed and invoked in isolation, which is what task-B4 tests.
+
+tests_written:
+  total: 6
+  classes:
+    - TestDisabledPath (1)
+    - TestDCB5IdempotentReInvocation (2)
+    - TestTriggerDoesNotRaiseOnPurgerFailure (1)
+    - TestHappyPath (2)
+test_results: "6 new tests pass; analysis+storage+cli = 382 pass (was 372 after B3)"
+
+scar_items:
+  - id: scar-B4-1
+    severity: medium
+    title: "Trigger does one extra DB read per analysis to fetch last_event_at"
+    description: >
+      Each invocation calls `events_repo.get_session_events(session_id)`
+      and computes max(timestamp) in Python. For a heavy session this
+      scans all events. Alternative: orchestrator could pass last_event_at
+      directly through the callback (widening Callable[[str], None] to
+      Callable[[str, datetime], None]). The current shape preserves the
+      task-B3 contract; the cost is one O(n) read per analysis when
+      cleanup_after_analysis=true.
+    decision_taken: >
+      Match task-B3 contract (Callable[[str], None]) per accepted gap
+      [gap-callback-arity]. Optimize when a real perf hotspot
+      materializes; document the cost as an assumption.
+    deferred_to_feature_iteration: true
+    deferral_rationale: "Cosmetic perf for v1; only matters if cleanup_after_analysis=true on a high-volume install."
+    resolved_items: []
+
+  - id: scar-B4-2
+    severity: low
+    title: "FS-collision INFO log line uses 'session_report.json' string literal"
+    description: >
+      The structured INFO log line includes the literal substring
+      "session_report.json" to disclose gap-fs-collision. If a future
+      orchestrator change renames the FS backup file, this log line
+      becomes outdated without breaking any test (the test asserts
+      either "session_report.json" OR "DB row remains" is present —
+      so renaming the file alone wouldn't fail the test).
+    decision_taken: >
+      Acceptable for v1; the dual-substring assertion is pragmatic. A
+      strictly-correct alternative would import a constant from
+      orchestrator.py naming the backup filename, but that creates a
+      circular-import risk between analysis modules.
+    deferred_to_feature_iteration: false
+    resolved_items: []
+
+  - id: scar-B4-3
+    severity: low
+    title: "Trigger logs WARNING (not ERROR) on purge failure"
+    description: >
+      When RawTracesPurger.purge() returns had_failures=True, the trigger
+      emits WARNING — relying on the purger's own structured ERROR logs
+      for stage-level diagnostics. This avoids producing two ERROR
+      records for one root cause but means an operator scanning ERROR
+      lines might miss the trigger-side context.
+    decision_taken: >
+      Documented in module docstring. The purger emits ERROR with full
+      stage detail; the trigger's WARNING includes the session_id and
+      points to the ERROR logs. The double-ERROR alternative was
+      explicitly rejected in the docstring.
+    deferred_to_feature_iteration: false
+    resolved_items: []
+
+  - id: scar-B4-4
+    severity: low
+    title: "asyncio.run for FS seeding in tests instead of pytest-asyncio fixture"
+    description: >
+      `_seed_session` calls `asyncio.run(raw_trace_store.write(e))` to
+      bridge the sync test code to the async write API. Each call
+      creates a new event loop. For 6 tests with ~2 events each this is
+      negligible, but the pattern wouldn't scale. Mirrors GUR-147
+      tests/storage/test_retention_purger.py:107 verbatim.
+    decision_taken: >
+      Match existing pattern. If a future test iterates over many events,
+      use a single-loop helper or pytest-asyncio fixture.
+    deferred_to_feature_iteration: false
+    resolved_items: []
+
+assumptions_made:
+  - id: asm-B4-1
+    description: "RawTracesPurger.purge() does not raise on a single-session input — its per-row try/except handles all failure modes via PurgeResult."
+    risk: "If the purger ever changes to raise on certain inputs, the trigger would surface that exception to the orchestrator's swallow boundary (DC-B3), not crash the system. Acceptable behavior."
+
+  - id: asm-B4-2
+    description: "EventsRepository.get_session_events returns events in the order they were inserted (not necessarily sorted by timestamp). max() handles unsorted input correctly."
+    risk: "If the repo returns events sorted, max() still works. Pure read with no ordering dependency."
+
+  - id: asm-B4-3
+    description: "An empty session events list means 'session does not exist or already reaped' — both safe to treat as a no-op."
+    risk: "If a future code path inserts a session_reports row WITHOUT events (somehow), the trigger silently skips. Today there is no such path; the orchestrator's DC-7 verifier prevents it."
+
+  - id: scar-B4-5
+    severity: medium
+    title: "'Does NOT raise' contract is partially DC-B3-delegated"
+    description: >
+      Yin reviewer Important: the per-method docstring claimed "Does NOT
+      raise" unconditionally, but only the `had_failures` branch is
+      handled locally. `get_session_events` raising or
+      `purger.purge()` raising outside its per-row try/except both
+      propagate out of `__call__` and rely on Orchestrator's DC-B3
+      swallow boundary for the unconditional guarantee. A future
+      tightening of DC-B3 would silently narrow this trigger's contract.
+    decision_taken: >
+      Replaced the unconditional "Does NOT raise" with a labeled
+      exception contract that explicitly distinguishes (a) the
+      purge-failure path (handled locally; survives any DC-B3 change)
+      from (b) lookup/unexpected-purger paths (propagated; rely on
+      DC-B3). Future readers see the delegation at the method docstring,
+      not only at the module docstring.
+    deferred_to_feature_iteration: false
+    resolved_items:
+      - "fix-B4-B (per-method docstring labels the DC-B3 dependency)"
+
+  - id: scar-B4-6
+    severity: medium
+    title: "DC-B5 idempotency test was insufficient to distinguish clean vs. absorbed-failure call"
+    description: >
+      Yin reviewer Important: `test_trigger_called_twice_in_a_row_is_idempotent`
+      asserted only that neither call raised, which would pass even if the
+      second invocation silently absorbed an FS failure via the purger's
+      per-row try/except (had_failures=True path that emits WARNING but
+      does not raise). The test could not distinguish "clean second call"
+      from "second call absorbed a failure into a WARNING."
+    decision_taken: >
+      Wrapped real_purger with a RecordingPurger spy that captures each
+      PurgeResult. Test now asserts: (1) FIRST call has had_failures=False
+      AND records sess-twice in purged_session_ids; (2) SECOND call does
+      NOT invoke the purger at all (len(purge_results) stays at 1) — the
+      no-events guard short-circuits BEFORE the purger sees anything,
+      which is the strongest possible idempotency contract.
+    deferred_to_feature_iteration: false
+    resolved_items:
+      - "fix-B4-C (test wrapped with RecordingPurger spy + tightened assertions)"
+
+  - id: scar-B4-7
+    severity: medium
+    title: "Concrete-class type coupling forced # type: ignore in tests"
+    description: >
+      Quality reviewer Important: constructor type-annotated against
+      `RawTracesPurger` concrete class, but only the `.purge()` method
+      shape is used. Test spies (`SpyPurger`, `FailingPurger`,
+      `CapturingPurger`) had to carry `# type: ignore[arg-type]` to
+      suppress the type error — the type system was claiming more than
+      the runtime requirement.
+    decision_taken: >
+      Added private `_PurgerProtocol(Protocol)` describing exactly the
+      `.purge(Sequence[ExpiredSession]) -> PurgeResult` shape the trigger
+      requires. Constructor annotation switched from `RawTracesPurger`
+      to `_PurgerProtocol`. All three `# type: ignore[arg-type]`
+      annotations removed from the test file. The `RawTracesPurger`
+      runtime instance still satisfies the Protocol (structural typing).
+    deferred_to_feature_iteration: false
+    resolved_items:
+      - "fix-B4-D (Protocol + type:ignore removal)"
+
+  - id: scar-B4-8
+    severity: low
+    title: "Cross-framework alerting gap (loguru vs stdlib logging)"
+    description: >
+      Yin reviewer Suggestion: the trigger uses stdlib `logging`; the
+      purger uses `loguru`. An operator whose alerting is wired only to
+      one framework's sink may miss messages from the other. The trigger's
+      WARNING vs. the purger's ERROR are emitted to different logger
+      hierarchies.
+    decision_taken: >
+      Documented here. The project as a whole has both frameworks in
+      use; unifying them is a cross-cutting refactor outside GUR-149
+      scope. Operators integrating SecondSight should configure both
+      sinks. Mitigation: the trigger's WARNING explicitly references
+      "see RawTracesPurger ERROR logs" so an operator who DOES see the
+      WARNING knows where to look.
+    deferred_to_feature_iteration: true
+    deferral_rationale: "Cross-cutting infra concern; not GUR-149 scope."
+    resolved_items: []
+
+  - id: scar-B4-9
+    severity: low
+    title: "DRY: max(timestamp) computed in two places"
+    description: >
+      Quality reviewer Suggestion: `max(e.timestamp for e in events)` here
+      vs. `sa.func.max(events.c.timestamp)` in
+      `enumerate_expired_sessions` (retention.py). Two sites compute the
+      same derived fact via different paths (Python max vs. SQL aggregate).
+    decision_taken: >
+      Acceptable: both serve different callers (TTL expiry vs. eager
+      cleanup) with different perf profiles. Extracting a shared helper
+      would create a dependency edge between events_repository and
+      retention that doesn't pay off for one extra site.
+    deferred_to_feature_iteration: true
+    deferral_rationale: "Pre-existing pattern; would couple two modules without enough shared semantics."
+    resolved_items: []
+
+self_iteration_pass:
+  reviewed: true
+  fixes_applied:
+    - id: fix-B4-A
+      addresses_review: "self-iteration during initial test run"
+      change: >
+        First-pass `_seed_session` used `asyncio.get_event_loop()` which
+        fails in Python 3.14 outside async context. Switched to
+        `asyncio.run()` matching GUR-147 test_retention_purger.py:107.
+    - id: fix-B4-B
+      addresses_review: "yin Important: 'Does NOT raise' contract is partially DC-B3-delegated"
+      change: >
+        Replaced the unconditional `__call__` docstring statement with a
+        labeled exception contract distinguishing the locally-handled
+        `had_failures` branch from the DC-B3-delegated lookup-failure
+        branch. Future readers see the delegation at the method level,
+        not only at the module level.
+    - id: fix-B4-C
+      addresses_review: "yin Important: DC-B5 test does not distinguish clean vs. absorbed-failure"
+      change: >
+        Tightened `test_trigger_called_twice_in_a_row_is_idempotent`
+        with a `RecordingPurger` spy that captures each `PurgeResult`.
+        Test now asserts that the FIRST call has `had_failures=False`
+        (clean reap, not absorbed failure) AND that the SECOND call
+        does NOT invoke the purger at all (no-events guard
+        short-circuits) — the strongest idempotency contract.
+    - id: fix-B4-D
+      addresses_review: "quality Important: concrete-class coupling forced # type: ignore in tests"
+      change: >
+        Added private `_PurgerProtocol(Protocol)` describing the
+        `.purge(Sequence[ExpiredSession]) -> PurgeResult` shape.
+        Constructor annotation switched from `RawTracesPurger` to
+        `_PurgerProtocol`. Removed all three `# type: ignore[arg-type]`
+        annotations from `tests/analysis/test_post_analysis_cleanup.py`.
+    - id: fix-B4-E
+      addresses_review: "yin Suggestion: max() safety not commented"
+      change: >
+        Added a 3-line comment above the `max()` call documenting that
+        the no-events guard 10 lines above guarantees non-empty input.
+  rationale: >
+    Five fixes applied this round. Three resolve reviewer Important
+    concerns (yin contract labeling, yin DC-B5 test rigor, quality
+    Protocol coupling) and one was an early self-iteration catch.
+    Two suggestions documented in scar-B4-8 / scar-B4-9 as
+    architectural acknowledgments. All 6 tests still pass; full
+    analysis+storage+cli suite 382 pass.
+
+next_action: "Update index.yaml task-B4 status: planned → completed (review passed). Wave 3 next: task-B5 (CLI integration) + task-B6 (factory wiring)."
