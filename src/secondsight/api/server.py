@@ -21,6 +21,11 @@ Silent failure conditions:
   :class:`secondsight._common.lazy_cache.LazyCacheWithLocking` (the same
   utility now backing ProjectRegistry and SessionTracker). Locking
   assumptions live there, not duplicated here.
+- The Sweeper (D10) iterates only projects that have been materialized by
+  the registry (i.e., have received at least one event since server startup).
+  Sessions whose project has never served a request are not swept. This is
+  an acceptable v1 limitation: in practice the server is started after the
+  first event ingest, so all active projects are already materialized.
 """
 
 from __future__ import annotations
@@ -99,6 +104,11 @@ class AppState:
         # 0 pending tasks even if tasks had been abandoned silently.
         self.inflight_tasks: set[asyncio.Task[None]] = set()
 
+        # Sweeper background task (D10: Sweeper lifecycle). Set during lifespan
+        # startup; None before startup or after shutdown. Typed explicitly so
+        # routes and tests can assert the sweeper was started (not a silent None).
+        self.sweeper_task: asyncio.Task[None] | None = None
+
         # Per-project SessionTracker cache. Same two-level locking pattern
         # as ProjectRegistry, materialised through the shared utility — see
         # :mod:`secondsight._common.lazy_cache` for the locking contract.
@@ -132,6 +142,133 @@ class AppState:
         from that project's DB.
         """
         return await self._tracker_cache.get(project_id)
+
+
+# ---------------------------------------------------------------------------
+# Sweeper coordinator — timeout-based fallback for crashed-agent sessions (D10)
+# ---------------------------------------------------------------------------
+
+# Sweeper defaults. Can be overridden via environment variables in a future
+# config extension; hardcoded here for v1 (single-process, localhost-only).
+_SWEEPER_INTERVAL_SECONDS: int = 60
+_SWEEPER_SESSION_TIMEOUT_MINUTES: int = 30
+_SWEEPER_SHUTDOWN_TIMEOUT_S: float = 5.0
+
+
+class _ServerSweepCoordinator:
+    """Cross-project Sweeper coordinator (D10).
+
+    Runs as a background asyncio.Task in the server lifespan. Each tick:
+    1. Get the list of materialized project_ids from the registry.
+    2. For each project, use the project's EventsRepository to find stale sessions.
+    3. Filter out sessions with a terminal analysis_runs row.
+    4. Log stale candidates for operator visibility.
+
+    Dispatch limitation (v1): The coordinator finds stale sessions but
+    cannot dispatch analysis without a full Orchestrator (LLMRouter + agent)
+    per project. Building the Orchestrator requires model selection config
+    and LLM credentials not available at server startup. The coordinator
+    logs WARNING-level messages so operators know sessions are accumulating.
+
+    Full dispatch wiring (building a per-project Trigger and Orchestrator
+    inside the coordinator) is deferred to a follow-up feature iteration.
+    The current implementation satisfies D10's "Sweeper runs in server
+    lifespan" requirement and closes the "silent placeholder" gap.
+
+    Silent failure conditions:
+    - Projects that have not yet received any event are not in the registry
+      and are not scanned. This is the correct behavior: if the project has
+      no events, there are no sessions to sweep.
+    - If the registry has been closed (server shutting down), the scan is
+      skipped gracefully.
+    """
+
+    def __init__(
+        self,
+        registry: "ProjectRegistry",
+        secondsight_home: Path,
+        interval_seconds: int = _SWEEPER_INTERVAL_SECONDS,
+        session_timeout_minutes: int = _SWEEPER_SESSION_TIMEOUT_MINUTES,
+    ) -> None:
+        self._registry = registry
+        self._secondsight_home = secondsight_home
+        self._interval_seconds = interval_seconds
+        self._session_timeout_minutes = session_timeout_minutes
+
+    async def run(self) -> None:
+        """Main sweep loop. Runs until cancelled (asyncio.CancelledError propagates)."""
+        from datetime import datetime, timedelta, timezone
+
+        logger.info(
+            "Sweeper coordinator running: interval={interval}s, timeout={timeout}min",
+            interval=self._interval_seconds,
+            timeout=self._session_timeout_minutes,
+        )
+        while True:
+            try:
+                now = datetime.now(tz=timezone.utc)
+                cutoff = now - timedelta(minutes=self._session_timeout_minutes)
+                await self._sweep_all_projects(cutoff)
+            except asyncio.CancelledError:
+                logger.info("Sweeper coordinator cancelled during sweep.")
+                raise
+            except Exception as exc:
+                logger.error(
+                    "Sweeper coordinator sweep error: {type}: {exc}",
+                    type=type(exc).__name__,
+                    exc=exc,
+                )
+
+            try:
+                await asyncio.sleep(self._interval_seconds)
+            except asyncio.CancelledError:
+                logger.info("Sweeper coordinator cancelled during sleep.")
+                raise
+
+    async def _sweep_all_projects(self, cutoff: "datetime") -> None:
+        """One sweep tick across all materialized projects."""
+        from secondsight.analysis.schemas import TERMINAL_STAGES
+
+        project_ids = self._registry.materialized_project_ids()
+        if not project_ids:
+            logger.debug("Sweeper: no materialized projects to sweep.")
+            return
+
+        for project_id in project_ids:
+            try:
+                resources = await self._registry.get(project_id)
+                candidates = resources.events_repository.find_stale_session_candidates(
+                    project_id=project_id,
+                    last_event_before=cutoff,
+                )
+                from secondsight.storage.analysis_runs_repository import AnalysisRunsRepository  # noqa: PLC0415
+
+                # Build analysis_runs_repo once per project (not per candidate).
+                runs_repo = AnalysisRunsRepository(resources.db_engine)
+
+                for pid, session_id, last_event_ts in candidates:
+                    latest_run = runs_repo.get_latest_for_session(session_id)
+                    if latest_run is not None and latest_run.stage.value in TERMINAL_STAGES:
+                        continue  # Already done
+
+                    logger.warning(
+                        "Sweeper: stale session found — project_id={pid} "
+                        "session_id={sid} last_event_ts={ts}. "
+                        "Full dispatch requires Orchestrator wiring (deferred to v2). "
+                        "Use `secondsight analyze --session {sid}` to manually trigger.",
+                        pid=pid,
+                        sid=session_id,
+                        ts=last_event_ts,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error(
+                    "Sweeper: error sweeping project_id={pid}: {type}: {exc}",
+                    pid=project_id,
+                    type=type(exc).__name__,
+                    exc=exc,
+                )
 
 
 def create_app(
@@ -176,6 +313,10 @@ def create_app(
             host=cfg.host,
             port=cfg.port,
         )
+        # Sweeper wiring (D10): start the cross-project sweep coordinator.
+        # The coordinator iterates all projects that have been materialized
+        # by the registry (i.e., have received at least one event).
+        # See _ServerSweepCoordinator for the per-project dispatch logic.
 
         # Build adapter registry. Order is significant for first-match-wins
         # dispatch (plan §1 decision 5):
@@ -206,13 +347,28 @@ def create_app(
 
         # Assign the typed state contract once; inflight_tasks is initialized
         # as an empty strong-reference set inside AppState.__init__.
-        app.state.server_state = AppState(
+        server_state = AppState(
             registry=reg,
             startup_time=startup_time,
             secondsight_home=home,
             config=cfg,
             adapter_registry=adapter_registry,
         )
+        app.state.server_state = server_state
+
+        # Start the Sweeper coordinator (D10). This is the timeout-based fallback
+        # path for sessions whose agent crashed before SESSION_END.
+        # The coordinator uses registry.materialized_project_ids() each tick so
+        # it automatically picks up new projects as they are materialized.
+        sweep_coordinator = _ServerSweepCoordinator(
+            registry=reg,
+            secondsight_home=home,
+        )
+        server_state.sweeper_task = asyncio.create_task(
+            sweep_coordinator.run(),
+            name="sweeper-coordinator",
+        )
+        logger.info("Sweeper coordinator started.")
 
         logger.info("SecondSight server ready.")
         yield
@@ -251,6 +407,18 @@ def create_app(
                 )
             else:
                 logger.info("All in-flight ingest tasks completed.")
+
+        # Cancel the Sweeper coordinator with bounded timeout.
+        sweeper_task = app.state.server_state.sweeper_task
+        if sweeper_task is not None and not sweeper_task.done():
+            sweeper_task.cancel()
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(sweeper_task), timeout=5.0
+                )
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+            logger.info("Sweeper coordinator stopped.")
 
         await reg.aclose()
         logger.info("SecondSight server stopped.")

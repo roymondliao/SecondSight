@@ -1,0 +1,244 @@
+task_id: task-1
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      `read_historical_flags` fetches all flags per BehaviorFlagType with N separate
+      repo calls (one per flag_type enum value — currently 6). The `limit` parameter is
+      applied after fetch in Python, not at the SQL level. For a project with many
+      flags per type, this reads more data than necessary before truncating.
+      Documented in the method docstring. Accept for v1 — cost bounded by 6 types.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      Latin-1 or other high-byte encodings that are valid UTF-8 by accident:
+      A file encoded in Latin-1 whose bytes all happen to decode as valid UTF-8
+      codepoints (not common but possible) will pass the binary guard and the
+      UnicodeDecodeError check, returning garbled-but-decodable content to the LLM
+      instead of the binary placeholder. The null-byte check catches .pyc and most
+      true binary files; the UTF-8 decode catches Latin-1 failures. The residual
+      case (valid-UTF-8 from Latin-1) is rare in practice.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      `read_project_file` does not check if the path resolves to a directory.
+      `Path.resolve(strict=True)` on a directory succeeds; `read_bytes()` on a
+      directory raises `IsADirectoryError` (Linux) or similar OS error. This is
+      caught by the generic `OSError` handler and wrapped as `ProjectFileToolError`,
+      but the error message says "OS error: [Errno 21] Is a directory" — confusing
+      for an LLM tool caller.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      `project_root` passed to AnalysisTools is an absolute path pointing to an
+      existing directory. The constructor validates absoluteness (ValueError on relative
+      paths) but does NOT validate existence.
+    verified: true
+    note: >
+      Verified: constructor raises ValueError for relative paths (DT-1.7 covers this).
+      Existence check deferred — if directory doesn't exist, the first
+      `read_project_file` call will fail at `Path.resolve(strict=True)` step since
+      the base directory itself doesn't exist. The error surfaces as
+      `ProjectFileToolError` with an OS error message.
+
+  - assumption: >
+      `BehaviorFlagsRepository.get_project_flags_by_type` accepts a
+      `BehaviorFlagType` enum value (not raw string) as the second argument.
+    verified: true
+    note: >
+      Verified by reading behavior_flags_repository.py:99-111. Method signature
+      is `(project_id: str, flag_type: BehaviorFlagType)`.
+
+  - assumption: >
+      `BehaviorFlagsRepository.count_by_type` exists and accepts `project_id: str`.
+    verified: true
+    note: >
+      Verified by reading behavior_flags_repository.py:113-138.
+
+  - assumption: >
+      `DirectivesRepository.get_active_conventions` exists and accepts `project_id: str`.
+    verified: true
+    note: >
+      Verified by reading directives_repository.py:106-130.
+
+  - assumption: >
+      The `[analysis.read_project_file]` TOML section nesting is the correct
+      config format per 2-plan.md §6. Task-4 (sdk/agent.py) must call
+      AnalysisConfig.load() and pass config values to AnalysisTools at
+      construction time. Now includes read_project_file_enabled parameter.
+    verified: false
+    note: >
+      The section name matches 2-plan.md §6. AnalysisTools now accepts
+      read_project_file_enabled parameter (default True). If task-4 constructs
+      AnalysisTools without loading AnalysisConfig, the extra_denylist,
+      size_cap_bytes, and read_project_file_enabled will all default to built-ins
+      — not a security regression, but config overrides would be silently ignored.
+    deferred_to_feature_iteration: true
+
+  - assumption: >
+      Binary detection operates on the full file bytes before truncation. A 300 KiB
+      file with text in first 256 KiB and null bytes after must return binary
+      placeholder, not truncated text.
+    verified: true
+    note: >
+      Verified in fix-loop: binary check now runs on full raw_bytes before the size
+      cap slice. Death test DT-1.5b covers this case specifically.
+
+debt_registered: true
+debt_location: >
+  src/secondsight/analysis/tools.py:242-247 (directory read: IsADirectoryError
+  catches as generic OSError);
+  src/secondsight/analysis/tools.py:387-396 (read_historical_flags: Python-level
+  limit, not SQL-level)
+
+resolved_items:
+  - original_section: "silent_failure_conditions"
+    original_description: >
+      Null bytes decode as valid UTF-8 — binary guard via UnicodeDecodeError
+      alone would let null-byte files through as text content.
+    resolution: >
+      Added explicit `b"\x00" in raw_bytes` check before the UTF-8 decode
+      attempt. Caught by death test DT-1.5 (test_binary_with_null_byte_returns_placeholder)
+      which failed on the first implementation run. Fixed in tools.py before
+      the UnicodeDecodeError fallback path.
+
+  - original_section: "silent_failure_conditions"
+    original_description: >
+      TOCTOU: project_root resolved on every read_project_file call. A symlink
+      retarget of the project root itself between calls could shift the
+      containment boundary.
+    resolution: >
+      project_root is now resolved ONCE at construction time and stored as
+      `self._project_root_resolved`. All read_project_file calls use the
+      snapshot. The TOCTOU window is eliminated at the process lifetime level.
+
+  - original_section: "known_shortcuts"
+    original_description: >
+      `_DEFAULT_SIZE_CAP_BYTES` constant duplicated between tools.py and
+      config.py (BUILTIN_SIZE_CAP_KB).
+    resolution: >
+      tools.py now imports `BUILTIN_SIZE_CAP_KB` from config.py and computes
+      `_DEFAULT_SIZE_CAP_BYTES = BUILTIN_SIZE_CAP_KB * 1024`. Single source of
+      truth restored.
+
+  - original_section: "silent_failure_conditions"
+    original_description: >
+      `query_structured_store` silently passes empty project_id to repo methods.
+    resolution: >
+      Added explicit validation: missing or empty `project_id` in the query
+      raises ValueError before any repo method is called. Covered by two new
+      tests (test_missing_project_id_raises_value_error,
+      test_empty_project_id_raises_value_error).
+
+  - original_section: "assumptions_made"
+    original_description: >
+      project_root absolute path assumption unverified.
+    resolution: >
+      Constructor now validates absoluteness and raises ValueError for relative
+      paths. Covered by new death test
+      TestDT17NoProjectRootRaisesOnFileRead.test_relative_project_root_raises_value_error.
+
+  # --- Fix-loop resolutions (GUR-103 yin code-review FAIL) ---
+
+  - original_section: "silent_failure_conditions / _BUILTIN_DENYLIST"
+    original_description: >
+      Dead `.ssh/*` and `.aws/*` denylist patterns. Path.parts yields components
+      without slashes (.ssh, id_rsa); fnmatch against ".ssh/*" can never match a
+      component. The "/*" patterns were structurally dead — comments and module
+      docstring claimed "ancestor matching via .ssh/*" which was false.
+    resolution: >
+      Removed ".ssh/*" and ".aws/*" from _BUILTIN_DENYLIST. Updated module
+      docstring DC-2 description to accurately describe the mechanism: each path
+      component is matched independently; ".ssh" blocks all children via component
+      match, not a glob. Updated DT-1.3 class docstring and test_ancestor_blocked_not_filename_match
+      docstring to match the true mechanism. No behavioral change — ".ssh" and ".aws"
+      exact entries already provided the protection.
+
+  - original_section: "silent_failure_conditions / binary detection"
+    original_description: >
+      Binary detection operated on truncated bytes. A file with text in the first
+      256 KiB and null bytes after byte 256K would pass the binary guard and return
+      truncated text, violating the contract "binary files return a placeholder,
+      never raw bytes."
+    resolution: >
+      Moved binary check (null-byte test + UTF-8 decodability) BEFORE the size cap
+      slice. The full raw_bytes is checked before truncation. Added new death test
+      DT-1.5b (test_DT_1_5b_binary_check_on_full_bytes_before_truncation) covering
+      the specific case: 256 KiB text + 1 KiB null bytes; asserts binary placeholder
+      returned with correct original size.
+
+  - original_section: "assumptions_made / D8 kill switch"
+    original_description: >
+      D8 escape valve `read_project_file_enabled = false` was structurally
+      unimplemented. AnalysisConfig loaded the field but AnalysisTools had no
+      constructor parameter for it and no check in read_project_file. Setting
+      enabled = false in project config had zero effect.
+    resolution: >
+      Added `read_project_file_enabled: bool = True` parameter to
+      AnalysisTools.__init__. Stored as self._read_project_file_enabled.
+      Added check at step 1a of read_project_file: if not enabled, raise
+      ProjectFileToolError immediately with a "disabled by project config" message.
+      Added three new tests in TestDT1D8KillSwitch:
+        - test_kill_switch_disabled_raises_project_file_tool_error
+        - test_kill_switch_disabled_no_fs_read_attempted (patches asyncio.to_thread)
+        - test_kill_switch_enabled_true_allows_reads (happy path regression guard)
+
+  - original_section: "acceptance.yaml test name mismatch"
+    original_description: >
+      acceptance.yaml referenced test_DT_1_1_sandbox_rejects_symlink_escape,
+      test_DT_1_2_denylist_case_insensitive, test_DT_1_3_denylist_ancestor_match,
+      and test_HP_1_4_read_project_file_happy_path, but these exact names did not
+      exist in test_tools.py. The line-of-trust between acceptance criteria and tests
+      was broken.
+    resolution: >
+      Renamed primary (canonical) test methods in each class to match the acceptance.yaml
+      references exactly:
+        - test_symlink_outside_project_raises → test_DT_1_1_sandbox_rejects_symlink_escape
+        - test_uppercase_env_file_blocked → test_DT_1_2_denylist_case_insensitive
+        - test_ssh_id_rsa_blocked_by_ancestor_pattern → test_DT_1_3_denylist_ancestor_match
+        - test_reads_valid_in_project_file → test_HP_1_4_read_project_file_happy_path
+      Acceptance.yaml treated as authoritative.
+
+  - original_section: "read_traces naming / methods"
+    original_description: >
+      "Traces" implies distributed-systems span/trace semantics (OpenTelemetry).
+      The data is Event objects from EventsRepository.get_session_events.
+      Scope-misleading name could cause integration confusion.
+    resolution: >
+      Added clarifying note to read_traces docstring: "Note: returns Event objects,
+      not OpenTelemetry traces. The name reflects SD §5.4 vocabulary; data shape is
+      Event[EventType]." Renaming deferred — would propagate to SD §5.4 + task-4.
+
+narrative: >
+  This task ships the security-critical read_project_file tool with DC-1 (symlink
+  sandbox bypass) and DC-2 (denylist case bypass + ancestor directory matching)
+  fully closed. Both death cases were verified by failing death tests before
+  implementation.
+
+  The binary file detection gap (null bytes decode as valid UTF-8) was discovered
+  by death test DT-1.5 which failed on the first implementation run. This is
+  exactly the kind of gap that death-first testing surfaces — the "obvious"
+  UnicodeDecodeError path works for most binary files but silently lets
+  null-padded files through as text.
+
+  Fix-loop (GUR-103 yin code-review): 5 issues resolved.
+  1. Dead .ssh/* and .aws/* patterns removed; module docstring and test docstrings
+     updated to honestly describe the component-level matching mechanism.
+  2. Binary detection reordered: full-file check before size-cap truncation.
+     DT-1.5b added to cover the truncated-slice blind spot.
+  3. D8 kill switch implemented: AnalysisTools now accepts read_project_file_enabled
+     parameter; tests verify immediate raise with no FS access.
+  4. Acceptance.yaml test name mismatches fixed: canonical test methods renamed.
+  5. read_traces naming ambiguity documented via docstring clarification.
+
+  Post-fix test count: 47 (tools + config). Full suite: 730 passing, 1 pre-existing
+  failure in test_router.py (unrelated to task-1), 1 pre-existing import error in
+  test_model_selection.py (unrelated to task-1).
+
+  Remaining concerns:
+  1. Latin-1/valid-UTF-8 edge case in binary detection — genuinely rare, deferred
+  2. IsADirectoryError surfaces as confusing error message — fixable but low impact
+  3. read_historical_flags Python-level limit — accepted for v1
+  4. AnalysisConfig integration by task-4 — out of task scope by definition

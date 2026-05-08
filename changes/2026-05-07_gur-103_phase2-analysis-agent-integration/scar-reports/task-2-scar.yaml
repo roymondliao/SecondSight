@@ -1,0 +1,262 @@
+task_id: task-2
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      _default_agent_factory constructs Agent with model_id f"{provider}:{name}"
+      for non-openai providers, or just the name for openai. This convention
+      assumes PydanticAI's model string parsing — not verified against all
+      known provider prefixes (google, anthropic, groq, etc.). A provider
+      name mismatch would raise at Agent construction time, not at classification
+      time. The exception would bubble as a RouterTerminalError (unknown_error
+      terminal), which is correct behavior but the error message would be
+      confusing ("Unknown provider: google:gemini-2.0-flash" vs. the actual
+      call failure).
+    deferred_to_feature_iteration: false
+
+  - description: >
+      asyncio.wait_for timeout enforcement assumes Agent.run() is async-cooperative
+      (does not block the event loop with sync I/O). If a provider's HTTP client
+      uses blocking calls internally, the per_call_timeout_s will not fire.
+      Verified: PydanticAI uses httpx which is async-native, but litellm's
+      escape-hatch path may use sync OpenAI client depending on configuration.
+      This is a runtime assumption, not testable at unit level without real providers.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      DT-2.4 test relies on asyncio.wait_for timing (0.5s budget with 0.6s sleep).
+      On a heavily loaded CI machine, the 0.5s asyncio.wait_for may not fire
+      before the check elapses — timing-sensitive test. If CI is slow, this test
+      could flake. Mitigation: budget is 0.5s and sleep is 0.6s (20% margin);
+      acceptable for unit test purposes but worth monitoring in CI.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      _find_validation_error() walks exception chains via BFS. If a provider
+      library constructs a circular exception chain (A.__cause__ = B,
+      B.__context__ = A), the _MAX_CHAIN_DEPTH=20 guard prevents infinite loop
+      but silently truncates the walk. A ValidationError hidden at true graph
+      depth > 20 would not be detected, causing fallback to fire for a
+      validation failure. In practice, provider exception chains are 1-3 deep;
+      depth 20 is generous. BFS now tracks true level depth (not node-visit
+      count) per fix in this loop.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The chain_total_timeout post-attempt check uses >= comparison with floating
+      point arithmetic. On some platforms, elapsed time may differ by nanoseconds
+      from the exact budget. This could cause the check to miss by one epsilon
+      and allow one more fallback to be attempted. Mitigation: the pre-attempt
+      check (remaining_budget <= 0 at attempt_idx > 0) provides a second gate.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      tokens_in / tokens_out extraction uses best-effort getattr on RunResult.
+      If PydanticAI changes the usage API (e.g., renames .request_tokens to
+      .input_tokens), the fields will silently emit None on every success call.
+      No test currently verifies that tokens_in/tokens_out are non-None on
+      success (only that the keys are present). The aggregator would silently
+      receive None values instead of integer counts.
+    deferred_to_feature_iteration: true
+
+assumptions_made:
+  - assumption: >
+      pydantic-ai is already in pyproject.toml (>=1.87.0) — confirmed by reading
+      the file. No pyproject.toml change needed.
+    verified: true
+    note: "Checked pyproject.toml line 18: pydantic-ai>=1.87.0 already present."
+
+  - assumption: >
+      litellm.AuthenticationError is the only auth error type in scope (from
+      litellm's hierarchy). openai.AuthenticationError is a parent but litellm
+      overrides it. The _is_auth_error() check uses isinstance(exc, litellm.AuthenticationError)
+      which covers both litellm and openai auth errors via inheritance.
+    verified: true
+    note: "Checked: litellm.AuthenticationError inherits from openai.AuthenticationError."
+
+  - assumption: >
+      _seen_auth_errors is reset per call() invocation (not per-router-instance).
+      This prevents leakage across separate router.call() invocations. Implemented
+      by declaring the set inside the call() method body, not in __init__.
+    verified: true
+    note: "Code review: _seen_auth_errors: set[tuple[str, str]] = set() is inside call()."
+
+  - assumption: >
+      pydantic_ai.exceptions.ModelHTTPError.status_code attribute exists and
+      contains the HTTP status code. Used for 5xx detection in _is_transport_error().
+    verified: true
+    note: "Inspected ModelHTTPError source: status_code is set in __init__, always present."
+
+  - assumption: >
+      The agent_factory injectable receives a ModelSpec and returns an object
+      with an async .run(user_prompt, output_type=...) method. In production,
+      this is pydantic_ai.Agent. The router does not type-check the factory's
+      return value — it just calls .run(). Mismatched factories fail at call time.
+    verified: false
+    note: "No Protocol defined for the agent interface. Duck-typed. A wrong factory
+           type fails at runtime with AttributeError on .run, not at construction time."
+
+  - assumption: >
+      asyncio.wait_for() cancels the coroutine correctly and raises asyncio.TimeoutError
+      in Python 3.14. In Python 3.11+, asyncio.TimeoutError is an alias for
+      TimeoutError (the builtin). The catch clause uses asyncio.TimeoutError which
+      covers both.
+    verified: true
+    note: "Python 3.14 confirms asyncio.TimeoutError = TimeoutError. Tested via DT-2.4."
+
+  - assumption: >
+      Auth error dedup semantics: (provider, exception_class) tuple tracking means
+      each provider gets one auth-error fallback chance. The docstring's phrasing
+      "same or different provider" was inaccurate — with tuple-based dedup, two
+      different providers each get one chance. The docstring has been updated to
+      match the implementation.
+    verified: true
+    note: "Test test_HP_provider_auth_error_fallback_once_per_chain updated to verify
+           per-provider semantics: openai gets one, google gets one, second google terminates."
+
+  - assumption: >
+      ModelSpec is now imported from secondsight.sdk._specs (single source of truth).
+      The api_key_env field was added to _specs.ModelSpec as str | None = None.
+      router.py no longer defines its own ModelSpec — removed in this fix loop.
+    verified: true
+    note: "Confirmed: _specs.py updated, router.py imports ModelSpec from _specs.
+           All 13 router tests pass. isinstance() checks across task boundaries work."
+
+debt_registered: true
+debt_location: "src/secondsight/sdk/router.py:_default_agent_factory (provider prefix convention unverified)"
+
+resolved_items:
+  - original_section: "silent_failure_conditions"
+    original_description: >
+      Log message for terminal errors did not include the unwrapped ValidationError
+      details, making DC-3 diagnosis harder. Only the outer exception class was logged.
+    resolution: >
+      Added _find_validation_error() helper that walks the exception chain and returns
+      the first ValidationError instance. On TERMINAL classification, if a ValidationError
+      is found in the chain, the log message explicitly includes "reason=ValidationError_in_chain"
+      and the validation_error content. Caught during DT-2.1 failure analysis.
+
+  - original_section: "known_shortcuts"
+    original_description: >
+      DT-2.3 test used "model_name" in attempt (Python 'in' operator on dataclass)
+      which raised TypeError. AttemptRecord is a dataclass, not a dict.
+    resolution: >
+      Updated test assertion to use hasattr() only, with isinstance(dict) fallback
+      to remain compatible if the record type changes.
+
+  - original_section: "silent_failure_conditions"
+    original_description: >
+      DT-2.4 test configured primary to sleep 0.4s with chain_total_timeout_s=0.5s.
+      After primary failed at t=0.4s, elapsed_after=0.4s was NOT >= 0.5s, so the
+      chain timeout check did not fire, allowing the fallback to succeed.
+    resolution: >
+      Changed primary sleep to 0.6s. asyncio.wait_for fires at 0.5s (the chain budget),
+      primary gets asyncio.TimeoutError, elapsed_after ≈ 0.5s >= 0.5s → chain timeout
+      fires before fallback.
+
+  - original_section: "silent_failure_conditions"
+    original_description: >
+      If agent_factory itself raises during construction (e.g., unknown provider name),
+      the exception escaped call() as an unclassified ValueError/AttributeError,
+      not an AnalysisAgentError subclass.
+    resolution: >
+      Added try/except around self._agent_factory(spec) in the call() loop.
+      Factory construction exceptions are caught and re-raised as RouterTerminalError
+      with a clear "configuration error" message. Test HP_agent_factory_raises_terminal_error
+      verifies this path. Stale scar item removed from silent_failure_conditions.
+
+  - original_section: "silent_failure_conditions"
+    original_description: >
+      Logging schema (provider, model, duration_ms, attempt, total_attempts, outcome)
+      documented in module docstring as North Star sub-metric contract, but there
+      was no test verifying all fields were present. tokens_in and tokens_out
+      were entirely absent from all log lines.
+    resolution: >
+      Added tokens_in and tokens_out to ALL _logger.info() call sites. On success
+      paths, best-effort extraction from RunResult.usage(). On exception paths
+      (no RunResult), explicit None passed. Module docstring updated to include
+      tokens_in/tokens_out in the schema declaration. Added DT-2.5 and DT-2.5b
+      death tests that assert the fields are present in log lines.
+
+  - original_section: "silent_failure_conditions (new: docstring lie)"
+    original_description: >
+      Docstring said _seen_auth_errors tracks (provider, exception_class) tuples,
+      but implementation stored bare type(exc).__name__ strings. Contract mismatch.
+    resolution: >
+      Changed implementation to store (spec.provider, type(exc).__name__) tuples.
+      Type hint updated from set[str] to set[tuple[str, str]]. _classify() signature
+      updated. Docstring updated to clarify per-provider dedup semantics. Test updated
+      to reflect actual behavior (each provider gets one auth-error fallback).
+
+  - original_section: "silent_failure_conditions (new: duplicate BFS walker)"
+    original_description: >
+      _has_validation_error_in_chain and _find_validation_error were byte-for-byte
+      identical BFS walkers with only return type differing. Split-lie risk if
+      walk logic diverged in future maintenance.
+    resolution: >
+      Deleted _has_validation_error_in_chain entirely. Replaced its single call
+      site in _classify() with _find_validation_error(exc) is not None. Single
+      implementation, no duplication.
+
+  - original_section: "silent_failure_conditions (new: BFS depth counter)"
+    original_description: >
+      depth counter in BFS walker incremented per node visited, not per graph level.
+      Comment said "maximum depth _MAX_CHAIN_DEPTH" but actually meant max node visits.
+    resolution: >
+      Implemented true level-based BFS: queue holds (node, level) tuples. level
+      only increments when following __cause__/__context__ edges (child depth =
+      parent depth + 1). Walk stops at level >= _MAX_CHAIN_DEPTH, which now
+      accurately matches the documented intent.
+
+  - original_section: "silent_failure_conditions (new: deferred import)"
+    original_description: >
+      import litellm inside _is_transport_error() and _is_auth_error() hid the
+      dependency at module load. A missing litellm would surface as RouterTerminalError
+      from inside exception handling, not as startup ImportError.
+    resolution: >
+      Moved import litellm to module-level imports. Module docstring assertion
+      "litellm exception isinstance() checks will fail at import time" is now accurate.
+
+  - original_section: "silent_failure_conditions (new: dead loop body)"
+    original_description: >
+      test_DT_2_4 had dead loop body: for spec_name in call_log[1:]: pass.
+      Loop did nothing; comment described intent the body never executed.
+    resolution: >
+      Deleted the dead loop entirely. The subsequent assertion (assert call_log[0])
+      and the existing fallback-not-called assertions are sufficient.
+
+  - original_section: "silent_failure_conditions (new: weak assertion)"
+    original_description: >
+      test_HP_provider_auth_error_fallback_once_per_chain used <= 2 assertion,
+      allowing 0, 1, or 2 models tried. A bug making first auth error terminal
+      (0 fallbacks) would still pass.
+    resolution: >
+      Updated test to use exact-count assertion matching the per-provider dedup
+      semantics. The test now asserts call_log == exactly the expected 3-model list
+      with known providers, verifying the dedup logic precisely.
+
+  - original_section: "silent_failure_conditions (new: cross-task ModelSpec split)"
+    original_description: >
+      Task-3 created _specs.py with ModelSpec(name, provider). Task-2 defined its
+      own ModelSpec in router.py with (name, provider, api_key_env). isinstance()
+      checks across the boundary would silently fail.
+    resolution: >
+      Added api_key_env: str | None = None to _specs.py ModelSpec. router.py now
+      imports ModelSpec from secondsight.sdk._specs and removes its local definition.
+      __all__ in router.py retains "ModelSpec" so existing import paths work.
+      All 13 router tests pass; full suite 755 passed.
+
+  - original_section: "task-4-fix-loop coordination (additive public API)"
+    original_description: >
+      task-4 accessed router._primary, router._fallbacks, router._per_call_timeout_s,
+      router._chain_total_timeout_s, router._agent_factory as private attributes.
+      This was a documented shortcut in task-4's original scar report.
+    resolution: >
+      Added RouterConfig frozen dataclass to router.py (after AttemptRecord).
+      Added LLMRouter.config property returning RouterConfig(primary, fallbacks,
+      per_call_timeout_s, chain_total_timeout_s). RouterConfig added to __all__.
+      agent_factory intentionally excluded from RouterConfig (consumers build their
+      own scoped factories). Verified by test_HP_router_config_public_api_returns_constructor_values
+      (new test in test_router.py). No existing tests broken; router test count went
+      from 13 to 14 tests. Full suite: 800 passed (was 795 pre-fix).

@@ -1,0 +1,342 @@
+task_id: task-5
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      _ServerSweepCoordinator in server.py identifies stale sessions and logs
+      WARNING-level messages but does NOT dispatch analysis (no Orchestrator built).
+      Full dispatch requires building LLMRouter + PydanticAIAnalysisAgent per project,
+      which requires LLM credentials and model selection config not available at
+      server startup without a config-loading path that doesn't yet exist for the
+      server context. The "silent placeholder" gap (app.state._sweeper = None) is
+      closed: the coordinator IS started in lifespan. The dispatch gap is documented.
+      Verified by test_dt_fl_3_sweeper_task_started_in_lifespan.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      POST /api/analyze endpoint is not implemented (v1 gap per task spec).
+      The CLI's server-mode path now correctly distinguishes ConnectError (server down,
+      fallback OK) from HTTPStatusError (server up but broken, exit 1 no fallback).
+      Endpoint implementation is deferred to a follow-up.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      _run_in_process_dispatch() in cli/analyze.py calls asyncio.run() inside a
+      synchronous Typer command callback. asyncio.run() creates a new event loop.
+      If Typer is ever called from within an existing event loop, asyncio.run() raises.
+      This is acceptable for a CLI command (always called from a non-async context)
+      and the assumption is now explicitly documented in the code comment.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      cli/analyze.py's _build_orchestrator() constructs all repositories and the
+      full LLMRouter/PydanticAIAnalysisAgent stack even when dispatch() will
+      immediately return dispatched=False (e.g., already-analyzed). This wastes
+      DB connections and model initialization for the no-op case. Fix: check
+      analysis_runs before constructing the heavy dependencies.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      GlobalAnalysisConfig.load(path) is not yet implemented. _build_orchestrator()
+      previously computed global_config_path but never used it (dead variable).
+      The dead variable has been removed (fix #5). GlobalAnalysisConfig and
+      ProjectAnalysisConfig use built-in defaults. If the operator has set a
+      non-default model in global config.toml, the CLI ignores it in v1.
+      Full TOML-backed GlobalAnalysisConfig.load() is deferred to feature iteration.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      trigger.py file still houses LockRegistry, DispatchResult, Trigger, and
+      Sweeper (4 classes). Reviewer item #8 recommended splitting Sweeper into
+      sdk/sweeper.py. Split deferred: would require updating all imports in CLI,
+      server.py, and test files — the churn exceeds the value for a fix-loop iteration.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      Shared test factory functions (_make_event, _seed_terminal_run) were duplicated
+      in tests/sdk/test_trigger.py and tests/cli/test_analyze.py. A shared
+      tests/_factories.py module has been created with canonical implementations.
+      The original duplicates remain in place (they reference module-level constants
+      with different values per file). Migrating existing call sites is deferred.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      _ServerSweepCoordinator.materialized_project_ids() accesses the registry's
+      _cache._values dict via a new public method ProjectRegistry.materialized_project_ids().
+      The method returns a snapshot so callers can iterate safely. The underlying
+      _cache is a private implementation detail but exposing project_ids via a
+      public method is clean and avoids reaching into private state at the caller.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      asyncio.create_task() failure inside Trigger.dispatch(): if the event loop
+      is shutting down when dispatch() is called, create_task() raises RuntimeError.
+      This is caught; the in-memory dispatch entry is cleaned up before returning
+      DispatchResult(dispatched=False, reason="create-task-error"). The pipeline
+      callback path (SESSION_END event in ObservationPipeline) would log this at
+      ERROR level via the dispatch result.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      _ServerSweepCoordinator only scans projects that have been materialized by
+      the registry (i.e., have received at least one event since server startup).
+      A project that has been inactive since the previous server restart is not
+      scanned. This is a v1 acceptable limitation: the operator can restart the
+      server to re-materialize projects, or use `secondsight analyze --session`.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      Sweeper.sweep_stale_sessions() catches all per-session exceptions and logs
+      them. If the logger itself fails (extremely rare), the exception propagates
+      up and stops the sweep for the remaining sessions in that tick. This is
+      guarded by the outer try/except in run(), which catches non-CancelledError
+      exceptions. Verified by test_sweeper_per_session_exception_does_not_stop_loop.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      _in_memory_dispatched dict in Trigger is pruned at the start of each
+      dispatch() call (O(n) where n = concurrent active sessions). Entries older
+      than trigger_lock_seconds are removed. The in-memory record is now set
+      BEFORE create_task and cleaned up if create_task fails. Verified by
+      test_dt_fl_6_in_memory_record_before_create_task_failure.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Trigger._pipeline_callback is an instance method registered as a callback
+      on the pipeline. If the pipeline outlives the Trigger, the callback holds
+      a strong reference to self, preventing GC. This is not a concern in v1
+      (both have the same server lifetime).
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      asyncio is single-threaded (cooperative scheduling). The _in_memory_dispatched
+      dict and _active_sessions set are accessed without locks because no other OS
+      thread can interrupt between the membership check and the write.
+    verified: true
+    note: >
+      Python's asyncio is confirmed single-threaded cooperative scheduling.
+      The check-and-set pattern in LockRegistry.acquire() and the
+      _in_memory_dispatched guard in Trigger.dispatch() are safe because there
+      is no await between the check and the mutation.
+
+  - assumption: >
+      asyncio.get_running_loop().time() returns a monotonic clock consistent
+      within a single asyncio event loop. Used for _in_memory_dispatched timestamps.
+    verified: true
+    note: >
+      asyncio.get_running_loop().time() uses asyncio's internal monotonic clock.
+      Consistent within a process. Safe because dispatch() is always called from
+      async context.
+
+  - assumption: >
+      ObservationPipeline.add_post_ingest_callback() accepts any async callable.
+    verified: true
+    note: >
+      Verified: add_post_ingest_callback() appends to a list with no type checking.
+
+  - assumption: >
+      The analysis_runs table uses UTC-naive datetimes. _ensure_utc() (now inlined
+      in trigger.py, no longer imported from orchestrator._ensure_utc) normalizes
+      them before comparison. If SQLite returns UTC-aware datetimes in a future
+      migration, _ensure_utc becomes a no-op.
+    verified: false
+    note: >
+      Behavior verified in tests (test_in_flight_run_blocks_dispatch). The specific
+      UTC-aware vs naive handling is not separately tested at trigger level.
+
+  - assumption: >
+      GlobalAnalysisConfig and ProjectAnalysisConfig use built-in defaults in
+      _build_orchestrator(). If the operator has configured a custom model via
+      global config.toml, the CLI ignores it in v1. Documented in code comments.
+    verified: false
+    note: >
+      The dead global_config_path variable has been removed (fix #5). The
+      limitation is now explicitly documented in the code comment at the call site.
+    deferred_to_feature_iteration: true
+
+  - assumption: >
+      ProjectRegistry.materialized_project_ids() is safe to call from the
+      _ServerSweepCoordinator during a sweep. The underlying _cache._values
+      dict is a Python dict; reading its keys is safe under asyncio's single-
+      threaded cooperative model.
+    verified: true
+    note: >
+      Added as a public method on ProjectRegistry that returns a snapshot list.
+      The snapshot isolates the caller from concurrent modifications.
+
+debt_registered: true
+debt_location: >
+  src/secondsight/api/server.py:_ServerSweepCoordinator — dispatch wiring deferred.
+  src/secondsight/cli/analyze.py:_build_orchestrator — GlobalAnalysisConfig.load() deferred.
+
+narrative: >
+  Fix loop for Task-5 (P2-15) addressing 5 Critical + 8 Important reviewer issues.
+
+  Critical fixes:
+
+  #1 (Private API): Added EventsRepository.find_stale_session_candidates() as a
+  public method. Sweeper._find_stale_sessions() now uses this instead of accessing
+  events_repo._db.engine directly. The implementation uses SQLAlchemy Core (not
+  raw SQL). Verified by test_dt_fl_1_find_stale_session_candidates_public_api.
+
+  #2 (Dead _locks field): Removed self._locks (WeakValueDictionary) from
+  LockRegistry.__init__. Updated docstring to honestly describe the actual
+  mechanism: _active_sessions set + _in_memory_dispatched on Trigger. The name
+  "LockRegistry" is retained for backward compatibility; the docstring now
+  explains the actual exclusion mechanism. Verified by
+  test_dt_fl_2_lock_registry_no_dead_locks_field.
+
+  #3 (Sweeper not wired): Replaced app.state._sweeper = None placeholder with a
+  real _ServerSweepCoordinator started as asyncio.Task in lifespan. The coordinator
+  iterates materialized projects, finds stale sessions, and logs WARNING-level
+  messages. Full dispatch (orchestrator) wiring is deferred (see known_shortcuts).
+  The Sweeper task is cancelled on shutdown with 5s timeout. Added sweeper_task
+  field to AppState (typed). Verified by test_dt_fl_3_sweeper_task_started_in_lifespan
+  and test_dt_fl_3_sweeper_task_cancelled_on_shutdown.
+
+  #4 (Hardcoded non_terminal_stages): Added module-level NON_TERMINAL_STAGES derived
+  from AnalysisRunStage - TERMINAL_STAGES. Added _BLOCK_REDISPATCH_STAGES = TERMINAL_STAGES
+  - {"failed"} with an explicit comment explaining why "failed" is excluded.
+  Both are now module-level frozenset constants replacing the local set literals
+  inside dispatch(). Verified by test_dt_fl_4_non_terminal_stages_derived_from_terminal
+  and test_dt_fl_4_block_redispatch_stages_excludes_failed.
+
+  #5 (Dead global_config_path): Removed the dead variable. Added explicit code comment
+  documenting that GlobalAnalysisConfig uses defaults and full TOML loading is deferred.
+  The comment names the impact: CLI ignores operator-configured model in global config.toml.
+
+  Important fixes applied:
+
+  #6 (_in_memory_dispatched before create_task): Moved the in-memory record to
+  BEFORE create_task. On RuntimeError from create_task, the entry is cleaned up
+  via dict.pop() so the next dispatch is not blocked by a ghost entry.
+  Verified by test_dt_fl_6_in_memory_record_before_create_task_failure.
+
+  #7 (Private _ensure_utc import): Inlined _ensure_utc in trigger.py (identical
+  implementation). Removed the deferred `from secondsight.analysis.orchestrator import _ensure_utc`
+  private import. Both copies are documented as needing co-modification if logic changes.
+
+  #9 (Sweeper.set_task() ghost): Removed set_task() method. run() self-registers
+  via asyncio.current_task() which is sufficient. Verified by
+  test_dt_fl_9_sweeper_no_set_task_method.
+
+  #11 (HTTPStatusError fallback): Distinguished ConnectError (server not running,
+  fallback OK) from HTTPStatusError (server up but broken, exit 1 no fallback).
+  HTTPStatusError now logs at ERROR and exits 1 without in-process fallback.
+  Verified by test_dt_fl_11_http_status_error_exits_1_no_fallback and
+  test_dt_fl_11_connect_error_still_falls_back.
+
+  #12 (timeout reports honestly): _run_in_process_dispatch() now returns
+  DispatchResult(dispatched=True, reason="timed-out") on 300s timeout.
+  _handle_dispatch_result() treats reason="timed-out" as exit 1 with explicit
+  timeout message (not "Analysis complete"). Verified by test_dt_fl_12_timeout_exits_1_not_0.
+
+  #13 (duplicated factories): Created tests/_factories.py with canonical make_event()
+  and seed_terminal_run() functions. Original duplicates remain in place (they use
+  module-local constants); migrating call sites is deferred.
+
+  #8 (file split) and #10 (covered by #4) deferred per rationale in known_shortcuts.
+
+resolved_items:
+  - original_section: known_shortcuts
+    original_description: >
+      Sweeper._find_stale_sessions() accesses self._events_repo._db.engine directly.
+    resolution: >
+      Added EventsRepository.find_stale_session_candidates() public method using
+      SQLAlchemy Core. Sweeper now calls this method. The private attribute
+      _db.engine is no longer accessed from outside EventsRepository. Verified
+      by test_dt_fl_1_find_stale_session_candidates_public_api.
+
+  - original_section: known_shortcuts
+    original_description: >
+      LockRegistry._locks (WeakValueDictionary) was kept for backward compatibility
+      but was never used for exclusion. Name lied about the mechanism.
+    resolution: >
+      Removed self._locks entirely. Rewrote LockRegistry docstring to describe the
+      actual exclusion mechanism (_active_sessions set). Verified by
+      test_dt_fl_2_lock_registry_no_dead_locks_field.
+
+  - original_section: known_shortcuts
+    original_description: >
+      API server lifespan stores None placeholder for Sweeper. D10 not satisfied.
+    resolution: >
+      Replaced placeholder with _ServerSweepCoordinator started as asyncio.Task.
+      Added sweeper_task field to AppState. Lifespan cancels task on shutdown.
+      Coordinator logs WARNING for stale sessions; full dispatch deferred (see
+      known_shortcuts). Verified by test_dt_fl_3_sweeper_task_started_in_lifespan.
+
+  - original_section: known_shortcuts
+    original_description: >
+      non_terminal_stages hardcoded set inside dispatch() could drift on new stages.
+    resolution: >
+      Added module-level NON_TERMINAL_STAGES = frozenset(AnalysisRunStage values) - TERMINAL_STAGES.
+      Added _BLOCK_REDISPATCH_STAGES = TERMINAL_STAGES - {"failed"} with comment.
+      Dispatch now uses these constants, not local set literals.
+      Verified by test_dt_fl_4_non_terminal_stages_derived_from_terminal.
+
+  - original_section: known_shortcuts
+    original_description: >
+      _build_orchestrator() computed global_config_path but never used it (dead variable).
+    resolution: >
+      Removed the dead variable. Added code comment documenting the limitation and
+      its impact. No functional change to model selection behavior.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      _in_memory_dispatched recorded AFTER create_task — if create_task fails, no
+      cleanup needed. If order reversed (record first), need cleanup on failure.
+    resolution: >
+      Moved in-memory record to BEFORE create_task. On RuntimeError from create_task,
+      the entry is removed via dict.pop(). Verified by test_dt_fl_6_in_memory_record_before_create_task_failure.
+
+  - original_section: assumptions_made
+    original_description: >
+      Trigger imports _ensure_utc from orchestrator._ensure_utc (private symbol).
+    resolution: >
+      Inlined _ensure_utc in trigger.py. Private import removed. Both copies
+      are identical and documented as needing co-modification.
+
+  - original_section: known_shortcuts
+    original_description: >
+      set_task() on Sweeper was a ghost method (unused caller).
+    resolution: >
+      Deleted set_task(). run() self-registers via asyncio.current_task().
+      Verified by test_dt_fl_9_sweeper_no_set_task_method.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      HTTPStatusError from server silently triggered in-process fallback (operator
+      could not distinguish broken endpoint from missing server).
+    resolution: >
+      HTTPStatusError now logs at ERROR and exits 1. Only ConnectError triggers
+      in-process fallback. Verified by test_dt_fl_11_http_status_error_exits_1_no_fallback.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      300s timeout in _run_in_process_dispatch cancelled tasks but reported
+      "Analysis complete" via dispatched=True → exit 0.
+    resolution: >
+      Timeout now returns DispatchResult(reason="timed-out"). _handle_dispatch_result
+      treats this as exit 1 with explicit message. Verified by
+      test_dt_fl_12_timeout_exits_1_not_0.
+
+deferred_to_feature_iteration_items:
+  - item: "#8 — trigger.py file split (4 classes → trigger.py + sweeper.py)"
+    rationale: >
+      Churn exceeds value for fix-loop scope: all imports in CLI, server.py, and
+      tests would require updating. Document in scar for next feature iteration.
+
+  - item: "#13 — migrate existing _make_event/_seed_terminal_run call sites to tests/_factories.py"
+    rationale: >
+      The shared module exists but call sites in test_trigger.py and test_analyze.py
+      still use module-local versions (different default constants). Migrating all
+      call sites is deferred; the shared module is available for new tests.
+
+  - item: "Full Sweeper dispatch wiring (Orchestrator per project in server context)"
+    rationale: >
+      Building LLMRouter + PydanticAIAnalysisAgent per project requires model
+      selection config and LLM credentials not available at server startup without
+      a config-loading path that doesn't exist in the server context yet. Deferred
+      to v2 feature iteration where server gets a config-loading phase at startup.

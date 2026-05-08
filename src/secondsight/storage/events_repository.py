@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 
 import sqlalchemy as sa
@@ -98,6 +99,84 @@ class EventsRepository:
         stmt = sa.select(events.c.id).where(events.c.id == event_id).limit(1)
         with self._db.engine.connect() as conn:
             return conn.execute(stmt).first() is not None
+
+    def find_stale_session_candidates(
+        self,
+        *,
+        project_id: str | None,
+        last_event_before: datetime,
+    ) -> list[tuple[str, str, datetime]]:
+        """Return (project_id, session_id, last_event_ts) for sessions whose
+        most recent event is older than ``last_event_before``. Optional project filter.
+
+        Used by Sweeper to find timeout-fallback candidates. Caller filters
+        by analysis_runs stage separately (orchestration concern).
+
+        This is a public method so Sweeper does not need to reach into the
+        private ``_db.engine`` attribute (avoids private-API coupling that
+        would break silently if EventsRepository changes its internal structure).
+
+        Args:
+            project_id: If provided, only return sessions for this project.
+                If None, return sessions across ALL projects.
+            last_event_before: Only sessions whose max(timestamp) < this value
+                are returned. Must be timezone-aware UTC or timezone-naive
+                (SQLite stores naive datetimes; naive comparison is correct).
+
+        Returns:
+            List of (project_id, session_id, last_event_ts) tuples.
+            last_event_ts is the max(timestamp) value for that session.
+            Empty list if no sessions qualify.
+        """
+        stmt = (
+            sa.select(
+                events.c.project_id,
+                events.c.session_id,
+                sa.func.max(events.c.timestamp).label("last_event_ts"),
+            )
+            .group_by(events.c.project_id, events.c.session_id)
+            .having(sa.func.max(events.c.timestamp) < last_event_before)
+        )
+        if project_id is not None:
+            stmt = stmt.where(events.c.project_id == project_id)
+
+        with self._db.engine.connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+
+        return [
+            (row["project_id"], row["session_id"], row["last_event_ts"])
+            for row in rows
+        ]
+
+    def get_latest_session_agent_type(self, project_id: str) -> str | None:
+        """Return the agent_type for the most-recent session for this project.
+
+        SCHEMA NOTE: The current `events` table (Phase 1) does not have an
+        `agent_type` column (see events_table.py). This method always returns
+        None until the schema is extended in a future migration.
+
+        When it returns None, select_model()'s 'auto' mode raises
+        ModelSelectionError with a `suggested_config` TOML snippet that points
+        the operator to set an explicit `default_agent`. It does NOT silently
+        fall back to "claude_code" — auto-mode is a two-condition feature
+        (user opt-in AND events present); without either, failure is loud
+        rather than a silent provider swap.
+
+        Future implementation (when agent_type column is added):
+            stmt = (
+                sa.select(events.c.agent_type)
+                .where(events.c.project_id == project_id)
+                .order_by(events.c.timestamp.desc())
+                .limit(1)
+            )
+            with self._db.engine.connect() as conn:
+                row = conn.execute(stmt).first()
+            return row[0] if row else None
+
+        Returns:
+            None (always, until schema migration adds agent_type column).
+        """
+        return None
 
     @staticmethod
     def _event_to_row(event: Event) -> dict[str, Any]:

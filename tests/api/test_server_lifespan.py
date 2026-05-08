@@ -141,3 +141,59 @@ def test_health_uptime_increases(tmp_secondsight_home: Path) -> None:
         time.sleep(0.05)
         r2 = client.get("/health")
         assert r2.json()["uptime_s"] >= r1.json()["uptime_s"]
+
+
+# ---------------------------------------------------------------------------
+# DT-FL-3: Sweeper task is started during lifespan and cancelled on shutdown
+# ---------------------------------------------------------------------------
+
+
+def test_dt_fl_3_sweeper_task_started_in_lifespan(tmp_secondsight_home: Path) -> None:
+    """DT-FL-3: sweeper_task must be set (not None) after lifespan startup.
+
+    Silent failure this closes: app.state._sweeper = None was a placeholder
+    that never started the Sweeper. Sessions whose agent crashed before
+    SESSION_END accumulated silently with no analysis. This test verifies
+    the Sweeper task is actually started (not a silent placeholder).
+    """
+    from secondsight.api.server import create_app
+
+    app = create_app(secondsight_home=tmp_secondsight_home)
+    with TestClient(app) as client:
+        # Access the server_state (set during lifespan)
+        server_state = app.state.server_state
+        assert server_state.sweeper_task is not None, (
+            "sweeper_task must not be None after lifespan startup. "
+            "D10 requires the Sweeper to run in the server lifespan."
+        )
+        # The task should be running (not done/cancelled yet)
+        assert not server_state.sweeper_task.done(), (
+            "sweeper_task must be running during lifespan, not completed."
+        )
+
+
+def test_dt_fl_3_sweeper_task_cancelled_on_shutdown(tmp_secondsight_home: Path) -> None:
+    """DT-FL-3: sweeper_task must be cancelled/done after lifespan shutdown.
+
+    Verifies that the lifespan shutdown properly cancels the Sweeper task
+    so background tasks don't leak after the server stops.
+    """
+    import asyncio
+    from secondsight.api.server import create_app
+
+    app = create_app(secondsight_home=tmp_secondsight_home)
+
+    sweeper_task_ref: list = []
+    with TestClient(app) as client:
+        server_state = app.state.server_state
+        sweeper_task_ref.append(server_state.sweeper_task)
+        # Verify it's running inside the context
+        assert not sweeper_task_ref[0].done()
+
+    # After TestClient exits, the lifespan shutdown has run.
+    # The Sweeper task should be cancelled/done.
+    task = sweeper_task_ref[0]
+    assert task.done(), (
+        "sweeper_task must be done after lifespan shutdown. "
+        "Background tasks must not leak after server stops."
+    )

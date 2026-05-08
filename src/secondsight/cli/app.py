@@ -24,6 +24,7 @@ from importlib.metadata import PackageNotFoundError, version
 import click
 import typer
 
+from secondsight.cli import analyze as analyze_cmd
 from secondsight.cli import cleanup as cleanup_cmd
 from secondsight.cli import init as init_cmd
 from secondsight.cli import serve as serve_cmd
@@ -42,6 +43,7 @@ app = typer.Typer(
 
 # Each subcommand module exposes its own Typer app. We mount them as named
 # subcommands so the help tree mirrors the SD §9.2 layout.
+app.add_typer(analyze_cmd.app, name="analyze")
 app.add_typer(cleanup_cmd.app, name="cleanup")
 app.add_typer(init_cmd.app, name="init")
 app.add_typer(serve_cmd.app, name="serve")

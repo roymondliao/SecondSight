@@ -160,6 +160,20 @@ class ProjectRegistry:
                 err=exc,
             )
 
+    def materialized_project_ids(self) -> list[str]:
+        """Return a snapshot of project_ids that have been materialized so far.
+
+        Projects are materialized lazily on first ingest. At startup, this
+        list is empty. It grows as the server receives events for new projects.
+
+        Used by the server's Sweeper coordinator to iterate known projects
+        without requiring a separate project-discovery scan.
+
+        Returns a snapshot (list), not a live view, so the caller can iterate
+        safely even if new projects are materialized concurrently.
+        """
+        return list(self._cache._values.keys())
+
     async def aclose(self) -> None:
         """Close all materialized engines.  Idempotent.
 

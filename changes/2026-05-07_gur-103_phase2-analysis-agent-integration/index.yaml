@@ -1,0 +1,194 @@
+feature: gur-103-phase2-analysis-agent-integration
+status: planning_complete  # tasks ready for implementation pending board confirmation
+parent_issue: GUR-103
+plan_ref_doc: changes/2026-05-07_gur-103_phase2-analysis-agent-integration/2-plan.md
+acceptance_ref_doc: changes/2026-05-07_gur-103_phase2-analysis-agent-integration/acceptance.yaml
+overview_ref_doc: changes/2026-05-07_gur-103_phase2-analysis-agent-integration/overview.md
+design_ref_doc: docs/system_design.md  # §5.2, §5.4, §5.6, §5.7.1, §5.7.3, §5.7.4
+research_refs:
+  kickoff: changes/2026-05-07_gur-103_phase2-analysis-agent-integration/1-kickoff.md
+  problem_autopsy: changes/2026-05-07_gur-103_phase2-analysis-agent-integration/problem-autopsy.md
+  pre_thinking: changes/2026-05-07_gur-103_phase2-analysis-agent-integration/2-pre-thinking.md
+
+# Step 0 commitments (samsara — recorded for audit):
+#   1. Most-wanted shortcut REJECTED:
+#        "Use LiteLLM as the router and trust its built-in fallback."
+#      because LiteLLM's default fallback fires on validation errors;
+#      that would multiply spend by N on every malformed prompt.
+#      Owning the failure-mode allowlist is the cost-leak control (D5).
+#   2. This implementation MUST NOT ship when:
+#        - read_project_file lacks Path.resolve(strict=True) + is_relative_to re-check (DC-1)
+#        - Denylist match is not case-insensitive on filename component (DC-2)
+#        - Router does not unwrap __cause__ chain before classifying fallback eligibility (DC-3)
+#        - Trigger layer creates analysis_runs rows itself instead of delegating to orchestrator's start_run (D14)
+#        - Hook handler in api/hooks.py is modified (D3)
+#        - Sweeper uses "no session_end event" as a primary filter instead of last_event_ts (DC-6)
+#        - Manual CLI exit-code-2 message for already-analyzed sessions is missing (DC-7)
+#   3. Silent failure surface this PR closes:
+#        - Sandbox bypass via symlink (DC-1)
+#        - Denylist bypass via case (DC-2)
+#        - ValidationError masquerading as transport error (DC-3)
+#        - Trigger race produces duplicate dispatches (DC-4)
+#        - Hook handler latency leak via blocking I/O in tool (DC-5)
+#        - Sweeper triggers on backfill-pending session (DC-6)
+#        - Manual CLI silent success on completed session (DC-7)
+#        - Empty-fallback config raises with confusing error (DC-8)
+#   4. What lives one year from now:
+#        - AnalysisTools surface (B1–B4) — every future analysis agent uses these
+#        - LLMRouter failure-mode allowlist policy (D5) — the cost contract
+#        - select_model resolution order (E1–E3) — the model-selection contract
+#        The PydanticAI Agent class itself is most replaceable (framework dep);
+#        Trigger is the next-most replaceable (path/timing/process model may change).
+
+tasks:
+  - id: task-1
+    title: "analysis/tools.py — AnalysisTools (P2-11) with sandbox + denylist + size-cap"
+    plan_ref: "MH-1 (D1, D8, D12)"
+    sd_ref: ["5.4"]
+    death_tests:
+      - "DT-1.1 sandbox rejects symlink escape (DC-1)"
+      - "DT-1.2 denylist case-insensitive (DC-2)"
+      - "DT-1.3 denylist match on ancestor directory (DC-2)"
+      - "DT-1.4 size cap truncates with marker"
+      - "DT-1.5 binary file returns placeholder, not raw bytes"
+      - "DT-1.5b binary check on full bytes BEFORE truncation (DC closure, fix-loop)"
+      - "DT-1.6 query_structured_store rejects unknown kind"
+      - "HP-1.4 read_project_file happy path with valid in-project path"
+      - "DT-1.D8 read_project_file_enabled kill switch (fix-loop)"
+    expected_scar_items:
+      - "Path.resolve(strict=True) raises FileNotFoundError on non-existent paths — wrapped to ProjectFileToolError"
+      - "Denylist matched against every ancestor component (not just basename) — closes DC-2 ancestor variant"
+      - "256 KiB size cap configurable via project_config.read_project_file.size_cap_kb (D8)"
+      - "query_structured_store v1 vocabulary intentionally narrow (D12)"
+    status: done
+    scar_count: 11  # initial 6 + fix-loop 5
+    resolved_count: 11  # all 5 critical/important from re-review closed
+    unresolved_assumptions: 1  # task-4 must call AnalysisConfig.load() to wire enabled/extra_denylist/size_cap (boundary doc)
+    review_status: "PASS — yin re-review PASS, quality re-review PASS_WITH_CONCERNS (1 important deferred: config.py cohesion split shared with task-3; 3 suggestions)"
+    test_count_delta: "+47 tests (test_tools.py: 29; test_config.py: 14; +DT-1.5b + 3×D8 in fix-loop)"
+    depends_on: []
+
+  - id: task-2
+    title: "sdk/router.py — LLMRouter (P2-13) with transport-error-only fallback allowlist"
+    plan_ref: "MH-2 (D5, D6, D11, D13)"
+    sd_ref: ["5.7.4"]
+    death_tests:
+      - "DT-2.1 ValidationError in __cause__ chain → no fallback (DC-3)"
+      - "DT-2.2 empty chain construction logs WARN; chain-exhaustion error includes chain config (DC-8)"
+      - "DT-2.3 chain exhaustion raises AnalysisAgentError with chain trace"
+      - "DT-2.4 chain_total_timeout enforcement"
+      - "DG-1.1 fallback fires on RateLimitError; logs degradation"
+      - "HP-2.6 single primary success: zero fallback events"
+    expected_scar_items:
+      - "Failure classifier walks .__cause__ AND .__context__ chains (Python's two exception-chain mechanisms); both must be checked"
+      - "ProviderAuthError is fallback-eligible exactly once per chain (different fallback model may have valid creds)"
+      - "Per-call timeout (60s default) and chain_total_timeout (90s default) are independent budgets — both must be enforced"
+      - "Logging schema is machine-parseable: provider, model, tokens_in, tokens_out, duration_ms, attempt, total_attempts, outcome — North Star sub-metric depends on this"
+    status: done
+    scar_count: 14  # initial 7 + fix-loop 7 (incl. cross-task ModelSpec)
+    resolved_count: 14  # all 9 critical/important from re-review closed
+    unresolved_assumptions: 2  # PydanticAI usage API stability (deferred); BFS depth-20 ceiling (accepted)
+    review_status: "PASS — yin re-review PASS (all 9 prior findings PASS), quality re-review PASS_WITH_CONCERNS (3 important: call() multi-duty + classification cluster cohesion + token-extraction invisible coupling — all deferred to feature iteration; 3 suggestions)"
+    test_count_delta: "+13 tests (test_router.py: 11 + DT-2.5/2.5b for logging schema)"
+    depends_on: []
+
+  - id: task-3
+    title: "sdk/model_selection.py — pure select_model() (P2-14) with claude_code-default opt-in"
+    plan_ref: "MH-3 (D7)"
+    sd_ref: ["5.7.1", "5.7.2", "5.7.3"]
+    death_tests:
+      - "DT-3.1 missing config raises ModelSelectionError with config-diff suggestion"
+      - "DT-3.2 'auto' with no events → falls back to claude_code"
+      - "DT-3.3 project override beats global"
+      - "HP-1.3 project override returns expected ModelSpec"
+      - "HP-3.4 'auto' + recent claude_code session → claude-haiku-4-5"
+    expected_scar_items:
+      - "Pure function: no side effects, no logging — caller logs after invocation if it wants"
+      - "Adapter-default table mirrors SD §5.7.1 — keep in sync if SD §5.7.1 evolves; co-located with `_ADAPTER_DEFAULTS` constant"
+      - "ModelSelectionError messages include suggested config diff (the 'how to fix' principle from D7 mitigation)"
+    status: done
+    scar_count: 11  # initial 5 + fix-loop 6
+    resolved_count: 10  # 6 critical/important from re-review + 4 prior addressed; 1 docstring-rot (events_repository.py) + 1 test DRY (raise_only_adapters) cleaned by orchestrator inline
+    unresolved_assumptions: 2  # provider inference for exotic models (deferred); GlobalConfig TOML loader pending (task-5 scope)
+    review_status: "PASS_WITH_CONCERNS — yin re-review PASS (all 7 prior findings PASS, 1 stale-docstring rot fixed inline by orchestrator), quality re-review PASS_WITH_CONCERNS (1 important: config.py cohesion split — shared with task-1 — deferred; 1 important: test DRY — fixed inline by orchestrator; 1 suggestion: deferred-import rationale comment)"
+    test_count_delta: "+24 tests (test_model_selection.py: 16 + 8 fix-loop including TestRegistryConsistency + real-repo migration marker)"
+    depends_on: []
+
+  - id: task-4
+    title: "sdk/agent.py — PydanticAIAnalysisAgent (P2-12) with per-method tool scoping"
+    plan_ref: "MH-4 (D4)"
+    sd_ref: ["5.2"]
+    death_tests:
+      - "DT-4.1 aggregate_flag_type cannot reach read_project_file (ToolNotAvailableError or PydanticAI-equivalent)"
+      - "DT-4.2 analyze_segments partial-batch failure raises with prompt index"
+      - "HP-1.2 analyze_segments batch contract (len(out) == len(in))"
+      - "HP-4.3 single-segment golden path with FakeRouter"
+    expected_scar_items:
+      - "Per-method tool scoping is enforced at PydanticAI Agent construction — three separate Agents (one per Protocol method) so the tool list per Agent is the SOURCE of truth for what the LLM can call"
+      - "Sequential per-prompt loop in analyze_segments is the v1 default; concurrent batching is GUR-103 nice-to-have, NOT a Protocol-shape concern"
+      - "Output type binding to PydanticAI Agent.output_type means structured-output validation is enforced by the framework — do not add a redundant Pydantic .model_validate call after"
+      - "LiteLLM provider integration is OPTIONAL escape-hatch path; default uses PydanticAI's native OpenAI-compatible providers (D6)"
+    status: done
+    scar_count: 18  # initial 7 + fix-loop 9 critical/important + 2 deferred
+    resolved_count: 18  # all 4 critical + 5 important + scar-overstatement orchestrator-corrected
+    unresolved_assumptions: 2  # AnalysisTools TYPE_CHECKING in agent.py (works by accident); _scoped_tools dict-key string-literal coupling — both deferred to feature iteration
+    review_status: "PASS_WITH_CONCERNS — fix-loop closed all 4 Critical (private-attr coupling, __init__ multi-duty, is-identity check, debug log internals access). Re-yin PASS_WITH_CONCERNS (scar overstatement on __cause__ assertion — corrected inline by orchestrator). Re-quality PASS_WITH_CONCERNS (1 important: AnalysisTools TYPE_CHECKING residual; 2 suggestions). All deferred items are documentation/structural-suggestion severity, not blocking."
+    test_count_delta: "+28 tests in test_agent.py (fix-loop reduced from 14 to ~28 by adding __cause__ assertion; rewrite -105 LOC net in agent.py; collateral fix to tools.py TYPE_CHECKING also unblocked 5 task-5 CLI tests)"
+    depends_on: [task-1, task-2, task-3]
+
+  - id: task-5
+    title: "sdk/trigger.py + cli/analyze.py + pipeline subscription (P2-15)"
+    plan_ref: "MH-5 (D2, D3, D9, D10, D14)"
+    sd_ref: ["5.6"]
+    death_tests:
+      - "DT-5.1 concurrent dispatch: only one analyze_and_aggregate task scheduled (DC-4)"
+      - "DT-5.2 blocking I/O wrapped in to_thread (DC-5)"
+      - "DT-5.3 sweeper uses last_event_ts not session_end presence (DC-6)"
+      - "DT-5.4 already-analyzed CLI exits code 2 with message (DC-7)"
+      - "DG-1.2 in-process fallback when API server is down"
+      - "HP-1.1 event-driven full evidence chain"
+      - "HP-5.5 happy-path event-driven dispatch"
+      - "HP-5.6 sweeper happy-path on stale session"
+    expected_scar_items:
+      - "LockRegistry uses weakref.WeakValueDictionary so completed-session locks GC; if a session_id never sees dispatch again the lock object is freed"
+      - "Sweeper task started in API server lifespan; on shutdown the task is cancelled and awaited with timeout — partial sweep state is acceptable, missed sweep cycles are not"
+      - "CLI talks to server via httpx; the server side is a new POST /api/analyze endpoint OR the CLI invokes the orchestrator in-process. Default: in-process (D9), avoiding a new API surface"
+      - "Trigger layer NEVER inserts analysis_runs rows; only the orchestrator's start_run does (D14, preserves DC-1 audit contract)"
+      - "Pipeline subscription is a single callback registration in observation/pipeline.py — the smallest possible footprint; if the subscription mechanism doesn't exist yet, that's a 5-line addition not a refactor"
+    status: done
+    scar_count: 21  # initial 8 + fix-loop 10 critical/important resolved + 3 deferred
+    resolved_count: 18  # 5 Critical fully resolved + 5 Important resolved + 8 prior items closed
+    unresolved_assumptions: 4  # _ensure_utc duplication risk; full Sweeper dispatch (v2); GlobalAnalysisConfig TOML loader; four-class file split — all deferred to feature iteration with honest scar
+    review_status: "PASS_WITH_CONCERNS — fix-loop closed all 5 Critical (private-attr coupling on EventsRepository, dead _locks field, Sweeper-not-wired silent placeholder converted to observable WARNING coordinator, NON_TERMINAL_STAGES derived from canonical TERMINAL_STAGES, dead global_config_path variable). Re-yin PASS_WITH_CONCERNS (one open Important on _ensure_utc duplication; partial Sweeper dispatch acceptable under death-test logic — rot is observable not silent). Re-quality PASS_WITH_CONCERNS (2 new Important from fix-loop: _ServerSweepCoordinator placement in server.py, ProjectRegistry._cache._values private access; 3 suggestions). All deferred items carry explicit scar rationale."
+    test_count_delta: "+89 tests across test_trigger.py (16 new), test_analyze.py (5 new), test_server_lifespan.py (3 new sweeper-lifespan), tests/_factories.py (shared module). Full suite: 816 passing, no regressions."
+    depends_on: [task-1, task-2, task-3, task-4]
+
+exit_criteria:
+  ref: changes/2026-05-07_gur-103_phase2-analysis-agent-integration/acceptance.yaml#exit_criteria
+
+# Carried gaps (G1–G6 from pre-thinking) — re-confirmation needed at planning gate
+carried_gaps_for_reconfirmation:
+  - id: G1
+    summary: "Fallback chain default ['gpt-4o-mini', 'gemini-2.0-flash']"
+    default_pinned: "Adopt SD §5.7.2 list"
+    reconfirm: yes
+  - id: G2
+    summary: "default_agent = 'claude_code' as the default; 'auto' is opt-in"
+    default_pinned: "claude_code default; auto opt-in"
+    reconfirm: yes
+  - id: G3
+    summary: "read_project_file ships with sandbox + denylist; optional per-project enabled=false"
+    default_pinned: "Tool available with controls; per-project disable supported"
+    reconfirm: yes
+  - id: G4
+    summary: "query_structured_store v1 supports exactly behavior_flag_summary + directive_active"
+    default_pinned: "Two shapes; expand by intentional PR"
+    reconfirm: no  # implementation detail; changeable mid-flight
+  - id: G5
+    summary: "No per-project fallback override in v1"
+    default_pinned: "Global chain only; users set fallbacks=[] for strict mode"
+    reconfirm: no
+  - id: G6
+    summary: "Sweeper lives in API server lifespan; no separate process"
+    default_pinned: "Lifespan task; documented as 'requires secondsight serve'"
+    reconfirm: yes
