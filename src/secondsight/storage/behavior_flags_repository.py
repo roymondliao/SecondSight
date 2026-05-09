@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import sqlalchemy as sa
@@ -26,6 +28,19 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from secondsight.analysis.schemas import VALID_CONFIDENCE, BehaviorFlag, BehaviorFlagType
 from secondsight.storage.behavior_flags_table import behavior_flags, metadata
 from secondsight.storage.db_engine import DBEngine
+from secondsight.storage.session_reports_table import session_reports
+
+
+@dataclass(frozen=True)
+class SessionFlagBreakdown:
+    """Per-session flag-type breakdown returned by
+    count_per_session_for_project. Frozen so callers cannot mutate the
+    rolled-up counts after the repository hands them out.
+    """
+
+    session_id: str
+    analyzed_at: datetime
+    counts_by_type: dict[BehaviorFlagType, int]
 
 _logger = logging.getLogger(__name__)
 
@@ -136,6 +151,128 @@ class BehaviorFlagsRepository:
                         project_id,
                     )
             return counts
+
+    def count_per_session_for_project(
+        self,
+        project_id: str,
+        *,
+        limit: int = 50,
+    ) -> list[SessionFlagBreakdown]:
+        """Per-session flag-type counts for the most-recently analyzed
+        sessions in the project. Backs `GET /api/analysis/trends`
+        (per-session) and the cross-session piece of
+        `GET /api/analysis/aggregation`.
+
+        DC-7 defense: the LIMIT is applied to the SESSION SET (a
+        SUBQUERY against ``session_reports``) BEFORE the LEFT JOIN to
+        ``behavior_flags``. A naive ``JOIN ... LIMIT N`` would return
+        N flag rows, not N sessions, silently corrupting the trends
+        chart with off-by-window pagination. The CTE-style structure
+        below makes the right thing the only thing.
+
+        LEFT JOIN preserves zero-flag sessions: a session whose
+        ``session_reports`` row exists but has zero behavior_flags
+        appears in the result with an empty ``counts_by_type`` dict.
+        Switching to INNER JOIN would silently drop those sessions
+        from trends — the dashboard would render a chart that pretends
+        the session never existed.
+
+        Order: ``session_reports.created_at DESC`` matches
+        ``SessionReportsRepository.list_for_project`` so the trends
+        endpoint's session set is consistent with the
+        ``/api/analysis/sessions`` list.
+
+        Corrupt enum rows: if a behavior_flags row's ``flag_type`` is
+        outside ``BehaviorFlagType`` (only possible if a manual SQL
+        edit corrupted the table), it is logged and skipped — never
+        silently folded into a sibling enum value. Mirrors
+        ``count_by_type``'s precedent.
+
+        Returns:
+            list[SessionFlagBreakdown] — at most `limit` entries,
+            ordered by analyzed_at DESC. Empty list if no analyzed
+            sessions in the project.
+        """
+        # Subquery: most-recent <limit> analyzed sessions for this project.
+        # The LIMIT lives ON THIS subquery — closing DC-7.
+        recent = (
+            sa.select(
+                session_reports.c.session_id,
+                session_reports.c.created_at.label("analyzed_at"),
+            )
+            .where(session_reports.c.project_id == project_id)
+            .order_by(
+                session_reports.c.created_at.desc(),
+                session_reports.c.session_id.asc(),
+            )
+            .limit(limit)
+            .subquery()
+        )
+
+        # LEFT JOIN flags by (session_id, project_id). The project_id
+        # equality on both sides defends against cross-project leak even
+        # if a downstream caller bypasses the api-layer DC-1 check.
+        stmt = (
+            sa.select(
+                recent.c.session_id,
+                recent.c.analyzed_at,
+                behavior_flags.c.flag_type,
+                sa.func.count(behavior_flags.c.id).label("cnt"),
+            )
+            .select_from(
+                recent.outerjoin(
+                    behavior_flags,
+                    sa.and_(
+                        behavior_flags.c.session_id == recent.c.session_id,
+                        behavior_flags.c.project_id == project_id,
+                    ),
+                )
+            )
+            .group_by(
+                recent.c.session_id,
+                recent.c.analyzed_at,
+                behavior_flags.c.flag_type,
+            )
+            .order_by(
+                recent.c.analyzed_at.desc(),
+                recent.c.session_id.asc(),
+            )
+        )
+
+        # Build per-session dicts in Python. The session set is bounded
+        # by `limit`, and each session has at most |BehaviorFlagType|
+        # rows in the result, so memory is bounded too.
+        per_session: dict[str, SessionFlagBreakdown] = {}
+        order: list[str] = []
+        with self._db.engine.connect() as conn:
+            for row in conn.execute(stmt):
+                session_id, analyzed_at, flag_type_raw, cnt = row
+                if session_id not in per_session:
+                    per_session[session_id] = SessionFlagBreakdown(
+                        session_id=session_id,
+                        analyzed_at=analyzed_at,
+                        counts_by_type={},
+                    )
+                    order.append(session_id)
+                if flag_type_raw is None:
+                    # Zero-flag session — LEFT JOIN produced a single row
+                    # with NULL flag_type and cnt=0 (in SQLite, COUNT(NULL)=0).
+                    continue
+                try:
+                    ft = BehaviorFlagType(flag_type_raw)
+                except ValueError:
+                    _logger.warning(
+                        "behavior_flags.flag_type=%r outside enum; "
+                        "skipping in count_per_session_for_project for "
+                        "project_id=%r session_id=%r",
+                        flag_type_raw,
+                        project_id,
+                        session_id,
+                    )
+                    continue
+                per_session[session_id].counts_by_type[ft] = int(cnt)
+
+        return [per_session[sid] for sid in order]
 
     @staticmethod
     def _guard(flag: BehaviorFlag) -> None:

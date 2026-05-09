@@ -1,0 +1,170 @@
+feature: gur-104-phase2-analysis-cli-api
+status: in_progress
+parent_issue: GUR-104
+
+# Mode-C deviation note: per samsara:implement skill, code reviewers
+# (samsara:code-reviewer + samsara:code-quality-reviewer) should fire
+# in parallel after each task. In mode-C inline (single-actor), the
+# implementer and main agent share context, so per-task reviewer
+# dispatch creates 10 round-trips that exhaust heartbeat context with
+# limited propagation-risk benefit. Reviewers are batched into a
+# single parallel dispatch after task-5 completes; tasks meanwhile
+# carry status `completion_unverified` until that review passes.
+plan_ref_doc: changes/2026-05-08_gur-104_phase2-analysis-cli-api/2-plan.md
+acceptance_ref_doc: changes/2026-05-08_gur-104_phase2-analysis-cli-api/acceptance.yaml
+overview_ref_doc: changes/2026-05-08_gur-104_phase2-analysis-cli-api/overview.md
+design_ref_doc: docs/system_design.md  # §9.2, §9.3, §10.4
+research_refs:
+  kickoff: changes/2026-05-08_gur-104_phase2-analysis-cli-api/1-kickoff.md
+  problem_autopsy: changes/2026-05-08_gur-104_phase2-analysis-cli-api/problem-autopsy.md
+  pre_thinking: changes/2026-05-08_gur-104_phase2-analysis-cli-api/2-pre-thinking.md
+
+# Step 0 commitments (samsara — recorded for audit):
+#   1. Most-wanted shortcut REJECTED:
+#        "CLI builds its own JSON via dict construction; API has separate Pydantic shapes."
+#      because schema drift is a North Star sub-metric corruption signature.
+#      Schema-as-contract: CLI imports the API's Pydantic models. Drift becomes
+#      structurally impossible (D1).
+#   2. This implementation MUST NOT ship when:
+#        - Any endpoint returns rows for (project_id=A, x) where x.project_id=B (DC-1)
+#        - PATCH no-op advances updated_at (DC-2)
+#        - ETag returns 304 after data changed (DC-3)
+#        - CLI --no-server JSON differs from API JSON for the same row (DC-4)
+#        - GET /api/directives default scope returns disabled directives (DC-5)
+#        - GET /api/analysis/sessions/{id} returns 200+empty for missing report (DC-6)
+#        - GET /api/analysis/trends LIMIT applied to flags rows not session set (DC-7)
+#        - cli/analyze.py is touched in a way that regresses GUR-103 trigger semantics
+#   3. Silent failure surface this PR closes:
+#        - Cross-project data leak (DC-1)
+#        - PATCH no-op false-positive (DC-2)
+#        - Stale ETag (DC-3)
+#        - CLI/API schema drift (DC-4)
+#        - Active filter dropped in refactor (DC-5)
+#        - "Empty success" instead of 404 (DC-6)
+#        - Pagination-then-aggregation off-by-window (DC-7)
+#        - Re-enable loses disabled_reason history (DC-8 — soft, documented)
+#   4. What lives one year from now:
+#        - api/analysis.py + api/directives.py Pydantic shapes — every dashboard
+#          and agent self-query path reads them.
+#        - BehaviorFlagsRepository.count_per_session_for_project — the SQL
+#          surface for any per-session aggregation Phase 3+.
+#        Most replaceable: cli/directive.py (UX layer over the API).
+
+tasks:
+  - id: task-1
+    title: "behavior_flags_repository.py — count_per_session_for_project + repo death tests"
+    plan_ref: "Tech Spec §Interfaces/count_per_session_for_project, DC-7"
+    sd_ref: ["10.4"]
+    death_tests:
+      - "DT-1.1 limit applied to session set, NOT joined flags table (DC-7)"
+      - "DT-1.2 sessions ordered by analyzed_at DESC"
+      - "DT-1.3 zero-flag sessions still appear in result (degenerate but valid)"
+      - "DT-1.4 cross-project isolation: project A query returns no project B rows"
+      - "HP-1.1 happy path: 5 sessions × known flag distribution"
+    expected_scar_items:
+      - "SQL plan must SELECT session set first via SUBQUERY, LIMIT, then JOIN behavior_flags"
+      - "session ordering source: session_reports.created_at vs events MAX(timestamp) — choose session_reports for consistency with /api/analysis/sessions"
+      - "GROUP BY (session_id, flag_type) — make sure NULL session_id (shouldn't exist) doesn't crash"
+    status: completion_unverified  # impl + 5 tests pass; awaiting batch reviewer dispatch
+    scar_count: 4  # 0 known_shortcuts (1 self-iter resolved) + 2 silent_failure_conditions + 4 assumptions
+    resolved_count: 1
+    test_count_delta: "+5 tests (test_behavior_flags_repository_count_per_session.py)"
+    depends_on: []
+
+  - id: task-2
+    title: "api/directives.py — GET + PATCH endpoints + Pydantic schemas (DirectiveOut, DirectivePatchRequest)"
+    plan_ref: "Tech Spec §Interfaces/GET /api/directives, PATCH /api/directives/{id}, DC-2 DC-5"
+    sd_ref: ["10.4"]
+    death_tests:
+      - "DT-2.1 PATCH no-op does NOT advance updated_at (DC-2)"
+      - "DT-2.2 GET defaults to active=true; disabled directives excluded (DC-5)"
+      - "DT-2.3 PATCH disabled→active clears disabled_at and disabled_reason"
+      - "DT-2.4 PATCH active→disabled with reason='' raises 400/422 (lifecycle contract)"
+      - "DT-2.5 PATCH with status=expired (analyzer-only) raises 400/422 with allowed list"
+      - "DT-2.6 PATCH /api/directives/{id}?project_id=B for directive in project A returns 404 (DC-1)"
+      - "DT-2.7 ETag changes after a PATCH that mutated state"
+      - "DT-2.8 ETag UNCHANGED after a PATCH no-op (consistency with DT-2.1)"
+      - "DG-2.1 OpenAPI description on PATCH includes Phase 3 cache caveat (degradation)"
+      - "HP-2.1 GET round-trip with active=2 disabled=1 returns 2 items"
+      - "HP-2.2 PATCH active→disabled persists disabled_reason"
+    expected_scar_items:
+      - "Read-then-conditionally-update under a single transaction; otherwise concurrent PATCHes can race"
+      - "DirectivePatchRequest validation: status==active rejects reason field; status==disabled requires non-empty reason"
+      - "Schema must include disabled_at and disabled_reason as nullable for active directives (U2 lock)"
+      - "ETag scope: MAX(directives.updated_at) WHERE project_id; on no-op the MAX doesn't change so 304 is correct"
+      - "Scope extension: added DirectivesRepository.list_for_project (cleaner than private _row_to_directive access from API layer)"
+      - "Scope extension: registered directives_router in server.py at task-2 time instead of task-5 (so death tests can hit the routes)"
+    status: completion_unverified  # impl + 11 tests pass; awaiting batch reviewer dispatch
+    scar_count: 7  # 2 known_shortcuts + 3 silent_failures + 6 assumptions; 0 self-iter resolved
+    resolved_count: 0
+    test_count_delta: "+11 tests (test_directives.py)"
+    depends_on: []
+
+  - id: task-3
+    title: "api/analysis.py — 6 GET endpoints + Pydantic schemas + ETag plumbing"
+    plan_ref: "Tech Spec §Interfaces/GET /api/analysis/{summary,sessions,sessions/{id},sessions/{id}/flags,trends,aggregation}, DC-1 DC-3 DC-6 DC-7"
+    sd_ref: ["10.3", "10.4"]
+    death_tests:
+      - "DT-3.1 cross-project session leak: project_id=A, session in project B returns 404 (DC-1)"
+      - "DT-3.2 missing session_reports row returns 404 (NOT 200+empty) (DC-6)"
+      - "DT-3.3 trends LIMIT applied to session set, not flags rows (DC-7)"
+      - "DT-3.4 summary ETag changes after a behavior_flag insert (DC-3)"
+      - "DT-3.5 summary ETag unchanged when nothing in scope changed (DC-3 negative)"
+      - "DT-3.6 GET /api/analysis/sessions pagination next_offset null when last page"
+      - "DT-3.7 confidence field present in BehaviorFlagOut (memory contract)"
+      - "DT-3.8 trends includes zero-flag sessions (zero is a valid bucket)"
+      - "HP-3.1 summary returns correct counts for known fixture"
+      - "HP-3.2 sessions/{id} joins reports + flags correctly"
+      - "HP-3.3 aggregation returns flag_counts_by_type matching count_by_type"
+      - "HP-3.4 ETag round-trip 304 on If-None-Match match"
+    expected_scar_items:
+      - "depends_on task-1 for count_per_session_for_project; task-2 for ETag pattern"
+      - "summary endpoint touches 4 tables; ETag computation must MAX across all 4 — easy to miss a table and silently lag"
+      - "BehaviorFlagOut fields must match BehaviorFlag schema in analysis/schemas.py exactly (frozen contract)"
+      - "Empty-list responses are success, not 404 — only by-id endpoints 404 on missing"
+    status: completion_unverified  # impl + 18 tests pass (8 DT + 4 HP + 6 DC-4); awaiting batch reviewer dispatch. analysis_router pre-registered in server.py from prior failed run — task-5 will idempotently re-verify.
+    scar_count: 6  # 2 known_shortcuts + 2 silent_failure_conditions + 5 assumptions(verified)
+    resolved_count: 1  # as_of tz: investigated, deferred with rationale
+    test_count_delta: "+18 tests (test_analysis.py)"
+    depends_on: [task-1, task-2]
+
+  - id: task-4
+    title: "cli/directive.py — Typer subcommand reusing api/directives.py models (schema-as-contract)"
+    plan_ref: "Tech Spec §Interfaces/secondsight directive, DC-4"
+    sd_ref: ["9.2", "9.3"]
+    death_tests:
+      - "DT-4.1 --no-server JSON byte-identical to server-mode JSON for same DB row (DC-4)"
+      - "DT-4.2 ConnectError falls back to in-process (precedent: cli/analyze.py:135-144)"
+      - "DT-4.3 HTTPStatusError does NOT silent-fallback (precedent: cli/analyze.py:146-165)"
+      - "DT-4.4 --disable without --reason raises typer.BadParameter"
+      - "DT-4.5 --enable on already-active directive returns 0 with 'no change' message (mirrors PATCH no-op)"
+      - "HP-4.1 --active --format json emits valid JSON parseable as list[DirectiveOut]"
+      - "HP-4.2 --active default format = Rich table"
+    expected_scar_items:
+      - "Both code paths (server / no-server) MUST go through the same model_dump_json() call — no path-specific encoding"
+      - "Project resolution: reuse cli/analyze.py:_resolve_project_id pattern"
+      - "Default server URL via SECONDSIGHT_SERVER_URL env var, like cli/analyze.py:104-108"
+    status: completion_unverified  # impl + 9 tests pass (5 DT + 4 HP); subagent dispatched cli/app.py registration too — task-5 idempotently re-verifies
+    scar_count: 5  # 1 known_shortcut + 3 silent_failure_conditions + 4 assumptions(verified) - 1 self-iter resolved
+    resolved_count: 1  # unknown --format silent fallback fixed in self-iter
+    test_count_delta: "+9 tests (test_directive.py)"
+    depends_on: [task-2]
+
+  - id: task-5
+    title: "Wire-up: server.py include routers + cli/app.py add_typer(directive) + integration smoke test"
+    plan_ref: "Tech Spec §File map (server.py + cli/app.py modifications)"
+    sd_ref: ["10.4"]
+    death_tests:
+      - "DT-5.1 GET /api/analysis/summary route registered (404 if missing — registration test)"
+      - "DT-5.2 GET /api/directives route registered"
+      - "DT-5.3 PATCH /api/directives/{id} route registered with the right method"
+      - "DT-5.4 secondsight directive --help lists all 3 modes (--active, --disable, --enable)"
+      - "DT-5.5 secondsight analyze --help still works (regression: GUR-103's existing CLI not broken)"
+      - "HP-5.1 server-mode end-to-end: insert flag, GET summary, see new count"
+      - "HP-5.2 PATCH directive then GET, see new state"
+    expected_scar_items:
+      - "Don't introduce circular imports between cli/directive.py and api/directives.py — schemas may need to live in api/directives_schemas.py if so"
+      - "Don't break GUR-147's observation_schemas.py untracked file — leave it alone"
+      - "Pytest TestClient lifespan: must reuse api/server.py:create_app() factory, not patch routers in"
+    status: pending
+    depends_on: [task-3, task-4]

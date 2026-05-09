@@ -1,0 +1,153 @@
+task_id: task-5
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      All three wiring points (analysis_router, directives_router, directive_cmd)
+      were pre-registered by prior task subagents (task-2 at lines 439/441, task-4
+      at line 49). Task-5's Step 3 and Step 4 were purely verification, not
+      actual modifications. This means the router registration order (hooks →
+      observation → directives → analysis) was fixed at task-2/task-3 time and
+      not in task-5 as planned. The order is correct and code-reviewable; the
+      deviation from planned task ownership is documented in task-2 and task-3
+      scar reports.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      HP-5.1 uses three separate ProjectRegistry open/close cycles (one each
+      for: session_report seed, flag-1 seed, flag-2 seed). This is the
+      established test pattern from test_analysis.py but is slightly expensive.
+      A single-registry helper that seeds all three objects in one open/close
+      cycle would be marginally faster. Not worth refactoring: test isolation
+      via separate cycles is safer.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      DT-5.1, DT-5.2, DT-5.3: these tests assert "not 404" and "not 405"
+      respectively. If a future refactor accidentally double-registers a router
+      (registering the same prefix twice), the tests would still pass because
+      the first registration wins in FastAPI. Double-registration would cause
+      ambiguous routing that could silently return the wrong handler. The tests
+      as written do NOT catch double registration. Mitigation: a separate test
+      that counts registered routes would catch this, but is deferred — the
+      startup log warning from FastAPI on duplicate routes is a sufficient
+      operator signal for now.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      DT-5.5 invokes `secondsight analyze --help` via CliRunner. This tests
+      that `cli/app.py` imports without error at invocation time. However, if
+      a top-level import error is raised only during first command dispatch
+      (not import time — e.g., a lazy import inside the analyze callback),
+      DT-5.5 would not catch it. The analyze tests in tests/cli/test_analyze.py
+      (HP-1.1 and DG-1.2) provide the deeper coverage; DT-5.5 is a fast
+      first-line regression gate only.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      HP-5.1 and HP-5.2 use a `_make_client(home)` factory that calls
+      `create_app(secondsight_home=home)` each time. If the test fixture home
+      directory is removed or truncated between seed helpers and client
+      construction (e.g., by a parallel test run with a shared tmp_path), the
+      test would fail with FileNotFoundError rather than a meaningful assertion
+      error. This is a pytest fixture isolation assumption: `tmp_path` is
+      per-test in pytest's default scope. No action needed.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      api/__init__.py does NOT import from cli/ — circular import between
+      api/ and cli/ would cause ImportError at server startup because
+      cli/directive.py imports from api/directives.py.
+    verified: true
+    note: >
+      Verified by reading src/secondsight/api/__init__.py (single line:
+      '"""SecondSight API server package."""'). No imports at all. No circular
+      import risk from this direction. cli/directive.py → api/directives.py
+      is a one-way dependency that cannot cycle.
+
+  - assumption: >
+      The pre-existing router registrations at lines 293-294 and 439-441 of
+      server.py are the ONLY registrations of analysis_router and
+      directives_router. No second include_router call exists elsewhere in
+      server.py or in any conftest.
+    verified: true
+    note: >
+      Verified by grep: 'analysis_router' appears 2 times in server.py (import
+      + include_router); 'directives_router' appears 2 times (import +
+      include_router). No other registrations found.
+
+  - assumption: >
+      TestClient used with `with` context manager fires FastAPI lifespan,
+      ensuring ProjectRegistry is initialized before HP-5.1 and HP-5.2
+      make HTTP requests. Without lifespan, registry reads would fail.
+    verified: true
+    note: >
+      Verified by HP-5.1 and HP-5.2 passing: both make real DB inserts before
+      TestClient construction and successfully read back via the API. If lifespan
+      were not firing, the server_state attribute would be missing and routes
+      would 500. Tests pass → lifespan fires.
+
+  - assumption: >
+      The pre-existing test_dt2_parallel_writes_no_truncation failure in
+      tests/scripts/test_hook_fallback.py is pre-existing (not introduced by
+      task-5). git stash confirmed the failure exists on the base tree without
+      the task-5 integration test file.
+    verified: true
+    note: >
+      Confirmed by running the single failing test on the stashed tree (without
+      test_gur104_e2e.py). Same JSONDecodeError failure. Task-5 does not touch
+      any file in the fallback hook code path.
+
+debt_registered: false
+debt_location: "n/a"
+
+narrative: |
+  Task-5's primary deliverable is the 7-test integration suite in
+  tests/integration/test_gur104_e2e.py. The wire-up work (Steps 3 and 4)
+  was purely verification: prior task subagents had already registered all
+  three wiring points before task-5 ran. This is documented in task-2 and
+  task-3 scar reports as an intentional deviation from the planned task
+  ordering.
+
+  The death tests (DT-5.1 through DT-5.5) passed immediately on first run,
+  confirming the pre-existing wiring is complete and correct. DT-5.5 (the
+  GUR-103 regression net) also passed, confirming that tasks 2/3/4's
+  additions to server.py and cli/app.py did not introduce any import-time
+  errors that would break the existing analyze CLI.
+
+  The happy-path E2E tests (HP-5.1 and HP-5.2) exercise the full chain:
+  direct DB inserts → HTTP round-trip via TestClient → response body
+  assertions. HP-5.1 validates the dashboard-facing summary endpoint's
+  count accuracy (the primary exit criterion for "Dashboard can consume
+  analysis API"). HP-5.2 validates the PATCH→GET directive lifecycle
+  round-trip (the primary exit criterion for "directive soft-disable is
+  queryable via API").
+
+  Full suite: 867 passed, 1 pre-existing failure
+  (tests/scripts/test_hook_fallback.py::TestDeathTests::test_dt2_parallel_writes_no_truncation
+  — JSONDecodeError in parallel-write flaky test, confirmed pre-existing via
+  git stash verification).
+
+resolved_items:
+  - original_section: assumptions_made
+    original_description: "api/__init__.py circular import risk"
+    resolution: >
+      Read src/secondsight/api/__init__.py: contains only a docstring, no
+      imports. Circular import is structurally impossible from this direction.
+      Promoted to verified: true.
+
+  - original_section: assumptions_made
+    original_description: "double-registration check for routers"
+    resolution: >
+      Verified by grep: analysis_router and directives_router each appear
+      exactly twice in server.py (import + include_router). No double
+      registration. Promoted to verified: true.
+
+  - original_section: assumptions_made
+    original_description: "pre-existing test failure is pre-existing"
+    resolution: >
+      Confirmed via git stash: test_dt2_parallel_writes_no_truncation fails on
+      the base tree without task-5 changes. Not introduced by task-5.
+      Promoted to verified: true.

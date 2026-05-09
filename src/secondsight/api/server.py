@@ -290,6 +290,8 @@ def create_app(
         A fully configured FastAPI application.  Lifespan is wired; call
         startup before serving requests (TestClient does this automatically).
     """
+    from secondsight.api.analysis import router as analysis_router
+    from secondsight.api.directives import router as directives_router
     from secondsight.api.hooks import router as hooks_router
     from secondsight.api.observation import router as observation_router
 
@@ -433,6 +435,10 @@ def create_app(
     app.include_router(hooks_router)
     # Mount the observation router (GUR-147 task-A5)
     app.include_router(observation_router)
+    # Mount the directives router (GUR-104 task-2)
+    app.include_router(directives_router)
+    # Mount the analysis router (GUR-104 task-3)
+    app.include_router(analysis_router)
 
     # -----------------------------------------------------------------------
     # Routes

@@ -1,0 +1,116 @@
+task_id: task-1
+completion_status: done
+
+known_shortcuts:
+
+  - description: |
+      `behavior_flags` is filtered by project_id INSIDE the LEFT
+      JOIN's ON clause, not by a redundant WHERE on the joined
+      table. This is correct (cross-project rows are excluded by the
+      ON predicate) but a code reviewer might prefer the redundant
+      WHERE for explicitness. Kept the ON-clause form because adding
+      WHERE behavior_flags.c.project_id == project_id would
+      unintentionally turn the LEFT JOIN into an INNER JOIN for
+      sessions with zero flags (NULLs filtered out), reintroducing
+      the bug DT-1.3 catches.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: |
+      A behavior_flags row whose flag_type is outside BehaviorFlagType
+      (only possible via manual SQL edit) is logged at WARNING and
+      skipped. This is consistent with count_by_type's precedent at
+      behavior_flags_repository.py:128-135. The session still appears
+      in the result with its other valid flag types counted, BUT the
+      total flag count for that session reads lower than the row count
+      in the DB — observable only by comparing repo output against
+      raw SELECT COUNT(*). Operator-level corruption signature.
+    deferred_to_feature_iteration: false
+
+  - description: |
+      If session_reports has a row but the corresponding events
+      have been retention-purged, the session appears in the trends
+      result with an empty counts_by_type (because behavior_flags
+      were purged too). Indistinguishable from a session that was
+      analyzed and produced zero flags. Acceptable for v1: the
+      retention layer (GUR-107) is the single source of truth for
+      "analyzed but data-gone" — trends just reflects what's in the
+      DB now. Documenting so future readers know the ambiguity.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: "session_reports.created_at is the canonical 'analyzed at' timestamp, NOT MAX(events.timestamp) over the session's events"
+    verified: true
+    note: |
+      Matches SessionReportsRepository.list_for_project ordering at
+      session_reports_repository.py:81-100. Using events.timestamp
+      MAX would be cheaper to compute but would shift the meaning to
+      'last event seen' which is wrong for trends (a session
+      analyzed at T+10m should be plotted at T+10m, not at the time
+      of its last user prompt). DT-1.2 verifies the ordering.
+
+  - assumption: "LEFT JOIN with NULL flag_type for zero-flag sessions yields a single row (not multiple) per session in SQLite"
+    verified: true
+    note: |
+      Verified by DT-1.3 (zero-flag session test). SQLite's LEFT
+      JOIN with no matching right-side rows produces exactly one row
+      with all right-side columns NULL — not zero rows, not multiple.
+      The `if flag_type_raw is None: continue` branch in the
+      reducer relies on this contract.
+
+  - assumption: "Frozen dataclass with mutable dict field allows post-construction dict mutation"
+    verified: true
+    note: |
+      `@dataclass(frozen=True)` blocks attribute reassignment via
+      __setattr__ but does NOT prevent mutation of mutable contents
+      (e.g., dict.__setitem__). The reducer constructs the dataclass
+      with an empty dict, then mutates entries via
+      counts_by_type[ft] = cnt. Verified by HP-1.1 (5 sessions with
+      multiple flag types each).
+
+  - assumption: "Importing session_reports_table at module top doesn't cause circular import"
+    verified: true
+    note: |
+      session_reports_table imports only `metadata` from
+      events_table. behavior_flags_table also imports `metadata`
+      from events_table. No cycle. Confirmed by the existing test
+      suite passing (154 tests including session_reports_repository
+      and behavior_flags_repository).
+
+debt_registered: true
+debt_location: "src/secondsight/storage/behavior_flags_repository.py:140-237 (count_per_session_for_project)"
+
+resolved_items:
+  - original_section: known_shortcuts
+    original_description: |
+      Tie-break on identical session_reports.created_at was
+      undefined; session order between two same-timestamp sessions
+      could differ across queries.
+    resolution: |
+      Added `session_reports.c.session_id.asc()` as a deterministic
+      secondary ORDER BY in both the recent-sessions subquery and
+      the outer SELECT. Existing 5 tests still pass; secondary sort
+      is a property of the SQL plan, not separately-testable at
+      the timestamps used in fixtures.
+
+narrative: |
+  The death case for this task (DC-7) is unusual in that the
+  *natural* implementation — a single SELECT with JOIN and LIMIT —
+  is the wrong one. The correct shape (subquery for the session
+  set, then JOIN) reads as overengineered if you don't know the
+  trap. The tests exist to make the trap *unmissable*: DT-1.1
+  inserts 50 sessions × 5 flags and asserts len(result) == 10,
+  which would fail with `len == 50` under the naive approach.
+
+  The two SQL invariants that hold this together:
+  1. The LIMIT is on the SUBQUERY (recent), not on the JOINed
+     statement.
+  2. The JOIN is LEFT (preserves zero-flag sessions); the
+     project_id check lives inside the JOIN's ON clause, not in a
+     downstream WHERE (which would silently filter NULL rows).
+
+  Together these mean the row reducer (the Python loop) sees
+  exactly: at most |limit| × |BehaviorFlagType| rows, plus one
+  "all-NULL flag_type" row per zero-flag session. The reducer
+  handles the all-NULL case explicitly (the `if flag_type_raw is
+  None: continue` branch), which is why DT-1.3 passes.

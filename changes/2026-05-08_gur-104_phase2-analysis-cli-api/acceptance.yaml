@@ -1,0 +1,185 @@
+feature: gur-104-phase2-analysis-cli-api
+coverage_type: verified
+
+scenarios:
+  # --- Death paths first ---
+
+  - name: "Silent failure - cross-project session leak via mismatched project_id"
+    type: death_path
+    given: "session_id S exists in project A; session S has a session_reports row"
+    when: "client calls GET /api/analysis/sessions/S?project_id=B"
+    then:
+      - "response status must be exactly 404"
+      - "response body must NOT include any data from session S"
+      - "log must record decision path: project_id_mismatch=true"
+      - "outcome state must be exactly one of: success, not_found, failure"
+      - "the same test runs across all 4 by-id endpoints (sessions/{id}, sessions/{id}/flags, directives/{id} GET-by-id if exists, PATCH directives/{id})"
+
+  - name: "Silent failure - PATCH no-op advances updated_at"
+    type: death_path
+    given: "directive D has status=active and updated_at=T0"
+    when: "client PATCHes /api/directives/D with body {status: active}"
+    then:
+      - "response status must be 200"
+      - "response body must contain the unchanged directive"
+      - "directive's updated_at after the request must equal T0 (NOT advanced)"
+      - "DB row count for UPDATE statements during the request must be 0"
+      - "an audit log entry of type 'patch_noop' must be emitted (not 'patch_status_change')"
+
+  - name: "Silent failure - stale ETag returns 304 after data changed"
+    type: death_path
+    given: "client received ETag E from GET /api/analysis/summary?project_id=A; a new behavior_flag row was inserted for project A"
+    when: "client retries GET /api/analysis/summary?project_id=A with If-None-Match: E"
+    then:
+      - "response status must be 200, NOT 304"
+      - "response ETag must differ from E"
+      - "response body must reflect the new flag count"
+      - "ETag computation must include MAX(updated_at) over the cross-table scope"
+
+  - name: "Silent failure - CLI --no-server JSON drifts from API JSON for same row"
+    type: death_path
+    given: "directive D exists in project P; both server-mode and no-server CLI paths read the same DB"
+    when: "operator runs `secondsight directive --active --format json --no-server` and `--format json` (server mode)"
+    then:
+      - "the two stdout payloads must be byte-identical for the same DB state"
+      - "both paths must use the same Pydantic model_dump_json() implementation"
+      - "test must compare hashes, not field-by-field — drift in a new field must fail the test even if dashboard doesn't read it yet"
+
+  - name: "Silent failure - active filter dropped from GET /api/directives"
+    type: death_path
+    given: "project P has 3 directives: 2 active, 1 disabled"
+    when: "client calls GET /api/directives?project_id=P (default active=true)"
+    then:
+      - "response items count must be exactly 2"
+      - "no item in response must have status=disabled"
+      - "if active=false were the default, the test fails — protects against silent default flip"
+
+  - name: "Silent failure - 200 with empty body instead of 404 for missing session report"
+    type: death_path
+    given: "session S exists in project P (events present) but has no session_reports row (analysis never ran)"
+    when: "client calls GET /api/analysis/sessions/S?project_id=P"
+    then:
+      - "response status must be exactly 404"
+      - "response body must include 'detail' explaining 'session not analyzed'"
+      - "200 with null/empty fields is REJECTED — distinguishable from analyzed-but-empty"
+
+  - name: "Silent failure - trends LIMIT applied to flags table not session set"
+    type: death_path
+    given: "project P has 50 analyzed sessions, each with 5 behavior_flags"
+    when: "client calls GET /api/analysis/trends?project_id=P&limit=10"
+    then:
+      - "response.buckets length must be exactly 10 (sessions, not flags)"
+      - "the SQL plan must SELECT the session set first, LIMIT, then JOIN flags"
+      - "regression test: assert len(buckets) == 10, not 50 and not 250"
+
+  # --- Degradation paths ---
+
+  - name: "Degradation - server-mode PATCH succeeds but Phase 3 cache not yet wired"
+    type: degradation
+    given: "Phase 3 directive injection cache does not exist yet (GUR-105 not shipped)"
+    when: "operator PATCHes /api/directives/D with status=disabled"
+    then:
+      - "PATCH returns 200 with disabled_at set"
+      - "OpenAPI description for the endpoint MUST include caveat: 'Phase 3 prompt-injection cache invalidation lands in GUR-105; until then a server restart may be required for runtime effect.'"
+      - "the response body MUST NOT claim runtime effect — only DB state"
+      - "this is a documented degradation, not a bug; locked under directive_lifecycle_contract memory"
+
+  - name: "Degradation - server-mode CLI fallback to in-process on ConnectError"
+    type: degradation
+    given: "API server at 127.0.0.1:8420 is not running; CLI invoked without --no-server"
+    when: "operator runs `secondsight directive --active`"
+    then:
+      - "CLI logs at INFO: 'server not reachable; falling back to in-process'"
+      - "CLI prints to stderr a one-line warning the operator can see"
+      - "CLI exits 0 if in-process read succeeded; exits 1 only on actual failure"
+      - "this is identical to cli/analyze.py:135-144 precedent (silent fallback only on ConnectError, NOT on HTTPStatusError)"
+
+  - name: "Degradation - HTTPStatusError from server (server up, endpoint broken) does NOT silent-fallback"
+    type: degradation
+    given: "API server is running but /api/directives returns 500"
+    when: "operator runs `secondsight directive --active`"
+    then:
+      - "CLI logs at ERROR with the HTTP status code and response body"
+      - "CLI exits 1 with stderr message naming the broken endpoint"
+      - "CLI MUST NOT fall back to in-process — silent fallback would hide the broken server"
+      - "matches cli/analyze.py:146-165 precedent — operator should know the server is sick"
+
+  # --- Unknown outcome scenarios ---
+
+  - name: "Unknown - PATCH transaction times out mid-flight"
+    type: death_path
+    given: "DB engine pool exhausted; PATCH /api/directives/D request blocks past timeout"
+    when: "client's request times out (server-side)"
+    then:
+      - "response status must be 503 or 504"
+      - "outcome state in server logs must be exactly 'unknown' (not 'success' or 'failure')"
+      - "operator must see explicit 'transaction timed out — verify directive state with GET' message"
+      - "system must NOT report success without the COMMIT confirming"
+
+  # --- Happy paths with evidence chain ---
+
+  - name: "Success - GET /api/analysis/summary returns counts with ETag"
+    type: happy_path
+    given: "project P has 5 analyzed sessions, 12 behavior_flags across types, 3 active directives"
+    when: "client calls GET /api/analysis/summary?project_id=P"
+    then:
+      - "response.analyzed_session_count == 5"
+      - "response.flag_counts_by_type sums to 12"
+      - "response.active_directive_count == 3"
+      - "response includes ETag header W/\"<hex>\""
+      - "response.last_analyzed_at == MAX(session_reports.created_at) for project P"
+      - "evidence: response.as_of timestamp must be within 1s of request handling"
+
+  - name: "Success - GET /api/analysis/sessions paginated"
+    type: happy_path
+    given: "project P has 75 analyzed sessions"
+    when: "client calls GET /api/analysis/sessions?project_id=P&limit=50&offset=0"
+    then:
+      - "response.items length == 50"
+      - "response.next_offset == 50"
+      - "items ordered by analyzed_at DESC"
+      - "second call with offset=50 returns 25 items, next_offset=null"
+      - "evidence: each item includes session_id verifiable via GET /api/sessions/{id}"
+
+  - name: "Success - PATCH /api/directives/{id} disabled→active transition"
+    type: happy_path
+    given: "directive D has status=disabled, disabled_reason='wrong vocabulary', disabled_at=T0"
+    when: "client PATCHes /api/directives/D with body {status: active}"
+    then:
+      - "response status == 200"
+      - "response.status == 'active'"
+      - "response.disabled_at == null"
+      - "response.disabled_reason == null"
+      - "response.updated_at > T0"
+      - "evidence: directive_lifecycle_contract memory permits this transition"
+      - "subsequent GET /api/directives lists D in active set"
+
+  - name: "Success - CLI --active --format json shape matches API"
+    type: happy_path
+    given: "project P has 2 active directives"
+    when: "operator runs `secondsight directive --active --format json` against running server AND `--no-server`"
+    then:
+      - "both invocations exit 0"
+      - "stdout from both is byte-equal"
+      - "JSON parses to a list of length 2"
+      - "each item conforms to DirectiveOut schema (frozen, extra=forbid)"
+      - "evidence: same Pydantic model class is imported by api/directives.py and cli/directive.py — verifiable by import"
+
+  - name: "Success - GET /api/analysis/trends respects per-session limit"
+    type: happy_path
+    given: "project P has 100 analyzed sessions"
+    when: "client calls GET /api/analysis/trends?project_id=P&limit=20"
+    then:
+      - "response.buckets length == 20"
+      - "buckets[0].analyzed_at > buckets[19].analyzed_at (ordered DESC)"
+      - "each bucket.counts_by_type has integer values >= 0"
+      - "evidence: SQL plan inspected; LIMIT 20 applied to session set, not to flags"
+
+  - name: "Success - GET /api/directives ETag round-trip 304"
+    type: happy_path
+    given: "client received ETag E from a previous GET; no directive in project P has been PATCHed since"
+    when: "client repeats GET /api/directives?project_id=P with If-None-Match: E"
+    then:
+      - "response status == 304"
+      - "response body is empty"
+      - "evidence: server-side log records 'etag_match=true' for the request"

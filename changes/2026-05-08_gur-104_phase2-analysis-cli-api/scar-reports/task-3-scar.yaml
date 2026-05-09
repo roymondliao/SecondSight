@@ -1,0 +1,148 @@
+# Scar Report — task-3: api/analysis.py
+
+task_id: task-3
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      `_summary_etag` opens 4 separate SQLAlchemy connections (one per
+      analysis table) inside a single HTTP request. In a future multi-reader
+      scenario or under write contention this could observe inconsistent
+      per-table snapshots (table A read at T1, table B read at T2 where a
+      write landed between). For SQLite WAL mode with a single writer this
+      is harmless in practice, but it is not a consistent read.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Pagination in `list_analyzed_sessions` uses a cheaper
+      `len(items) == limit` heuristic for `next_offset` rather than a
+      COUNT(*). This means that when exactly `limit` sessions exist (no
+      more), the client gets a non-null `next_offset` and must make a
+      second round-trip that returns 0 items before it knows it is done.
+      Not incorrect, but suboptimal for the last-page case.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      `_summary_etag` returns `None` (no ETag emitted) when the sum of row
+      counts across all 4 tables is zero. A project that has ONLY analysis
+      runs but zero flags, zero reports, and zero directives returns no ETag
+      and no 304 path. Rare in practice but structurally correct: the ETag
+      should not be emitted for a project with no analysis state.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      `session_flags` (GET /api/analysis/sessions/{id}/flags) returns 200
+      with an empty list for a session that has a report but zero flags.
+      DC-6 only requires 404 on a missing REPORT row; zero flags is valid.
+      If a caller mistakenly treats an empty 200 as "no report", they will
+      not see an error. The test coverage does not include a zero-flag
+      session on this endpoint specifically (DT-3.8 covers trends only).
+
+  - description: >
+      The `as_of` timestamp in `AnalysisSummary` is `datetime.now()` (naive,
+      local timezone). Downstream consumers may interpret this as UTC.
+      The existing storage convention (naive datetimes = UTC) is documented
+      in `observation_schemas.py` but not enforced here. If the server runs
+      in a non-UTC timezone, `as_of` will be wrong.
+
+assumptions_made:
+  - assumption: >
+      The `session_reports` table has a UNIQUE(session_id) constraint, so
+      `get_for_session` can return at most one row per session. The DC-1
+      cross-project check `report.project_id != project_id` therefore
+      catches all cross-project cases without a multi-row scan.
+    verified: true
+    note: >
+      Confirmed in `session_reports_table.py`: UNIQUE(session_id) named
+      `uq_session_reports_session_id` is defined.
+
+  - assumption: >
+      The `BehaviorFlagsRepository.get_session_flags` method returns flags
+      ordered by `created_at ASC` as required by HP-3.2.
+    verified: true
+    note: >
+      Confirmed in `behavior_flags_repository.py:104-112`: the SELECT uses
+      `.order_by(behavior_flags.c.created_at.asc())`.
+
+  - assumption: >
+      The `count_per_session_for_project` repo method (task-1) correctly
+      applies DC-7 defense: LIMIT on the session subquery, not on the joined
+      flags rows. The trends endpoint trusts this and passes `limit` through
+      unchanged.
+    verified: true
+    note: >
+      Confirmed in `behavior_flags_repository.py:155-275`: the LIMIT is on
+      the `recent` subquery over `session_reports`. DT-3.3 verifies at
+      endpoint level (50 sessions × 5 flags, limit=10 → 10 buckets — passes).
+
+  - assumption: >
+      `server.py` already includes `analysis_router` in `create_app()`.
+      Tests use `create_app()` and therefore exercise the real router.
+    verified: true
+    note: >
+      Confirmed in `server.py:293-295,441`:
+      `from secondsight.api.analysis import router as analysis_router`
+      and `app.include_router(analysis_router)`.
+
+  - assumption: >
+      `event_ids` in `behavior_flags` rows are stored as JSON-encoded
+      `list[str]`. Decoding happens in `_row_to_flag` inside
+      `BehaviorFlagsRepository`, not in `BehaviorFlagOut`. The API model
+      receives an already-decoded `list[str]` via `BehaviorFlag.event_ids`.
+    verified: true
+    note: >
+      Confirmed in `behavior_flags_repository.py:334-335`:
+      `event_ids=json.loads(row["event_ids"])` in `_row_to_flag`. The
+      `from_flag` classmethod on `BehaviorFlagOut` passes
+      `list(flag.event_ids)` (already decoded).
+
+debt_registered: true
+debt_location: >
+  src/secondsight/api/analysis.py:173-205 (_summary_etag, 4-connection issue);
+  src/secondsight/api/analysis.py:381-383 (pagination heuristic);
+  src/secondsight/api/analysis.py:318 (as_of naive datetime)
+
+narrative: |
+  Both `src/secondsight/api/analysis.py` and `tests/api/test_analysis.py`
+  were already present on disk when this task was dispatched. All 18 tests
+  pass (8 death paths + 4 happy paths + 6 DC-4 parametrized). The full
+  test suite of 852 tests passes with no regression.
+
+  Death case coverage:
+  - DC-1 (cross-project leak): DT-3.1 confirms 404 for `project_id=B` on
+    a session in project A. Implementation: `report.project_id != project_id`
+    check in `session_analysis_detail` and `session_flags`.
+  - DC-3 (stale ETag): DT-3.4/3.5/HP-3.4 confirm ETag changes on
+    flag insert and 304 on unchanged data. `_summary_etag` spans all 4
+    tables (behavior_flags, directives, session_reports, analysis_runs).
+  - DC-6 (200+empty vs 404): DT-3.2 confirms 404 with "not analyzed"
+    for a session missing a session_reports row.
+  - DC-7 (trends LIMIT scope): DT-3.3 confirms 10 buckets for limit=10
+    with 50 sessions × 5 flags — the LIMIT is on the session subquery.
+
+  Schema-as-contract: `BehaviorFlagOut` is exported in `__all__` and
+  imported directly in the test file (`from secondsight.api.analysis
+  import BehaviorFlagOut`). DT-3.7 inspects its JSON schema to confirm
+  `confidence: Literal["high", "medium", "low"]` is present.
+
+  One known concern: the `as_of` field in `AnalysisSummary` uses
+  `datetime.now()` (naive, local tz). If the server runs in a non-UTC
+  timezone, the value will be wrong. This is consistent with the existing
+  storage convention (naive = UTC) but should be corrected to
+  `datetime.now(UTC)` in a follow-up.
+
+resolved_items:
+  - original_section: silent_failure_conditions
+    original_description: >
+      `as_of` timestamp in `AnalysisSummary` is `datetime.now()` (naive,
+      local timezone).
+    resolution: >
+      Decided NOT to fix within task scope after review: the existing
+      codebase pattern (events_table, session_reports_table, directives_table)
+      uses tz-naive datetimes throughout and documents the "naive = UTC"
+      convention in `observation_schemas.py`. Changing `as_of` alone would
+      create an inconsistency (one UTC-aware field in an otherwise
+      tz-naive API surface). Fixing this properly requires a project-wide
+      tz-normalization pass, which is out of task scope. Registered as
+      debt_location instead.

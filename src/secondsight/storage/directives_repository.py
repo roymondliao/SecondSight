@@ -135,6 +135,37 @@ class DirectivesRepository:
             row = conn.execute(stmt).mappings().first()
             return self._row_to_directive(row) if row else None
 
+    def list_for_project(
+        self, project_id: str, *, active_only: bool = False
+    ) -> list[Directive]:
+        """List directives for a project ordered by ``updated_at`` DESC.
+
+        Backs ``GET /api/directives?active=<bool>`` (GUR-104). When
+        ``active_only=True``, equivalent in scope to
+        ``get_active_conventions`` but ordered by recency rather than
+        frequency — kept distinct because the listing UI cares about
+        recency, while the agent self-query path cares about frequency.
+
+        Sort order: ``updated_at DESC, id ASC`` — deterministic
+        tie-break for rows whose ``updated_at`` collide on the same
+        microsecond.
+        """
+        where = [directives.c.project_id == project_id]
+        if active_only:
+            where.append(
+                directives.c.status == DirectiveStatus.ACTIVE.value
+            )
+        stmt = (
+            sa.select(directives)
+            .where(*where)
+            .order_by(directives.c.updated_at.desc(), directives.c.id.asc())
+        )
+        with self._db.engine.connect() as conn:
+            return [
+                self._row_to_directive(r)
+                for r in conn.execute(stmt).mappings()
+            ]
+
     def upsert_with_identity_key(self, directive: Directive) -> None:
         """ON CONFLICT(project_id, identity_key) DO UPDATE SET
            instruction, frequency, source_sessions, updated_at.
