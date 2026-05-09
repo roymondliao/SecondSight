@@ -318,7 +318,7 @@ async def patch_directive(
     requested_status = DirectiveStatus(body.status)
 
     try:
-        result, was_noop = repo.compare_and_update_status(
+        result, _was_noop = repo.compare_and_update_status(
             directive_id, project_id, requested_status, body.reason
         )
     except ValueError as exc:

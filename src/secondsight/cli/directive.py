@@ -21,7 +21,7 @@ Usage:
   secondsight directive --disable ID --reason "..." [--project P] [--home H]
   secondsight directive --enable ID [--project P] [--home H]
 
-Assumption: project DB lives at home/projects/<project_id>/intel.db.
+Assumption: project DB lives at home/projects/<project_id>/intelligence.db.
 When ``--no-server`` is omitted, the CLI first tries the API server at
 ``--server-url`` (default http://127.0.0.1:8420). On ``ConnectError``, it
 falls back to in-process. On ``HTTPStatusError``, it exits 1 (server up,
@@ -345,7 +345,7 @@ def _list_directives_in_process(
     and wraps each Directive in DirectiveOut.from_directive().
 
     Assumption: project DB lives at
-    secondsight_home/projects/<project_id>/intel.db. If absent, create_schema
+    secondsight_home/projects/<project_id>/intelligence.db. If absent, create_schema
     will create it and list_for_project will return an empty list (not an error).
     """
     from secondsight.storage.db_engine import DBEngine

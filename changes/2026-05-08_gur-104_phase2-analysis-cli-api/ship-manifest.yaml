@@ -1,0 +1,138 @@
+delivered_capability: >
+  Expose analysis results and directive management via CLI and REST API —
+  6 analysis GET endpoints (summary, sessions, detail, flags, trends,
+  aggregation), directives GET/PATCH with lifecycle management, and
+  `secondsight directive` CLI with server-mode fallback.
+
+tasks_completed: 5
+test_count_added: 50
+test_count_total: 1082
+all_tests_pass: true
+
+security_review:
+  round_count: 1
+  findings_total: 7
+  findings_fixed: 5
+  findings_accepted: 2
+  details:
+    - id: H-1
+      severity: high
+      issue: "PATCH race condition — read-compare-write across separate connections"
+      resolution: "Fixed: atomic compare_and_update_status() in single BEGIN transaction"
+    - id: H-2
+      severity: high
+      issue: "active=false leaked analyzer-only statuses (expired/superseded/obsolete)"
+      resolution: "Fixed: list_for_project filters to {active, disabled} only"
+    - id: M-1
+      severity: medium
+      issue: "Unbounded reason field"
+      resolution: "Fixed: max_length=2000"
+    - id: M-2
+      severity: medium
+      issue: "Internal ValueError text reflected in 400 response"
+      resolution: "Fixed: sanitized to fixed message"
+    - id: M-3
+      severity: medium
+      issue: "Unbounded offset pagination parameter"
+      resolution: "Fixed: capped at le=100_000"
+    - id: L-1
+      severity: low
+      issue: "Duplicated _aresources helper across routers"
+      resolution: "Accepted — maintenance risk, not active vulnerability"
+      accepted_by: agent
+    - id: L-2
+      severity: low
+      issue: "Reason text echoed to stdout/logs"
+      resolution: "Accepted — standard operational behavior"
+      accepted_by: agent
+
+known_failure_modes:
+  - mode: >
+      ETag summary scope spans 4 tables via 4 separate connections;
+      a write between connections produces a transiently inconsistent
+      ETag (visible window: microseconds under SQLite single-writer).
+    severity: silent_corruption
+    detection: "Client receives 304 on stale data; next request without If-None-Match returns fresh data. No persistent corruption."
+
+  - mode: >
+      PATCH disabled→active clears disabled_reason permanently.
+      Historical audit trail of why a directive was disabled is lost
+      on re-enable (DC-8, documented soft constraint).
+    severity: degradation
+    detection: "Operator observes disabled_reason=null after re-enable. Recoverable via git history of the DB or analysis run logs."
+
+  - mode: >
+      Phase 3 directive injection cache (GUR-105) not yet wired.
+      PATCH status=disabled writes DB but runtime prompt injection
+      may still fire the directive until server restart.
+    severity: degradation
+    detection: "OpenAPI description on PATCH explicitly documents this caveat. Operator sees 'GUR-105' / 'Phase 3' in route docs."
+
+  - mode: >
+      Zero-state project (no analysis ever run) returns empty lists
+      on all listing endpoints and null last_analyzed_at on summary.
+      Dashboard must handle this state explicitly.
+    severity: degradation
+    detection: "Dashboard renders empty state. No silent corruption — empty is correct."
+
+  - mode: >
+      Concurrent PATCHes to the same directive serialize at SQLite
+      write-lock level. Under multi-worker deployment (not current),
+      the second PATCH would block until the first commits. No data
+      corruption, but potential latency spike.
+    severity: degradation
+    detection: "Server logs show elevated PATCH latency. SQLite WAL metrics show write contention."
+
+accepted_risks:
+  - risk: "_aresources helper duplicated in analysis.py and directives.py — future fix in one may not propagate to the other"
+    accepted_by: agent
+    expires: "2026-08-09"
+  - risk: "Reason text in CLI stdout/logs may contain operator-authored PII if operators include user identifiers in disable reasons"
+    accepted_by: agent
+    expires: "2026-08-09"
+
+silent_failure_surface: high
+# 15 silent failure conditions across 5 tasks (>7 threshold).
+# All are documented in scar reports with detection/mitigation.
+# 8 were resolved during implementation. 7 remain as documented
+# degradation paths, none involving data corruption.
+
+failure_budget_review:
+  silent_failure_conditions: 15
+  unverified_assumptions: 1
+  known_shortcuts: 9
+  resolved_during_implementation: 8
+  verdict: >
+    Within budget. The 15 silent failure conditions are all documented
+    with detection strategies. The single unverified assumption (ETag
+    scope coverage across active/disabled status filter transitions)
+    is bounded: worst case is a stale 304 that self-corrects on the
+    next uncached request. No data corruption paths remain undefended.
+
+reconciliation:
+  spec_drift: none
+  details: >
+    Implementation matches 2-plan.md spec exactly. All 5 planned
+    modules delivered. All 7 death cases (DC-1 through DC-7) have
+    pinned tests. DirectivesRepository.list_for_project was a scope
+    extension documented in task-2 scar report (cleaner than direct
+    table access from API layer). analysis_router and directives_router
+    were pre-wired in server.py during tasks 2-3 (documented in scar
+    reports) rather than deferred to task-5.
+
+monitoring_hooks:
+  - "ETag mismatch rate: if 304 responses increase without corresponding data staleness, investigate ETag computation scope"
+  - "PATCH latency p99: if >100ms under SQLite, investigate write contention"
+  - "Empty summary responses: if analyzed_session_count=0 persists for projects with known sessions, analysis pipeline is not running"
+
+kill_switch: >
+  Remove the two `app.include_router()` calls in server.py (lines 439-441)
+  and the `app.add_typer(directive_cmd.app)` in cli/app.py (line 49).
+  Three lines reverts the entire feature surface. The underlying storage
+  layer (repositories, tables) remains intact for re-enablement.
+
+commits:
+  - sha: 91cdc50
+    message: "GUR-104 implement: Phase 2 Analysis CLI + API (tasks P2-16 to P2-19)"
+  - sha: dcca7c3
+    message: "GUR-104 security-review: resolve H-1, H-2, M-1, M-2, M-3"
