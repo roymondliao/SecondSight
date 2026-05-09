@@ -50,13 +50,10 @@ from secondsight.api.schemas import HookEnvelope
 from secondsight.observation.tracker import PartialEvent
 
 if TYPE_CHECKING:
-    # Forward references for Phase-2 (Convention — see GUR-104) and Phase-3+ (Hint
-    # — see SD §4.2 reserved). The `secondsight.feedback` module does not yet
-    # exist; mypy reports `[import-untyped]` because the package root exists but
-    # the submodule does not. The string annotations on inject_convention /
-    # inject_hint do not need a resolvable import — the loud-failure defaults
-    # raise NotImplementedError before any caller hands a real Convention/Hint.
-    from secondsight.feedback import Convention, Hint  # type: ignore[import-untyped]  # noqa: F401
+    from secondsight.feedback.convention import Convention  # noqa: F401
+
+    # Hint is reserved for Phase 3+ (SD §4.2). The module does not yet exist.
+    from typing import Any as Hint  # type: ignore[assignment]  # noqa: F401
 
 
 class NoAdapterError(Exception):
@@ -121,8 +118,16 @@ class AgentAdapter(ABC):
         """
 
     def inject_convention(self, convention: "Convention") -> str:
-        """Phase-2 directive injection. Loud-failure default; override per-adapter."""
-        raise NotImplementedError("inject_convention is reserved for Phase 2 — see GUR-104")
+        """Format a convention for system prompt injection.
+
+        Subclasses MUST override. The base raises NotImplementedError so
+        adapters that haven't implemented injection fail loudly rather than
+        silently returning empty strings.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement inject_convention. "
+            "Override in your adapter subclass (see ClaudeCodeAdapter for reference)."
+        )
 
     def inject_hint(self, hint: "Hint") -> str:
         """Phase-0 reserved per SD §4.2. MUST stay loud-failure (DT-3).

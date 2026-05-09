@@ -104,13 +104,15 @@ def test_dt4_inject_hint_loud_failure_is_inherited() -> None:
 
 
 def test_dt4_inject_convention_loud_failure_is_inherited() -> None:
-    """DT-4: IdentityAdapter inherits AgentAdapter.inject_convention loud-failure default."""
+    """DT-4: IdentityAdapter inherits AgentAdapter.inject_convention loud-failure default.
+    IdentityAdapter does NOT override inject_convention (it's a test adapter),
+    so the base class NotImplementedError fires with the adapter's class name."""
     adapter = IdentityAdapter()
     with pytest.raises(NotImplementedError) as exc_info:
         adapter.inject_convention(object())  # type: ignore[arg-type]
     msg = str(exc_info.value)
-    assert "Phase 2" in msg, f"DT-4 inject_convention: missing 'Phase 2' guard — {msg!r}"
-    assert "GUR-104" in msg, f"DT-4 inject_convention: missing 'GUR-104' reference — {msg!r}"
+    assert "IdentityAdapter" in msg, f"DT-4 inject_convention: missing class name — {msg!r}"
+    assert "inject_convention" in msg, f"DT-4 inject_convention: missing method name — {msg!r}"
 
 
 # ---------------------------------------------------------------------------

@@ -199,7 +199,8 @@ def test_dt3_inject_hint_raises_with_required_phrases() -> None:
 
 
 def test_dt4_inject_convention_raises_with_required_phrases() -> None:
-    """DT-4: inject_convention loud-failure default carries Phase 2 + GUR-104 reference.
+    """DT-4: inject_convention loud-failure default names the adapter class and
+    references ClaudeCodeAdapter for implementation guidance.
 
     Method-locality: also asserts the message is NOT inject_hint's. See DT-3 docstring.
     """
@@ -207,8 +208,8 @@ def test_dt4_inject_convention_raises_with_required_phrases() -> None:
     with pytest.raises(NotImplementedError) as exc_info:
         adapter.inject_convention(object())  # type: ignore[arg-type]
     msg = str(exc_info.value)
-    assert "Phase 2" in msg, f"DT-4: missing 'Phase 2' guard — message was {msg!r}"
-    assert "GUR-104" in msg, f"DT-4: missing 'GUR-104' tracker reference — message was {msg!r}"
+    assert "_StubAdapter" in msg, f"DT-4: missing adapter class name — message was {msg!r}"
+    assert "inject_convention" in msg, f"DT-4: missing method name — message was {msg!r}"
     # Method-locality guard: the message must NOT be inject_hint's message.
     assert "Phase 0" not in msg, (
         f"DT-4: message looks like inject_hint's — wrong method body ran? {msg!r}"

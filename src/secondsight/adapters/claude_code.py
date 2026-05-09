@@ -30,10 +30,8 @@ Silent-failure surface this module deliberately closes:
       ABC's loud-failure default still fires.
     - `supports()` ↔ `supported_event_types()` skew: DT-8 verifies they
       agree across the P1 floor.
-
-Forward references: This adapter does NOT override `inject_convention` or
-`inject_hint`. Phase 2 (GUR-104) ships convention injection; until then,
-the ABC's NotImplementedError default is the only correct behaviour.
+    - `inject_convention` returning "" for non-empty instruction: DT-10
+      asserts that a convention with content always produces non-empty output.
 
 Out of P1 scope (plan §8): `Stop`, `SubagentStop`, `Notification`,
 `PreCompact`, `thinking`, `sub_agent_*`, `task_*`. These are unverified or
@@ -49,6 +47,7 @@ from typing import Any, Callable
 from secondsight.adapters.base import AgentAdapter
 from secondsight.api.schemas import HookEnvelope
 from secondsight.event import EventType
+from secondsight.feedback.convention import Convention
 from secondsight.observation.tracker import PartialEvent
 
 _AGENT_NAME = "claude_code"
@@ -264,6 +263,16 @@ class ClaudeCodeAdapter(AgentAdapter):
 
     def supported_event_types(self) -> set[str]:
         return {et.value for et in _HOOK_TO_EVENT_TYPE.values()}
+
+    def inject_convention(self, convention: Convention) -> str:  # type: ignore[override]
+        """Format a convention for Claude Code system prompt injection.
+
+        Returns a single-line bullet point. Empty instruction → empty string
+        (caller should filter, but we don't crash on it).
+        """
+        if not convention.instruction:
+            return ""
+        return f"- {convention.instruction}"
 
     def normalize(self, envelope: HookEnvelope, event_type: str) -> PartialEvent:
         # Envelope-level invariants. Pydantic enforces session_id/event_id

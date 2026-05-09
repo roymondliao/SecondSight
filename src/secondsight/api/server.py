@@ -37,6 +37,8 @@ from pathlib import Path
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from secondsight._common.lazy_cache import LazyCacheWithLocking
@@ -59,9 +61,11 @@ class ServerConfig:
         self,
         host: str = "127.0.0.1",
         port: int = 8420,
+        dashboard_dist: Path | None = None,
     ) -> None:
         self.host = host
         self.port = port
+        self.dashboard_dist = dashboard_dist
 
 
 class AppState:
@@ -153,6 +157,31 @@ class AppState:
 _SWEEPER_INTERVAL_SECONDS: int = 60
 _SWEEPER_SESSION_TIMEOUT_MINUTES: int = 30
 _SWEEPER_SHUTDOWN_TIMEOUT_S: float = 5.0
+
+
+def _resolve_dashboard_dist(configured_path: Path | None) -> Path | None:
+    """Return the built dashboard directory if available.
+
+    Resolution order:
+    1. Explicit ``ServerConfig.dashboard_dist`` for tests/dev overrides.
+    2. Packaged assets at ``secondsight/_resources/dashboard``.
+    3. Repo-local Vite output at ``frontend/dist``.
+
+    Returning ``None`` is intentional: the API server must still boot
+    cleanly on environments where the frontend has not been built yet.
+    """
+    candidates: list[Path] = []
+    if configured_path is not None:
+        candidates.append(Path(configured_path))
+
+    package_assets = Path(__file__).resolve().parents[1] / "_resources" / "dashboard"
+    repo_assets = Path(__file__).resolve().parents[3] / "frontend" / "dist"
+    candidates.extend([package_assets, repo_assets])
+
+    for candidate in candidates:
+        if (candidate / "index.html").is_file():
+            return candidate
+    return None
 
 
 class _ServerSweepCoordinator:
@@ -294,6 +323,7 @@ def create_app(
     from secondsight.api.directives import router as directives_router
     from secondsight.api.hooks import router as hooks_router
     from secondsight.api.observation import router as observation_router
+    from secondsight.api.session_start import router as session_start_router
 
     home = Path(secondsight_home)
     if not home.is_absolute():
@@ -431,6 +461,11 @@ def create_app(
         lifespan=lifespan,
     )
 
+    # Mount session-start BEFORE hooks — specific path "/hook/session-start"
+    # must precede the generic "/hook/{event_type}" pattern (FastAPI matches
+    # path operations in registration order; the parametric route would
+    # swallow the specific one if registered first).
+    app.include_router(session_start_router)
     # Mount the hooks router
     app.include_router(hooks_router)
     # Mount the observation router (GUR-147 task-A5)
@@ -443,6 +478,18 @@ def create_app(
     # -----------------------------------------------------------------------
     # Routes
     # -----------------------------------------------------------------------
+
+    dashboard_dist = _resolve_dashboard_dist(cfg.dashboard_dist)
+    if dashboard_dist is not None:
+        app.mount(
+            "/dashboard",
+            StaticFiles(directory=str(dashboard_dist), html=True),
+            name="dashboard",
+        )
+
+        @app.get("/")
+        async def dashboard_root() -> RedirectResponse:
+            return RedirectResponse(url="/dashboard/", status_code=307)
 
     @app.get("/health")
     async def health() -> dict:

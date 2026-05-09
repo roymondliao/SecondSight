@@ -126,8 +126,9 @@ def test_death_literal_dotdot_in_event_type_rejected(tmp_secondsight_home: Path)
             "/hook/..",
             json=_make_valid_payload(),
         )
-    assert response.status_code in (404, 422), (
-        f"DEATH: Expected 404 or 422 for literal '..', got {response.status_code}"
+    assert response.status_code in (404, 405, 422), (
+        f"DEATH: Expected 404/405/422 for literal '..', got {response.status_code}. "
+        "405 is valid when Starlette normalizes /hook/.. → / (dashboard GET-only route)."
     )
 
 

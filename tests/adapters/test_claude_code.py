@@ -261,16 +261,18 @@ def test_dt7_inject_hint_loud_failure_inherited() -> None:
     assert "SD §4.2" in msg, f"DT-7: missing 'SD §4.2' reference — was {msg!r}"
 
 
-def test_dt7b_inject_convention_loud_failure_inherited() -> None:
-    """DT-7b (AC-7): ClaudeCodeAdapter inherits inject_convention's
-    NotImplementedError. Symmetric with DT-7 — both inject_* methods are
-    independent override seams."""
+def test_dt7b_inject_convention_formats_correctly() -> None:
+    """DT-7b (GUR-105): ClaudeCodeAdapter.inject_convention returns a
+    bullet-prefixed line. Empty instruction returns empty string."""
+    from secondsight.feedback.convention import Convention
+
     adapter = ClaudeCodeAdapter()
-    with pytest.raises(NotImplementedError) as exc_info:
-        adapter.inject_convention(object())  # type: ignore[arg-type]
-    msg = str(exc_info.value)
-    assert "Phase 2" in msg, f"DT-7b: missing 'Phase 2' guard — was {msg!r}"
-    assert "GUR-104" in msg, f"DT-7b: missing 'GUR-104' reference — was {msg!r}"
+    conv = Convention(id="c1", instruction="Read AGENTS.md first", frequency=0.9, source_flag_type="unnecessary_read")
+    result = adapter.inject_convention(conv)
+    assert result == "- Read AGENTS.md first", f"Expected bullet format, got {result!r}"
+
+    empty = Convention(id="c2", instruction="", frequency=0.5, source_flag_type=None)
+    assert adapter.inject_convention(empty) == ""
 
 
 def test_dt8_supports_consistency_with_supported_event_types() -> None:
