@@ -103,15 +103,17 @@ class DirectivesRepository:
                 f"or switch to upsert_with_identity_key()."
             ) from exc
 
-    def get_active_conventions(self, project_id: str) -> list[Directive]:
-        """Active conventions only, sorted by frequency desc.
+    _MAX_CONVENTIONS = 100
 
-        NOTE: This method does NOT filter by `expires_at`. A convention
-        whose `expires_at` is in the past but `status` is still 'active'
-        WILL be returned. Expiry-checking + auto-transition to status
-        'expired' is GUR-101's analyzer responsibility, not the
-        repository's. See `acceptance.yaml` degradation scenario.
+    def get_active_conventions(self, project_id: str) -> list[Directive]:
+        """Active, non-expired conventions sorted by frequency desc.
+
+        Filters out rows whose expires_at is in the past (defense-in-depth;
+        the analyzer should have transitioned these to 'expired' status, but
+        a race or crash could leave stale rows). Limited to _MAX_CONVENTIONS
+        to bound memory and query cost regardless of DB contents.
         """
+        now = datetime.now(tz=timezone.utc)
         stmt = (
             sa.select(directives)
             .where(
@@ -119,9 +121,14 @@ class DirectivesRepository:
                     directives.c.project_id == project_id,
                     directives.c.type == DirectiveType.CONVENTION.value,
                     directives.c.status == DirectiveStatus.ACTIVE.value,
+                    sa.or_(
+                        directives.c.expires_at.is_(None),
+                        directives.c.expires_at > now,
+                    ),
                 )
             )
             .order_by(directives.c.frequency.desc().nullslast())
+            .limit(self._MAX_CONVENTIONS)
         )
         with self._db.engine.connect() as conn:
             return [

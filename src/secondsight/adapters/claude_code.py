@@ -264,15 +264,22 @@ class ClaudeCodeAdapter(AgentAdapter):
     def supported_event_types(self) -> set[str]:
         return {et.value for et in _HOOK_TO_EVENT_TYPE.values()}
 
+    _MAX_INSTRUCTION_CHARS = 1000
+
     def inject_convention(self, convention: Convention) -> str:  # type: ignore[override]
         """Format a convention for Claude Code system prompt injection.
 
-        Returns a single-line bullet point. Empty instruction → empty string
-        (caller should filter, but we don't crash on it).
+        Returns a single-line bullet point. Empty instruction → empty string.
+        Sanitization: collapses internal newlines to spaces, strips leading/
+        trailing whitespace, and truncates to _MAX_INSTRUCTION_CHARS to bound
+        blast radius of any malformed instruction content.
         """
         if not convention.instruction:
             return ""
-        return f"- {convention.instruction}"
+        sanitized = " ".join(convention.instruction.split())
+        if len(sanitized) > self._MAX_INSTRUCTION_CHARS:
+            sanitized = sanitized[: self._MAX_INSTRUCTION_CHARS] + "…"
+        return f"- {sanitized}"
 
     def normalize(self, envelope: HookEnvelope, event_type: str) -> PartialEvent:
         # Envelope-level invariants. Pydantic enforces session_id/event_id

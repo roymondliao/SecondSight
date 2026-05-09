@@ -111,6 +111,11 @@ async def session_start_conventions(
                 "Use alphanumeric, hyphen, underscore, colon, or dot."
             ),
         )
+    if not is_safe_id(body.agent):
+        raise HTTPException(
+            status_code=422,
+            detail="agent contains unsafe characters.",
+        )
 
     state: AppState = request.app.state.server_state
 
@@ -118,13 +123,19 @@ async def session_start_conventions(
         adapter = state.adapter_registry.for_(
             body.agent, EventType.SESSION_START.value
         )
-    except NoAdapterError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except NoAdapterError:
+        raise HTTPException(
+            status_code=422,
+            detail="No adapter registered for the specified agent.",
+        )
 
     try:
         resources = await state.registry.get(body.project_id)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except RuntimeError:
+        raise HTTPException(
+            status_code=503,
+            detail="Project resources temporarily unavailable.",
+        )
 
     repo = DirectivesRepository(resources.db_engine)
     repo.create_schema()
