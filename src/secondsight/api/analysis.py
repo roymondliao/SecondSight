@@ -24,7 +24,7 @@ Death-case defenses pinned by acceptance.yaml:
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 import sqlalchemy as sa
@@ -314,7 +314,7 @@ async def analysis_summary(
         flag_counts_by_type=flag_counts_by_type,
         active_directive_count=active_directive_count,
         last_analyzed_at=last_analyzed_at,
-        as_of=datetime.now(),
+        as_of=datetime.now(tz=timezone.utc),
     )
 
     if etag is not None:

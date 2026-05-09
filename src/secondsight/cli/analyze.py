@@ -269,7 +269,7 @@ def _build_in_process_trigger(
     initialization cost when the session is already analyzed.
 
     Assumption: project DB lives at
-    secondsight_home/projects/<project_id>/intel.db.
+    secondsight_home/projects/<project_id>/intelligence.db.
     If that file does not exist yet, repo.create_schema() will create it.
     This means a fresh project with no events will still get a DB; the
     orchestrator's _verify_session_complete_and_get_project_id() will raise
@@ -280,7 +280,7 @@ def _build_in_process_trigger(
     from secondsight.storage.analysis_runs_repository import AnalysisRunsRepository
 
     project_dir = secondsight_home / "projects" / project_id
-    db_path = project_dir / "intel.db"
+    db_path = project_dir / "intelligence.db"
 
     db_engine = DBEngine(db_path)
     events_repo = EventsRepository(db_engine)
