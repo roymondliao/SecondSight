@@ -123,7 +123,7 @@ class DirectivePatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: Literal["active", "disabled"]
-    reason: str | None = None
+    reason: str | None = Field(None, max_length=2000)
 
     @model_validator(mode="after")
     def _reason_matches_status(self) -> "DirectivePatchRequest":
@@ -315,9 +315,19 @@ async def patch_directive(
     resources = await _aresources(request, project_id)
     repo = _directives_repo(resources)
 
-    current = repo.get_by_id(directive_id)
-    if current is None or current.project_id != project_id:
-        # DC-1: cross-project mismatch returns 404, not B's data.
+    requested_status = DirectiveStatus(body.status)
+
+    try:
+        result, was_noop = repo.compare_and_update_status(
+            directive_id, project_id, requested_status, body.reason
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "lifecycle_violation", "message": "Directive lifecycle rule violated."},
+        ) from exc
+
+    if result is None:
         raise HTTPException(
             status_code=404,
             detail=(
@@ -326,50 +336,7 @@ async def patch_directive(
             ),
         )
 
-    requested_status = DirectiveStatus(body.status)
-
-    # No-op idempotency (DC-2): same status AND same reason context.
-    is_noop = current.status == requested_status and (
-        requested_status != DirectiveStatus.DISABLED
-        or current.disabled_reason == body.reason
-    )
-    if is_noop:
-        return DirectiveOut.from_directive(current)
-
-    try:
-        repo.update_status(
-            directive_id, requested_status, body.reason
-        )
-    except ValueError as exc:
-        # Lifecycle rule violation (e.g., DISABLED with empty reason —
-        # already caught at the Pydantic layer, but keep this branch as
-        # defence in depth against a future caller that bypasses the
-        # validator).
-        raise HTTPException(
-            status_code=400,
-            detail={"error": "lifecycle_violation", "message": str(exc)},
-        ) from exc
-    except LookupError as exc:
-        # Should not happen because we just fetched the row, but guard
-        # against a concurrent delete (no DELETE in MVP, but defensive).
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"directive {directive_id!r} disappeared between read "
-                f"and update."
-            ),
-        ) from exc
-
-    refreshed = repo.get_by_id(directive_id)
-    if refreshed is None:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"directive {directive_id!r} read-back failed after "
-                "update; data state is inconsistent."
-            ),
-        )
-    return DirectiveOut.from_directive(refreshed)
+    return DirectiveOut.from_directive(result)
 
 
 __all__ = [

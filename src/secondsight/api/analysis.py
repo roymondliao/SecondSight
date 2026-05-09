@@ -328,7 +328,7 @@ async def list_analyzed_sessions(
     response: Response,
     project_id: str = Query(..., min_length=1, max_length=128),
     limit: int = Query(50, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=100_000),
 ) -> ListSessionsResponse | Response:
     """Paginated list of sessions that have a session_reports row."""
     resources = await _aresources(request, project_id)

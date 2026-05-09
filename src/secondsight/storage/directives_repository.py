@@ -150,11 +150,14 @@ class DirectivesRepository:
         tie-break for rows whose ``updated_at`` collide on the same
         microsecond.
         """
+        _API_VISIBLE = [DirectiveStatus.ACTIVE.value, DirectiveStatus.DISABLED.value]
         where = [directives.c.project_id == project_id]
         if active_only:
             where.append(
                 directives.c.status == DirectiveStatus.ACTIVE.value
             )
+        else:
+            where.append(directives.c.status.in_(_API_VISIBLE))
         stmt = (
             sa.select(directives)
             .where(*where)
@@ -275,6 +278,84 @@ class DirectivesRepository:
                     f"directive {directive_id!r} not found; "
                     "update_status will not silently no-op"
                 )
+
+    def compare_and_update_status(
+        self,
+        directive_id: str,
+        project_id: str,
+        new_status: DirectiveStatus,
+        reason: str | None = None,
+    ) -> tuple[Directive | None, bool]:
+        """Atomic read-compare-write for PATCH idempotency (DC-2, H-1).
+
+        Returns (directive, was_noop):
+        - (None, False) if directive not found or cross-project mismatch
+        - (directive, True) if current state already matches requested state
+        - (directive, False) if update was applied
+
+        The entire operation runs in a single BEGIN transaction so
+        concurrent PATCHes serialize at the SQLite write-lock level.
+        """
+        if not isinstance(new_status, DirectiveStatus):
+            raise ValueError(
+                f"new_status must be DirectiveStatus, got {new_status!r}"
+            )
+
+        now = datetime.now(timezone.utc)
+
+        with self._db.engine.begin() as conn:
+            row = conn.execute(
+                sa.select(directives).where(directives.c.id == directive_id)
+            ).mappings().first()
+
+            if row is None:
+                return None, False
+
+            current = self._row_to_directive(row)
+            if current.project_id != project_id:
+                return None, False
+
+            is_noop = current.status == new_status and (
+                new_status != DirectiveStatus.DISABLED
+                or current.disabled_reason == reason
+            )
+            if is_noop:
+                return current, True
+
+            if new_status is DirectiveStatus.DISABLED:
+                if reason is None:
+                    raise ValueError(
+                        "DISABLED transitions require a non-None reason."
+                    )
+                values = {
+                    "status": new_status.value,
+                    "disabled_at": now,
+                    "disabled_reason": reason,
+                    "updated_at": now,
+                }
+            else:
+                if reason is not None:
+                    raise ValueError(
+                        f"Non-DISABLED transition to {new_status.value!r} "
+                        f"must NOT carry a reason (got {reason!r})"
+                    )
+                values = {
+                    "status": new_status.value,
+                    "disabled_at": None,
+                    "disabled_reason": None,
+                    "updated_at": now,
+                }
+
+            conn.execute(
+                sa.update(directives)
+                .where(directives.c.id == directive_id)
+                .values(**values)
+            )
+
+            refreshed_row = conn.execute(
+                sa.select(directives).where(directives.c.id == directive_id)
+            ).mappings().first()
+            return self._row_to_directive(refreshed_row), False
 
     @staticmethod
     def _guard(directive: Directive) -> None:
