@@ -126,6 +126,14 @@ def analyze(
     secondsight_home_path = resolve_secondsight_home(home)
     project_id = project or _resolve_project_id(secondsight_home_path)
 
+    from secondsight.api._id_safety import is_safe_id
+
+    if project and not is_safe_id(project):
+        raise typer.BadParameter(
+            f"project {project!r} contains unsafe path characters.",
+            param_hint="--project",
+        )
+
     if retry_failed:
         _handle_retry_failed(
             project_id=project_id,

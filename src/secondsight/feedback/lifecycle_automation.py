@@ -70,6 +70,11 @@ def enforce_expiry(
 ) -> int:
     """Transition active conventions past their expires_at to expired.
 
+    Uses atomic conditional UPDATE (WHERE status='active') to avoid
+    TOCTOU: if another process transitions the directive between our
+    SELECT and UPDATE, the UPDATE becomes a no-op (rowcount=0) rather
+    than corrupting the lifecycle graph.
+
     Returns the number of conventions expired in this run.
     """
     now = datetime.now(tz=timezone.utc)
@@ -96,9 +101,28 @@ def enforce_expiry(
                 DirectiveStatus.EXPIRED,
                 directive_id=directive_id,
             )
-            directives_repo.update_status(
-                directive_id, DirectiveStatus.EXPIRED,
-            )
+            with directives_repo._db.engine.begin() as conn:
+                result = conn.execute(
+                    sa.update(directives)
+                    .where(
+                        sa.and_(
+                            directives.c.id == directive_id,
+                            directives.c.status == DirectiveStatus.ACTIVE.value,
+                        ),
+                    )
+                    .values(
+                        status=DirectiveStatus.EXPIRED.value,
+                        disabled_at=None,
+                        disabled_reason=None,
+                        updated_at=now,
+                    ),
+                )
+                if result.rowcount == 0:
+                    _logger.debug(
+                        "expiry_enforcement: directive_id=%r no longer active, skipped",
+                        directive_id,
+                    )
+                    continue
             count += 1
             _logger.info(
                 "expiry_enforcement: expired directive_id=%r "
@@ -129,6 +153,9 @@ def enforce_reactivation(
     any flags in the last ``lookback_days`` days. If so, transitions
     the convention back to active.
 
+    Uses atomic conditional UPDATE (WHERE status='obsolete') to avoid
+    TOCTOU races with concurrent status changes.
+
     Returns the number of conventions re-activated in this run.
     """
     from secondsight.storage.behavior_flags_table import behavior_flags
@@ -148,6 +175,7 @@ def enforce_reactivation(
         return 0
 
     threshold = datetime.now(tz=timezone.utc) - timedelta(days=lookback_days)
+    now = datetime.now(tz=timezone.utc)
 
     count = 0
     for row in obsolete_rows:
@@ -177,9 +205,28 @@ def enforce_reactivation(
                 DirectiveStatus.ACTIVE,
                 directive_id=directive_id,
             )
-            directives_repo.update_status(
-                directive_id, DirectiveStatus.ACTIVE,
-            )
+            with directives_repo._db.engine.begin() as conn:
+                result = conn.execute(
+                    sa.update(directives)
+                    .where(
+                        sa.and_(
+                            directives.c.id == directive_id,
+                            directives.c.status == DirectiveStatus.OBSOLETE.value,
+                        ),
+                    )
+                    .values(
+                        status=DirectiveStatus.ACTIVE.value,
+                        disabled_at=None,
+                        disabled_reason=None,
+                        updated_at=now,
+                    ),
+                )
+                if result.rowcount == 0:
+                    _logger.debug(
+                        "reactivation: directive_id=%r no longer obsolete, skipped",
+                        directive_id,
+                    )
+                    continue
             count += 1
             _logger.info(
                 "reactivation: re-activated directive_id=%r "

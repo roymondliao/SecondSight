@@ -302,6 +302,13 @@ def _handle_rebuild(
 
 def _select_project_ids(home: Path, requested: str) -> list[str]:
     if requested:
+        from secondsight.api._id_safety import is_safe_id
+
+        if not is_safe_id(requested):
+            raise typer.BadParameter(
+                f"project-id {requested!r} contains unsafe path characters.",
+                param_hint="--project-id",
+            )
         return [requested]
     projects_dir = home / "projects"
     if not projects_dir.is_dir():
