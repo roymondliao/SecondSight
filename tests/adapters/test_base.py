@@ -5,7 +5,7 @@ failure surface this task is preventing:
 
     DT-1  AgentAdapter()                 -> TypeError                     (ABC instantiation guard)
     DT-2  subclass missing normalize     -> TypeError                     (missing-method guard)
-    DT-3  adapter.inject_hint(h)         -> NotImplementedError           (Phase 0 reserved + SD §4.2)
+    DT-3  adapter.inject_hint(h)         -> ""                             (pass-through stub, GUR-108 P3B-5)
     DT-4  adapter.inject_convention(c)   -> NotImplementedError           (Phase 2 reserved + GUR-104)
     DT-5  registry.for_("x", "y")        -> NoAdapterError naming pair    (unknown agent)
     DT-6  supports() ↔ supported_event_types() skew detected at for_()    (consistency guard)
@@ -175,27 +175,16 @@ def test_dt2_subclass_missing_normalize_cannot_be_instantiated() -> None:
         _Incomplete()  # type: ignore[abstract]
 
 
-def test_dt3_inject_hint_raises_with_required_phrases() -> None:
-    """DT-3: inject_hint loud-failure default carries SD §4.2 + Phase 0 reference.
+def test_dt3_inject_hint_returns_empty_string() -> None:
+    """DT-3: inject_hint pass-through stub returns empty string (GUR-108, P3B-5).
 
-    Method-locality: also asserts that inject_hint's message identifies inject_hint
-    specifically (not "Phase 2" / "GUR-104" which would mean inject_convention's
-    body ran instead). Catches the regression where a future ABC refactor swaps
-    the bodies of the two methods.
+    Replaces the previous loud-failure test. The hint engine is reserved for
+    future use; the stub returns "" so the adapter layer compiles without
+    requiring a real Hint implementation.
     """
     adapter = _StubAdapter()
-    with pytest.raises(NotImplementedError) as exc_info:
-        adapter.inject_hint(object())  # type: ignore[arg-type]
-    msg = str(exc_info.value)
-    assert "Phase 0" in msg, f"DT-3: missing 'Phase 0' guard — message was {msg!r}"
-    assert "SD §4.2" in msg, f"DT-3: missing 'SD §4.2' reference — message was {msg!r}"
-    # Method-locality guard: the message must NOT be inject_convention's message.
-    assert "Phase 2" not in msg, (
-        f"DT-3: message looks like inject_convention's — wrong method body ran? {msg!r}"
-    )
-    assert "GUR-104" not in msg, (
-        f"DT-3: message looks like inject_convention's — wrong method body ran? {msg!r}"
-    )
+    result = adapter.inject_hint(object())  # type: ignore[arg-type]
+    assert result == "", f"DT-3: inject_hint should return empty string, got {result!r}"
 
 
 def test_dt4_inject_convention_raises_with_required_phrases() -> None:

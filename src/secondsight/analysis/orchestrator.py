@@ -90,6 +90,7 @@ from typing import TYPE_CHECKING, Final
 
 from secondsight.analysis.aggregator import AggregateProjectResult, aggregate_project_flags
 from secondsight.analysis.agent import AnalysisAgent, AnalysisAgentError
+from secondsight.feedback.lifecycle_automation import run_lifecycle_automation
 from secondsight.api._id_safety import is_safe_id
 from secondsight.analysis.behavior import promote_draft, validate_draft_pre_insert
 from secondsight.analysis.metrics import compute_segment_metrics
@@ -106,6 +107,7 @@ from secondsight.analysis.segmenter import Segmenter
 if TYPE_CHECKING:
     from secondsight.storage.analysis_runs_repository import AnalysisRunsRepository
     from secondsight.storage.behavior_flags_repository import BehaviorFlagsRepository
+    from secondsight.storage.db_engine import DBEngine
     from secondsight.storage.directives_repository import DirectivesRepository
     from secondsight.storage.events_repository import EventsRepository
     from secondsight.storage.session_reports_repository import SessionReportsRepository
@@ -223,6 +225,7 @@ class Orchestrator:
         session_reports_repo: SessionReportsRepository,
         agent: AnalysisAgent,
         *,
+        db_engine: DBEngine | None = None,
         segmenter: Segmenter | None = None,
         on_analysis_complete: Callable[[str], None] | None = None,
     ) -> None:
@@ -280,6 +283,7 @@ class Orchestrator:
         self._analysis_runs_repo = analysis_runs_repo
         self._session_reports_repo = session_reports_repo
         self._agent = agent
+        self._db_engine = db_engine
         # Allow DI of a fake segmenter for testing; default to real Segmenter.
         self._segmenter: Segmenter = segmenter or Segmenter(events_repo)
         self._on_analysis_complete = on_analysis_complete
@@ -480,6 +484,31 @@ class Orchestrator:
             return AnalyzeAndAggregateResult(session=session_result, aggregate=None)
 
         aggregate_result = await self.aggregate_project(session_result.project_id)
+
+        # P3B-2/P3B-3: run lifecycle automation (expiry + re-activation)
+        # after aggregation. Requires db_engine; skip if not provided
+        # (backwards-compatible with existing callers).
+        if self._db_engine is not None:
+            try:
+                lifecycle_result = run_lifecycle_automation(
+                    session_result.project_id,
+                    self._directives_repo,
+                    self._db_engine,
+                )
+                if lifecycle_result.expired_count or lifecycle_result.reactivated_count:
+                    _logger.info(
+                        "lifecycle_automation: project_id=%r expired=%d reactivated=%d",
+                        session_result.project_id,
+                        lifecycle_result.expired_count,
+                        lifecycle_result.reactivated_count,
+                    )
+            except Exception as exc:
+                _logger.warning(
+                    "lifecycle_automation failed for project_id=%r: %s",
+                    session_result.project_id,
+                    exc,
+                )
+
         return AnalyzeAndAggregateResult(session=session_result, aggregate=aggregate_result)
 
     # ------------------------------------------------------------------

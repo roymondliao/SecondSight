@@ -177,10 +177,7 @@ class _ClaudeCodeAdapterStub:
         )
 
     def inject_hint(self, hint: Any) -> str:
-        raise NotImplementedError(
-            "_ClaudeCodeAdapterStub does not implement inject_hint; "
-            "Phase 0 reserved (SD §4.2)."
-        )
+        return ""
 
 
 @pytest.fixture()

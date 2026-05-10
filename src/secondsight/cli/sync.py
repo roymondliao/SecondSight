@@ -62,6 +62,16 @@ def sync(
         "--no-fallback-archive",
         help="Skip archiving fallback_events.jsonl (Path C).",
     ),
+    rebuild: bool = typer.Option(
+        False,
+        "--rebuild",
+        help=(
+            "Full DB rebuild from filesystem (GUR-108, P3B-7). "
+            "Deletes and recreates the DB, then runs full filesystem backfill. "
+            "Derived data (analysis results, directives) will be lost and "
+            "must be re-generated via 'secondsight analyze'."
+        ),
+    ),
     output_format: str = typer.Option(
         "text",
         "--format",
@@ -74,6 +84,10 @@ def sync(
 
     home_path = resolve_secondsight_home(home)
     project_ids = _select_project_ids(home_path, project_id)
+
+    if rebuild:
+        _handle_rebuild(home_path, project_ids, output_format)
+        return
 
     # An asynchronous registry is overkill here (we run synchronously,
     # one project at a time, no concurrent first-event materialisations),
@@ -165,6 +179,125 @@ def sync(
 
     if any_failure:
         raise typer.Exit(code=1)
+
+
+def _handle_rebuild(
+    home_path: Path,
+    project_ids: list[str],
+    output_format: str,
+) -> None:
+    """Full DB rebuild from filesystem (GUR-108, P3B-7).
+
+    For each project:
+    1. Delete the existing intelligence.db (if it exists).
+    2. Run full filesystem backfill to re-insert all events.
+
+    Derived data (behavior_flags, session_reports, directives,
+    analysis_runs) is NOT recreated — the operator must run
+    'secondsight analyze' to regenerate analysis results.
+
+    This is the nuclear recovery option when the DB is corrupt or
+    when the schema has changed in a way that requires a clean start.
+    """
+    import os
+    import time
+
+    registry = ProjectRegistry(secondsight_home=home_path)
+    reports: list[dict[str, Any]] = []
+    any_failure = False
+
+    if not project_ids:
+        _console.print("[yellow]No projects found under <home>/projects/[/yellow]")
+        raise typer.Exit(code=0)
+
+    _console.print(
+        f"[bold red]REBUILD[/bold red]: Rebuilding DB for "
+        f"{len(project_ids)} project(s). Existing databases will be deleted."
+    )
+
+    for pid in project_ids:
+        project_dir = home_path / "projects" / pid
+        db_path = project_dir / "intelligence.db"
+
+        # Step 1: backup and delete existing DB.
+        if db_path.exists():
+            ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+            backup_path = db_path.with_name(f"intelligence.db.{ts}.pre-rebuild.bak")
+            try:
+                os.replace(db_path, backup_path)
+                _console.print(
+                    f"  {pid}: backed up DB to {backup_path.name}"
+                )
+            except OSError as exc:
+                any_failure = True
+                reports.append({
+                    "project_id": pid,
+                    "error": f"backup failed: {type(exc).__name__}: {exc}",
+                    "backfill": None,
+                })
+                continue
+
+            # Also remove WAL and SHM files if they exist.
+            for suffix in (".db-wal", ".db-shm"):
+                wal_path = project_dir / f"intelligence{suffix}"
+                if wal_path.exists():
+                    try:
+                        wal_path.unlink()
+                    except OSError:
+                        pass
+
+        # Step 2: run full filesystem backfill.
+        try:
+            resources = registry._build_resources(pid)  # noqa: SLF001
+        except Exception as exc:  # noqa: BLE001
+            any_failure = True
+            reports.append({
+                "project_id": pid,
+                "error": f"{type(exc).__name__}: {exc}",
+                "backfill": None,
+            })
+            continue
+
+        try:
+            try:
+                backfill = FilesystemBackfill(resources)
+                backfill_report = backfill.run()
+            finally:
+                resources.db_engine.dispose()
+        except Exception as exc:  # noqa: BLE001
+            any_failure = True
+            reports.append({
+                "project_id": pid,
+                "error": f"backfill raised: {type(exc).__name__}: {exc}",
+                "backfill": None,
+            })
+            continue
+
+        if backfill_report.failures:
+            any_failure = True
+
+        reports.append({
+            "project_id": pid,
+            "error": None,
+            "backfill": asdict(backfill_report),
+        })
+        _console.print(
+            f"  {pid}: rebuilt — {backfill_report.filesystem_inserted} "
+            f"events inserted, {len(backfill_report.failures)} failures"
+        )
+
+    if output_format == "json":
+        typer.echo(json.dumps({"rebuild": True, "projects": reports}, indent=2, sort_keys=True))
+    else:
+        _render_text(reports, None)
+        _console.print(
+            "\n[yellow]Note:[/yellow] Analysis results (directives, reports) "
+            "were not rebuilt. Run 'secondsight analyze' to regenerate."
+        )
+
+    if any_failure:
+        raise typer.Exit(code=1)
+    raise typer.Exit(code=0)
 
 
 def _select_project_ids(home: Path, requested: str) -> list[str]:

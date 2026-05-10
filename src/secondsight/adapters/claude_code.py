@@ -48,6 +48,7 @@ from secondsight.adapters.base import AgentAdapter
 from secondsight.api.schemas import HookEnvelope
 from secondsight.event import EventType
 from secondsight.feedback.convention import Convention
+from secondsight.feedback.hint import Hint
 from secondsight.observation.tracker import PartialEvent
 
 _AGENT_NAME = "claude_code"
@@ -265,6 +266,14 @@ class ClaudeCodeAdapter(AgentAdapter):
         return {et.value for et in _HOOK_TO_EVENT_TYPE.values()}
 
     _MAX_INSTRUCTION_CHARS = 1000
+
+    def inject_hint(self, hint: Hint) -> str:  # type: ignore[override]
+        """Pass-through stub for hint injection (GUR-108, P3B-5).
+
+        Returns empty string. When the hint engine ships, this will
+        format hints for Claude Code system prompt injection.
+        """
+        return ""
 
     def inject_convention(self, convention: Convention) -> str:  # type: ignore[override]
         """Format a convention for Claude Code system prompt injection.

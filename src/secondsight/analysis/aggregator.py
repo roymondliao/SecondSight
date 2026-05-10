@@ -51,11 +51,14 @@ Assumptions explicitly stated:
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Final
+
+_logger = logging.getLogger(__name__)
 
 from secondsight.analysis.agent import AnalysisAgent
 from secondsight.analysis.prompts.aggregate import (
@@ -71,6 +74,8 @@ from secondsight.analysis.schemas import (
     DirectiveStatus,
     DirectiveType,
 )
+from secondsight.feedback.dedup import DedupVerdict, check_semantic_dedup
+from secondsight.feedback.lifecycle import validate_transition
 
 if TYPE_CHECKING:
     # Avoid circular import: storage.behavior_flags_repository imports
@@ -275,13 +280,68 @@ async def aggregate_project_flags(
     top = all_patterns[:top_n]
     now = datetime.now(timezone.utc)
     upserted = 0
+    skipped_dedup = 0
+
+    # P3B-1: load existing active conventions for semantic dedup.
+    # Only pre-existing conventions are checked — conventions added in
+    # this loop iteration are NOT deduped against each other (they come
+    # from distinct patterns with distinct identity_keys; the UPSERT
+    # handles same-key convergence).
+    preexisting_conventions = directives_repo.get_active_conventions(project_id)
 
     for flag_type, pattern in top:
+        # Compute identity_key first so we can exclude self-matches in dedup.
         identity_key = compute_identity_key(
             project_id, flag_type, pattern.representative_sessions
         )
-        # frequency: occurrence_count / flags_read_total for this project run.
-        # NOT a global cross-project frequency. Local to this aggregation run.
+
+        # P3B-1: semantic dedup check before UPSERT.
+        dedup_result = check_semantic_dedup(
+            pattern.convention, preexisting_conventions,
+            exclude_identity_key=identity_key,
+        )
+
+        if dedup_result.verdict == DedupVerdict.SKIP:
+            skipped_dedup += 1
+            _logger.info(
+                "aggregator: skipped duplicate convention for flag_type=%s "
+                "(similarity=%.3f, matched=%r)",
+                flag_type.value,
+                dedup_result.similarity,
+                dedup_result.matched_directive_id,
+            )
+            continue
+
+        if (
+            dedup_result.verdict == DedupVerdict.SUPERSEDE
+            and dedup_result.matched_directive_id
+        ):
+            try:
+                validate_transition(
+                    DirectiveStatus.ACTIVE, DirectiveStatus.SUPERSEDED,
+                    directive_id=dedup_result.matched_directive_id,
+                )
+                directives_repo.update_status(
+                    dedup_result.matched_directive_id,
+                    DirectiveStatus.SUPERSEDED,
+                )
+                _logger.info(
+                    "aggregator: superseded directive_id=%r with more "
+                    "precise convention (similarity=%.3f)",
+                    dedup_result.matched_directive_id,
+                    dedup_result.similarity,
+                )
+                preexisting_conventions = [
+                    d for d in preexisting_conventions
+                    if d.id != dedup_result.matched_directive_id
+                ]
+            except Exception as exc:
+                _logger.warning(
+                    "aggregator: failed to supersede directive_id=%r: %s",
+                    dedup_result.matched_directive_id,
+                    exc,
+                )
+
         frequency = (
             float(pattern.occurrence_count) / flags_read_total
             if flags_read_total > 0
@@ -302,6 +362,14 @@ async def aggregate_project_flags(
         )
         directives_repo.upsert_with_identity_key(directive)
         upserted += 1
+
+    if skipped_dedup > 0:
+        _logger.info(
+            "aggregator: semantic dedup skipped %d duplicate convention(s) "
+            "for project_id=%r",
+            skipped_dedup,
+            project_id,
+        )
 
     return AggregateProjectResult(
         project_id=project_id,

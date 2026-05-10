@@ -88,19 +88,15 @@ def test_dt3_identity_adapter_is_agent_adapter_subclass() -> None:
     )
 
 
-def test_dt4_inject_hint_loud_failure_is_inherited() -> None:
-    """DT-4: IdentityAdapter inherits AgentAdapter.inject_hint loud-failure default.
+def test_dt4_inject_hint_returns_empty_string() -> None:
+    """DT-4: IdentityAdapter inherits AgentAdapter.inject_hint pass-through stub (GUR-108, P3B-5).
 
-    A regression here means the migration accidentally added an `inject_hint`
-    override that returns `""` or similar silent default, defeating the whole
-    point of the loud-failure ABC contract.
+    inject_hint now returns "" (pass-through stub) instead of raising
+    NotImplementedError. The hint engine is reserved for future use.
     """
     adapter = IdentityAdapter()
-    with pytest.raises(NotImplementedError) as exc_info:
-        adapter.inject_hint(object())  # type: ignore[arg-type]
-    msg = str(exc_info.value)
-    assert "Phase 0" in msg, f"DT-4 inject_hint: missing 'Phase 0' guard — {msg!r}"
-    assert "SD §4.2" in msg, f"DT-4 inject_hint: missing 'SD §4.2' reference — {msg!r}"
+    result = adapter.inject_hint(object())  # type: ignore[arg-type]
+    assert result == "", f"DT-4 inject_hint: should return empty string, got {result!r}"
 
 
 def test_dt4_inject_convention_loud_failure_is_inherited() -> None:

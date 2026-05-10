@@ -202,6 +202,31 @@ class AnalysisRunsRepository:
             result = conn.execute(stmt).scalar()
             return int(result) if result is not None else 0
 
+    def get_failed_runs(
+        self, project_id: str, *, limit: int = 50
+    ) -> list[AnalysisRun]:
+        """Return failed runs for a project, ordered by updated_at DESC.
+
+        Used by ``secondsight analyze --retry-failed`` (GUR-108, P3B-6)
+        and the dashboard to surface analysis failures.
+        """
+        stmt = (
+            sa.select(analysis_runs)
+            .where(
+                sa.and_(
+                    analysis_runs.c.project_id == project_id,
+                    analysis_runs.c.stage == AnalysisRunStage.FAILED.value,
+                ),
+            )
+            .order_by(analysis_runs.c.updated_at.desc())
+            .limit(limit)
+        )
+        with self._db.engine.connect() as conn:
+            return [
+                self._row_to_run(r)
+                for r in conn.execute(stmt).mappings()
+            ]
+
     @staticmethod
     def _row_to_run(row: sa.RowMapping) -> AnalysisRun:
         raw_stage = row["stage"]

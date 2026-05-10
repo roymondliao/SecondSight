@@ -73,8 +73,8 @@ _DEFAULT_SERVER_URL = "http://127.0.0.1:8420"
 @app.callback(invoke_without_command=True)
 def analyze(
     ctx: typer.Context,
-    session: str = typer.Option(
-        ...,
+    session: Optional[str] = typer.Option(
+        None,
         "--session",
         "-s",
         help="Session ID to analyze.",
@@ -89,6 +89,11 @@ def analyze(
         False,
         "--force",
         help="Re-run analysis even if the session was already analyzed.",
+    ),
+    retry_failed: bool = typer.Option(
+        False,
+        "--retry-failed",
+        help="Re-analyze all sessions with failed analysis runs (GUR-108, P3B-6).",
     ),
     no_server: bool = typer.Option(
         False,
@@ -120,6 +125,19 @@ def analyze(
     """
     secondsight_home_path = resolve_secondsight_home(home)
     project_id = project or _resolve_project_id(secondsight_home_path)
+
+    if retry_failed:
+        _handle_retry_failed(
+            project_id=project_id,
+            secondsight_home=secondsight_home_path,
+        )
+        return
+
+    if session is None:
+        raise typer.BadParameter(
+            "Provide --session SESSION_ID or --retry-failed.",
+            param_hint="--session",
+        )
 
     if not no_server:
         # Try server-mode first.
@@ -190,6 +208,83 @@ def analyze(
         raise typer.Exit(code=1)
 
     _handle_dispatch_result(result, session_id=session)
+
+
+def _handle_retry_failed(
+    *,
+    project_id: str,
+    secondsight_home: Path,
+) -> None:
+    """Re-analyze all sessions with failed analysis runs (GUR-108, P3B-6).
+
+    Queries the DB for failed runs, extracts unique session IDs, and
+    re-triggers analysis with force=True for each.
+    """
+    from secondsight.storage.analysis_runs_repository import AnalysisRunsRepository
+    from secondsight.storage.db_engine import DBEngine
+
+    project_dir = secondsight_home / "projects" / project_id
+    db_path = project_dir / "intelligence.db"
+
+    if not db_path.exists():
+        typer.echo(f"No database found at {db_path}. Nothing to retry.", err=True)
+        raise typer.Exit(code=0)
+
+    db_engine = DBEngine(db_path)
+    try:
+        runs_repo = AnalysisRunsRepository(db_engine)
+        runs_repo.create_schema()
+        failed_runs = runs_repo.get_failed_runs(project_id)
+    finally:
+        db_engine.dispose()
+
+    if not failed_runs:
+        typer.echo("No failed analysis runs found. Nothing to retry.")
+        raise typer.Exit(code=0)
+
+    # Deduplicate by session_id (multiple failed runs for the same session
+    # should only trigger one retry).
+    seen_sessions: set[str] = set()
+    unique_sessions: list[str] = []
+    for run in failed_runs:
+        if run.session_id not in seen_sessions:
+            seen_sessions.add(run.session_id)
+            unique_sessions.append(run.session_id)
+
+    typer.echo(
+        f"Found {len(failed_runs)} failed run(s) across "
+        f"{len(unique_sessions)} session(s). Retrying..."
+    )
+
+    succeeded = 0
+    failed = 0
+    for sid in unique_sessions:
+        try:
+            trigger = _build_in_process_trigger(
+                secondsight_home=secondsight_home,
+                project_id=project_id,
+            )
+            result = _run_in_process_dispatch(
+                trigger=trigger,
+                project_id=project_id,
+                session_id=sid,
+                force=True,
+            )
+            if result.dispatched and result.reason != "timed-out":
+                succeeded += 1
+                typer.echo(f"  [ok] session {sid!r} re-analyzed.")
+            else:
+                failed += 1
+                typer.echo(f"  [fail] session {sid!r}: {result.reason}", err=True)
+        except Exception as exc:
+            failed += 1
+            typer.echo(
+                f"  [fail] session {sid!r}: {type(exc).__name__}: {exc}",
+                err=True,
+            )
+
+    typer.echo(f"Retry complete: {succeeded} succeeded, {failed} failed.")
+    raise typer.Exit(code=1 if failed > 0 else 0)
 
 
 def _dispatch_via_server(

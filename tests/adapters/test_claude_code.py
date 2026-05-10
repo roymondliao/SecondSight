@@ -245,20 +245,16 @@ def test_dt6_drop_list_raw_values_absent_from_data(path: Path) -> None:
         )
 
 
-def test_dt7_inject_hint_loud_failure_inherited() -> None:
-    """DT-7: ClaudeCodeAdapter inherits inject_hint's NotImplementedError.
+def test_dt7_inject_hint_returns_empty_string() -> None:
+    """DT-7: ClaudeCodeAdapter.inject_hint returns empty string (GUR-108, P3B-5).
 
-    Guards against an override regression where a future maintainer overrides
-    inject_hint with `return ""` or `pass` — the silent-default failure mode
-    the ABC's NotImplementedError exists to prevent. Method-locality assertion
-    (Phase 0 / SD §4.2 phrases) prevents accidental swap with inject_convention.
+    The inject_hint method is now a pass-through stub that returns "".
+    The hint engine is reserved for future use; when it ships, this test
+    should be updated to verify real formatting logic.
     """
     adapter = ClaudeCodeAdapter()
-    with pytest.raises(NotImplementedError) as exc_info:
-        adapter.inject_hint(object())  # type: ignore[arg-type]
-    msg = str(exc_info.value)
-    assert "Phase 0" in msg, f"DT-7: missing 'Phase 0' guard — was {msg!r}"
-    assert "SD §4.2" in msg, f"DT-7: missing 'SD §4.2' reference — was {msg!r}"
+    result = adapter.inject_hint(object())  # type: ignore[arg-type]
+    assert result == "", f"DT-7: inject_hint should return empty string, got {result!r}"
 
 
 def test_dt7b_inject_convention_formats_correctly() -> None:

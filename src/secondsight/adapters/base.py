@@ -51,9 +51,7 @@ from secondsight.observation.tracker import PartialEvent
 
 if TYPE_CHECKING:
     from secondsight.feedback.convention import Convention  # noqa: F401
-
-    # Hint is reserved for Phase 3+ (SD §4.2). The module does not yet exist.
-    from typing import Any as Hint  # type: ignore[assignment]  # noqa: F401
+    from secondsight.feedback.hint import Hint  # noqa: F401
 
 
 class NoAdapterError(Exception):
@@ -130,12 +128,14 @@ class AgentAdapter(ABC):
         )
 
     def inject_hint(self, hint: "Hint") -> str:
-        """Phase-0 reserved per SD §4.2. MUST stay loud-failure (DT-3).
+        """Pass-through stub per SD §4.2 (GUR-108, P3B-5).
 
-        Subclasses may override only when the Hint runtime ships (Phase 3+).
-        Returning "" silently is the failure mode this default exists to prevent.
+        Returns empty string — hint injection is reserved for future use.
+        The HintSelector.match() stub returns [] so this method is never
+        called in production. When the hint engine ships, subclasses
+        override with real formatting logic.
         """
-        raise NotImplementedError("inject_hint is reserved (Phase 0); see SD §4.2")
+        return ""
 
 
 class AdapterRegistry:
