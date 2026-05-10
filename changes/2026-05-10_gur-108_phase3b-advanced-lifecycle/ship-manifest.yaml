@@ -1,0 +1,119 @@
+delivered_capability: >
+  Hardened directive lifecycle and analysis pipeline resilience —
+  convention semantic dedup (Jaccard ≥0.7 → skip/supersede), TTL expiry
+  enforcement, obsolete convention re-activation on flag rebound, hint
+  module interface stub, adapter inject_hint pass-through, analysis
+  failure handling with CLI retry command, and full DB rebuild from
+  filesystem traces.
+
+tasks_completed: 7
+test_count_added: 74
+test_count_total: 975
+all_tests_pass: true
+
+security_review:
+  round_count: 1
+  findings_total: 2
+  findings_fixed: 2
+  findings_accepted: 0
+  details:
+    - id: M-1
+      severity: medium
+      issue: "TOCTOU race in lifecycle_automation — read status and write status in separate transactions allows invalid transitions"
+      resolution: "Fixed: atomic conditional UPDATE with WHERE status=<expected>; rowcount=0 skips safely"
+    - id: M-2
+      severity: medium
+      issue: "Path traversal in CLI --project-id — user input used to construct filesystem paths without validation"
+      resolution: "Fixed: validate with is_safe_id() in sync.py and analyze.py before any path construction"
+
+known_failure_modes:
+  - mode: >
+      Jaccard similarity on word tokens is a crude semantic metric.
+      Two conventions with identical meaning but different vocabulary
+      (e.g., synonyms, rephrased sentences) will not be detected as
+      duplicates. False negatives are safe (duplicate conventions waste
+      token budget but don't corrupt state).
+    severity: degradation
+    detection: "Multiple active conventions covering the same behavioral pattern. Visible in directive listing."
+
+  - mode: >
+      Re-activation lookback (14 days) is a fixed window. A flag type
+      that appears in cycles longer than 14 days (e.g., monthly review
+      patterns) will never trigger re-activation. The convention stays
+      obsolete permanently.
+    severity: degradation
+    detection: "Obsolete convention with periodic flag occurrences outside the 14-day window. Operator must manually re-activate via PATCH."
+
+  - mode: >
+      sync --rebuild deletes the DB before backfill. If backfill fails
+      mid-way (disk full, corrupt events file), the DB is partially
+      rebuilt. The pre-rebuild .bak file preserves the original state
+      for manual recovery.
+    severity: degradation
+    detection: "Rebuild reports failures in output. Backup file exists at intelligence.db.<timestamp>.pre-rebuild.bak."
+
+  - mode: >
+      analyze --retry-failed builds a new Trigger per session (sequential,
+      not batched). For many failed sessions, this is slow. No parallelism
+      or batching — each session gets a fresh orchestrator run.
+    severity: degradation
+    detection: "CLI output shows progress per session. Operator can interrupt and resume (idempotent)."
+
+  - mode: >
+      Dedup exclusion by identity_key means the aggregator won't dedup
+      a convention against itself (correct), but two patterns from the
+      same aggregation run with different identity_keys are NOT deduped
+      against each other (only against pre-existing conventions). Within-run
+      duplicates could emerge if the LLM produces overlapping patterns.
+    severity: degradation
+    detection: "Two new conventions from the same run with high word overlap. Caught on next aggregation cycle when they become 'pre-existing'."
+
+accepted_risks: []
+
+silent_failure_surface: medium
+# 5 documented degradation modes, 0 data corruption paths.
+# TOCTOU race resolved via conditional UPDATE.
+# Path traversal resolved via is_safe_id validation.
+
+failure_budget_review:
+  silent_failure_conditions: 5
+  unverified_assumptions: 1
+  known_shortcuts: 2
+  resolved_during_implementation: 0
+  verdict: >
+    Within budget. The 5 silent failure conditions are all degradation-level
+    with clear detection strategies. The single unverified assumption is the
+    Jaccard 0.7 threshold — bounded by the safe direction (false negatives
+    produce duplicates, not data corruption). The 2 known shortcuts are:
+    (1) no embedding-based semantic similarity, (2) sequential retry without
+    batching. Neither creates data corruption paths.
+
+reconciliation:
+  spec_drift: none
+  details: >
+    Implementation matches GUR-108 issue description exactly. All 7 planned
+    tasks (P3B-1 to P3B-7) delivered. Hint module (P3B-4/P3B-5) is stub-only
+    as specified — interface locked, no active behavior until future phase.
+    inject_hint base class changed from NotImplementedError to return "" since
+    HintSelector.match() always returns [] and no code path calls it.
+
+monitoring_hooks:
+  - "semantic_dedup skip rate: aggregator logs skipped duplicate count. If consistently high, conventions may be stale (same patterns re-emerging)"
+  - "expiry_enforcement count: logs expired directive IDs. If 0 consistently, either no TTLs set or TTLs are very long"
+  - "reactivation count: logs re-activated directive IDs. If never triggers, obsolete conventions may need manual review"
+  - "retry-failed exit code: 0=all succeeded, 1=some failed. Persistent failures indicate upstream LLM or session issues"
+
+kill_switch: >
+  Dedup: remove the check_semantic_dedup call block in aggregator.py
+  (lines 283-330). Conventions upsert without dedup as before.
+  Lifecycle automation: remove run_lifecycle_automation() call in
+  orchestrator.py (lines 487-504). Expiry/reactivation stops.
+  Rebuild: remove --rebuild option from sync CLI (no runtime impact).
+  Retry: remove --retry-failed option from analyze CLI.
+  Hint stub: no runtime impact (never called in production).
+
+commits:
+  - sha: b7bde37
+    message: "GUR-108 implement: Phase 3B Advanced Lifecycle + Error Handling (P3B-1 to P3B-7)"
+  - sha: 7a51793
+    message: "GUR-108 security-review: resolve M-1, M-2"
