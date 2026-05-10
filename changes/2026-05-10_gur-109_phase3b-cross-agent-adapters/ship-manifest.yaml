@@ -1,0 +1,90 @@
+delivered_capability: >
+  Cross-agent adapter support for Codex CLI and OpenCode —
+  CodexAdapter (4 event types: post_tool_use, session_start,
+  user_prompt_submit, stop) and OpenCodeAdapter (5 event types:
+  tool.execute.before/after, session.created, session.idle,
+  chat.message). Both implement the AgentAdapter ABC with full
+  privacy DROP_LISTs, inject_convention sanitization (1000 char
+  truncation), and hook_event_name cross-validation.
+
+tasks_completed: 2
+test_count_added: 47
+test_count_total: 1179
+all_tests_pass: true
+
+security_review:
+  round_count: 1
+  findings_total: 0
+  findings_fixed: 0
+  findings_accepted: 0
+  details: []
+
+known_failure_modes:
+  - mode: >
+      CodexAdapter does not support pre_tool_use (tool_use_start) because
+      Codex CLI's pre_tool_use hook is for blocking/approval only — it does
+      not provide enough observational data. Tool start events require JSONL
+      parsing (out of adapter scope, documented in P0-2).
+    severity: limitation
+    detection: "No tool_use_start events for Codex sessions. Visible in session timeline."
+
+  - mode: >
+      OpenCode bridge plugin relies on Bun→Python HTTP forwarding. If the
+      SecondSight server is unreachable, the bridge plugin's fetch call fails
+      silently (fire-and-forget in the reference implementation). Events are
+      lost without fallback file capture.
+    severity: degradation
+    detection: "Missing events in SecondSight DB compared to OpenCode session history. No fallback file for bridge-originated events."
+
+  - mode: >
+      inject_convention truncation at 1000 chars uses character count, not
+      token count. A convention near the limit may consume more tokens than
+      expected by the token budget allocator (which counts in tokens). Over-
+      budget by at most ~30% for a worst-case 1000-char instruction.
+    severity: degradation
+    detection: "Token budget overrun logged by convention selection layer. Convention still injected but budget accounting is off."
+
+accepted_risks: []
+
+silent_failure_surface: low
+# 3 documented modes, all are limitation/degradation with clear detection.
+# No data corruption paths. No injection vectors. Privacy DROP_LISTs
+# prevent raw content from reaching storage.
+
+failure_budget_review:
+  silent_failure_conditions: 3
+  unverified_assumptions: 2
+  known_shortcuts: 1
+  resolved_during_implementation: 0
+  verdict: >
+    Within budget. The 3 failure conditions are all limitation/degradation
+    level with clear detection. The 2 unverified assumptions are: (1) Codex
+    CLI hook payload shape matches codex-rs/hooks/src/types.rs as of 2025-04
+    (may drift); (2) OpenCode plugin hook API stability (no SemVer guarantee
+    from @opencode-ai/plugin). The 1 shortcut is: inject_convention uses
+    char truncation not token truncation (acceptable, bounded overrun).
+
+reconciliation:
+  spec_drift: none
+  details: >
+    Implementation matches GUR-109 issue description exactly. Both P3B-8
+    (Codex adapter) and P3B-9 (OpenCode adapter) delivered. Both agents'
+    events correctly normalize to SecondSight Event schema. Exit criteria met:
+    both adapters functional with full test coverage (47 tests including
+    9 death tests per adapter).
+
+monitoring_hooks:
+  - "codex event ingestion: adapter logs normalized event count per hook type. If 0 for session_start, hooks may not be configured."
+  - "opencode event ingestion: adapter logs normalized event count. If 0, bridge plugin may be misconfigured or SecondSight unreachable."
+  - "inject_convention calls: logged per adapter. If conventions are selected but inject returns empty, adapter may have a bug."
+
+kill_switch: >
+  Codex adapter: remove CodexAdapter from adapters/__init__.py registry.
+  Events for agent="codex" will be rejected at the API level (no matching
+  adapter). No runtime impact on other agents.
+  OpenCode adapter: remove OpenCodeAdapter from adapters/__init__.py
+  registry. Same isolation — no impact on other agents.
+
+commits:
+  - sha: 5d4f7e2
+    message: "GUR-109 implement: Phase 3B Cross-Agent Adapters — Codex + OpenCode (P3B-8, P3B-9)"
