@@ -15,12 +15,16 @@ from secondsight.adapters.base import (
     NoAdapterError,
 )
 from secondsight.adapters.claude_code import ClaudeCodeAdapter
+from secondsight.adapters.codex import CodexAdapter
 from secondsight.adapters.identity import IdentityAdapter
+from secondsight.adapters.opencode import OpenCodeAdapter
 
 __all__ = [
     "AdapterRegistry",
     "AgentAdapter",
     "ClaudeCodeAdapter",
+    "CodexAdapter",
     "IdentityAdapter",
     "NoAdapterError",
+    "OpenCodeAdapter",
 ]

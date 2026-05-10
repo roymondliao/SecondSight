@@ -1,0 +1,34 @@
+{
+  "_meta": {
+    "_source": "documented",
+    "_capture_origin": "OpenCode plugin API (@opencode-ai/plugin, packages/plugin/src/index.ts), tool.execute.after hook (snapshot 2026-04-24)",
+    "_opencode_hook_event_name": "tool.execute.after",
+    "_secondsight_event_type": "tool_use_end",
+    "_privacy_canary_field": "output.output"
+  },
+  "payload": {
+    "hook_event_name": "tool.execute.after",
+    "input": {
+      "tool": "read",
+      "sessionID": "oc-sess-001",
+      "callID": "call-abc-456",
+      "args": {
+        "file_path": "/Users/example/work/repo/src/main.ts"
+      }
+    },
+    "output": {
+      "output": "PRIVACY_CANARY_DO_NOT_STORE",
+      "title": "Read /Users/example/work/repo/src/main.ts",
+      "metadata": {}
+    }
+  },
+  "expected_partial_event_data": {
+    "tool_name": "read",
+    "call_id": "call-abc-456",
+    "output_size": 27,
+    "title": "Read /Users/example/work/repo/src/main.ts",
+    "success": true,
+    "action_target": "/Users/example/work/repo/src/main.ts"
+  },
+  "privacy_canary": "PRIVACY_CANARY_DO_NOT_STORE"
+}

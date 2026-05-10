@@ -1,0 +1,15 @@
+{
+  "_meta": {
+    "_source": "documented",
+    "_capture_origin": "OpenCode plugin API, session.created event (snapshot 2026-04-24)",
+    "_opencode_hook_event_name": "session.created",
+    "_secondsight_event_type": "session_start"
+  },
+  "payload": {
+    "hook_event_name": "session.created",
+    "properties": {
+      "sessionID": "oc-sess-001"
+    }
+  },
+  "expected_partial_event_data": {}
+}
