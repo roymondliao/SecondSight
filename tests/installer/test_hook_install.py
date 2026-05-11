@@ -13,11 +13,14 @@ Death tests:
         assert no .tmp_*.sh leak.
   DT-5  bundled_hook_dir() finds the source-tree scripts/hooks/ in
         editable mode (proves the auto-discovery climb-up).
+  DT-6  copyfile-fails branch: shutil.copyfile raises mid-write. Must
+        leave no target file AND no `.tmp_*` leftover. GUR-130 finding #7.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
@@ -164,3 +167,39 @@ def test_install_overwrites_when_content_differs(tmp_path: Path) -> None:
     plan = HookInstaller(source_dir=src).install(target)
     assert "_lib.sh" in plan.copied
     assert (target / "_lib.sh").read_text(encoding="utf-8").startswith("#!/usr/bin/env bash")
+
+
+# ---------------------------------------------------------------------------
+# DT-6: shutil.copyfile failure — no target file AND no .tmp_* leftover
+# ---------------------------------------------------------------------------
+
+
+def test_death_copyfile_failure_no_target_no_tmp_leftover(tmp_path: Path) -> None:
+    """shutil.copyfile raising mid-write must leave no target file AND no
+    `.tmp_*` leftover in the destination directory. GUR-130 finding #7.
+
+    This covers the TOCTOU window between mkstemp and os.replace that
+    DT-4 (os.replace failure) does not reach.
+    """
+    src = _make_bundle(tmp_path)
+    target = tmp_path / "claude" / "hooks"
+    target.mkdir(parents=True, exist_ok=True)
+
+    real_copyfile = shutil.copyfile
+
+    def copyfile_failing(src_path, dst_path, *args, **kwargs):
+        if ".tmp_" in str(dst_path):
+            raise OSError("simulated I/O error during copyfile")
+        return real_copyfile(src_path, dst_path, *args, **kwargs)
+
+    with patch("secondsight.installer.hook_install.shutil.copyfile", side_effect=copyfile_failing):
+        with pytest.raises(OSError, match="simulated I/O error during copyfile"):
+            HookInstaller(source_dir=src).install(target)
+
+    for name in HOOK_FILES:
+        assert not (target / name).exists(), (
+            f"{name} must NOT exist after copyfile failure"
+        )
+    assert list(target.glob(".tmp_*")) == [], (
+        "no .tmp_* leftover must remain after copyfile failure"
+    )

@@ -298,7 +298,15 @@ def archive_fallback_events(fallback_path: Path) -> FallbackArchiveReport:
         candidate = fallback_path.with_name(f"{fallback_path.name}.{ts}-{counter}.bak")
     archive_path = candidate
 
-    os.replace(fallback_path, archive_path)
+    try:
+        os.replace(fallback_path, archive_path)
+    except OSError as exc:
+        return FallbackArchiveReport(
+            archived=False,
+            archive_path=None,
+            line_count=line_count,
+            error=f"cannot rename {fallback_path} → {archive_path}: {type(exc).__name__}: {exc}",
+        )
     return FallbackArchiveReport(archived=True, archive_path=archive_path, line_count=line_count)
 
 

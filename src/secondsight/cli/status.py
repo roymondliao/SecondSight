@@ -108,6 +108,16 @@ def _gather_project_status(home: Path) -> list[dict[str, Any]]:
                     "sync_log_pending": sync_pending,
                 }
             )
+        except Exception as exc:  # noqa: BLE001 — one corrupt project must not crash the rest
+            out.append(
+                {
+                    "project_id": pid,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "events_in_db": None,
+                    "sessions_on_disk": None,
+                    "sync_log_pending": None,
+                }
+            )
         finally:
             resources.db_engine.dispose()
     return out

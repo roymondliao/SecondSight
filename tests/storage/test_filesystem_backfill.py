@@ -23,11 +23,17 @@ Death tests:
         rapid syncs do NOT clobber each other's .bak files. Without
         this, the second sync would silently overwrite the first's
         archive (data loss).
+
+  DT-6  archive_fallback_events os.replace failure MUST surface as
+        report.error, not raise — a cross-fs rename, EACCES, or NFS
+        stale handle must not bypass the structured-error contract.
+        GUR-130 finding #4.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -321,3 +327,37 @@ def test_death_same_second_double_archive_no_collision(
     assert first.archive_path.read_bytes() == first_bytes
     # Second archive's bytes have the new content.
     assert second.archive_path.read_text(encoding="utf-8") == "second\n"
+
+
+# ---------------------------------------------------------------------------
+# DT-6: os.replace failure surfaces as report.error, not raised
+# ---------------------------------------------------------------------------
+
+
+def test_death_archive_rename_failure_surfaces_as_report_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """os.replace raising OSError (cross-fs, EACCES, NFS stale handle) must
+    NOT leak past the structured-error contract. GUR-130 finding #4.
+    """
+    fb = tmp_path / "fallback_events.jsonl"
+    fb.write_text("pending event\n", encoding="utf-8")
+
+    real_replace = os.replace
+
+    def replace_failing(src, dst):
+        if str(src) == str(fb):
+            raise PermissionError("simulated EACCES on rename")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace_failing)
+
+    report = archive_fallback_events(fb)
+    assert report.archived is False
+    assert report.archive_path is None
+    assert report.error is not None, (
+        "os.replace failure must surface as report.error, not raise"
+    )
+    assert "PermissionError" in report.error
+    assert report.line_count == 1
+    assert fb.exists(), "original file must be preserved on rename failure"

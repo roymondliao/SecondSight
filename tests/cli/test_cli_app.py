@@ -12,6 +12,11 @@ Death tests:
   DT-2  `secondsight sync` exits 1 when any project's backfill reports
         a failure (so operators / scripts notice). A regression that
         always returned 0 would mask data-loss conditions.
+
+  DT-8  `secondsight status` per-project counting errors must NOT
+        crash the entire status command. One corrupt project must
+        surface an error dict and let healthy projects report
+        normally. GUR-130 finding #3.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from typer.testing import CliRunner
 
 from secondsight.api.registry import ProjectRegistry
 from secondsight.cli.app import app
+from secondsight.installer.claude_settings import InvalidSettingsError
 
 runner = CliRunner()
 
@@ -189,6 +195,76 @@ def test_status_on_empty_home_returns_clean_json(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# DT-8: status per-project hardening (GUR-130 finding #3)
+# ---------------------------------------------------------------------------
+
+
+def test_status_positive_path_reports_project_counts(tmp_path: Path) -> None:
+    """Status command with a valid project must report event/session/pending
+    counts (not just the empty-home case). GUR-130 finding #3.
+    """
+    home = tmp_path / "ss"
+    project_dir = home / "projects" / "proj1"
+    project_dir.mkdir(parents=True)
+    (project_dir / "sessions" / "s1").mkdir(parents=True)
+    (project_dir / "sessions" / "s2").mkdir(parents=True)
+
+    result = runner.invoke(app, ["status", "--home", str(home), "--format", "json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    projects = payload["projects"]
+    assert len(projects) == 1
+    p = projects[0]
+    assert p["project_id"] == "proj1"
+    assert p["error"] is None
+    assert p["events_in_db"] == 0
+    assert p["sessions_on_disk"] == 2
+    assert p["sync_log_pending"] == 0
+
+
+def test_death_status_corrupt_project_does_not_crash_healthy_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One project whose counting ops raise must NOT prevent healthy projects
+    from reporting. GUR-130 finding #3 — asymmetry with sync.py's S1 hardening.
+    """
+    home = tmp_path / "ss"
+    (home / "projects" / "aaa_corrupt").mkdir(parents=True)
+    (home / "projects" / "zzz_healthy").mkdir(parents=True)
+    (home / "projects" / "zzz_healthy" / "sessions" / "s1").mkdir(parents=True)
+
+    real_build = ProjectRegistry._build_resources  # noqa: SLF001
+
+    call_count = 0
+
+    def build_with_corrupt_first(self, project_id):
+        nonlocal call_count
+        call_count += 1
+        resources = real_build(self, project_id)
+        if project_id == "aaa_corrupt":
+            resources.db_engine.dispose()
+            raise RuntimeError("simulated corrupt DB")
+        return resources
+
+    monkeypatch.setattr(ProjectRegistry, "_build_resources", build_with_corrupt_first)
+
+    result = runner.invoke(app, ["status", "--home", str(home), "--format", "json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    projects = {p["project_id"]: p for p in payload["projects"]}
+
+    assert "aaa_corrupt" in projects
+    assert projects["aaa_corrupt"]["error"] is not None
+    assert "RuntimeError" in projects["aaa_corrupt"]["error"]
+
+    assert "zzz_healthy" in projects
+    assert projects["zzz_healthy"]["error"] is None, (
+        "healthy project must still report normally after corrupt project"
+    )
+    assert projects["zzz_healthy"]["sessions_on_disk"] == 1
+
+
+# ---------------------------------------------------------------------------
 # DT-2: sync exits 1 when failures present
 # ---------------------------------------------------------------------------
 
@@ -259,6 +335,50 @@ def test_death_init_aborts_before_hook_copy_when_settings_malformed(
     # half-state (hooks on disk, never registered).
     assert not (fake_claude / "hooks").exists(), (
         "init must NOT copy hooks when settings.json is malformed"
+    )
+
+
+# ---------------------------------------------------------------------------
+# DT-9 (GUR-130 #5): settings_invalid_after_hook_copy race-window pins the
+# half-state branch — hooks dir present, error code distinguishes from pre-check.
+# ---------------------------------------------------------------------------
+
+
+def test_death_init_settings_invalid_after_hook_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Monkey-patch ClaudeSettingsPatcher.apply to raise InvalidSettingsError
+    AFTER hook scripts have been copied. The half-state branch must:
+    1. Report error == "settings_invalid_after_hook_copy" (NOT "settings_invalid")
+    2. Leave the hooks dir on disk (hooks were already written)
+    GUR-130 finding #5.
+    """
+    fake_claude = tmp_path / "claude"
+    fake_claude.mkdir()
+    (fake_claude / "settings.json").write_text("{}", encoding="utf-8")
+
+    from secondsight.installer.claude_settings import ClaudeSettingsPatcher
+
+    real_plan = ClaudeSettingsPatcher.plan
+
+    def apply_raising(self, hook_dir):
+        raise InvalidSettingsError("simulated race: settings changed between plan and apply")
+
+    monkeypatch.setattr(ClaudeSettingsPatcher, "apply", apply_raising)
+
+    result = runner.invoke(
+        app,
+        ["init", "--claude-home", str(fake_claude), "--format", "json"],
+    )
+    assert result.exit_code == 1, f"got {result.exit_code}, output={result.output}"
+    payload = json.loads(result.output)
+    assert payload["error"] == "settings_invalid_after_hook_copy", (
+        f"half-state must use 'settings_invalid_after_hook_copy', "
+        f"not 'settings_invalid'; got {payload!r}"
+    )
+    assert (fake_claude / "hooks").exists(), (
+        "hooks dir MUST exist in the half-state — hooks were already copied "
+        "before the settings patch failed"
     )
 
 
@@ -359,4 +479,71 @@ def test_death_sync_multi_project_failure_does_not_abort_loop(
     assert bravo["backfill"] is not None, (
         "healthy project must produce a real backfill report (proves the "
         "loop continued past the alpha failure), got backfill=null"
+    )
+
+
+# ---------------------------------------------------------------------------
+# DT-10 (GUR-130 #6): --project-id path-traversal rejection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        "../../etc",
+        "../passwd",
+        "foo/bar",
+        "foo\\bar",
+        "..",
+        ".",
+        "valid\x00inject",
+    ],
+    ids=[
+        "dotdot-slash-traversal",
+        "parent-traversal",
+        "slash-in-id",
+        "backslash-in-id",
+        "bare-dotdot",
+        "bare-dot",
+        "null-byte",
+    ],
+)
+def test_death_sync_rejects_unsafe_project_id(tmp_path: Path, bad_id: str) -> None:
+    """--project-id with path-traversal characters must be rejected before
+    any filesystem operation. GUR-130 finding #6 — HARD GATE for Phase 2.
+    """
+    home = tmp_path / "ss"
+    home.mkdir()
+
+    result = runner.invoke(
+        app,
+        ["sync", "--home", str(home), "--format", "json", "--project-id", bad_id],
+    )
+    assert result.exit_code != 0, (
+        f"unsafe project-id {bad_id!r} must be rejected, "
+        f"got exit_code={result.exit_code}, output={result.output}"
+    )
+
+
+def test_sync_accepts_safe_project_id(tmp_path: Path) -> None:
+    """A safe project-id that exists on disk must be accepted. GUR-130 #6."""
+    home = tmp_path / "ss"
+    (home / "projects" / "my-project").mkdir(parents=True)
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "--home",
+            str(home),
+            "--format",
+            "json",
+            "--project-id",
+            "my-project",
+            "--no-fallback-archive",
+        ],
+    )
+    assert result.exit_code == 0, (
+        f"safe project-id 'my-project' must be accepted, "
+        f"got exit_code={result.exit_code}, output={result.output}"
     )
