@@ -143,6 +143,37 @@ def test_health_uptime_increases(tmp_secondsight_home: Path) -> None:
         assert r2.json()["uptime_s"] >= r1.json()["uptime_s"]
 
 
+def test_dashboard_mount_redirects_and_serves_static(
+    tmp_secondsight_home: Path, tmp_path: Path
+) -> None:
+    """Built dashboard assets are mounted under /dashboard and root redirects.
+
+    This keeps the frontend integration explicit while remaining optional:
+    tests pass their own dist dir instead of depending on a repo-local build.
+    """
+    from secondsight.api.server import ServerConfig, create_app
+
+    dashboard_dist = tmp_path / "dashboard-dist"
+    dashboard_dist.mkdir()
+    (dashboard_dist / "index.html").write_text(
+        "<!doctype html><html><body><div id='root'>dashboard</div></body></html>",
+        encoding="utf-8",
+    )
+
+    app = create_app(
+        secondsight_home=tmp_secondsight_home,
+        config=ServerConfig(dashboard_dist=dashboard_dist),
+    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        redirect = client.get("/", follow_redirects=False)
+        assert redirect.status_code == 307
+        assert redirect.headers["location"] == "/dashboard/"
+
+        dashboard = client.get("/dashboard/")
+        assert dashboard.status_code == 200
+        assert "dashboard" in dashboard.text
+
+
 # ---------------------------------------------------------------------------
 # DT-FL-3: Sweeper task is started during lifespan and cancelled on shutdown
 # ---------------------------------------------------------------------------

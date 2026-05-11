@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 42 40% 96%;
+    --foreground: 214 46% 14%;
+    --card: 0 0% 100%;
+    --card-foreground: 214 46% 14%;
+    --primary: 201 79% 33%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 38 70% 90%;
+    --secondary-foreground: 214 46% 14%;
+    --muted: 40 33% 91%;
+    --muted-foreground: 214 18% 36%;
+    --accent: 18 89% 56%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 4 75% 55%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 26% 84%;
+    --input: 214 26% 84%;
+    --ring: 201 79% 33%;
+    --radius: 22px;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    font-synthesis-weight: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    @apply min-h-screen bg-background text-foreground;
+    font-family: "Space Grotesk", ui-sans-serif, sans-serif;
+    background-image:
+      radial-gradient(circle at top left, rgba(251, 146, 60, 0.18), transparent 26%),
+      radial-gradient(circle at top right, rgba(14, 165, 233, 0.18), transparent 28%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(248, 244, 236, 0.95));
+  }
+
+  #root {
+    min-height: 100vh;
+  }
+
+  button,
+  input,
+  textarea {
+    font: inherit;
+  }
+}
+
+@layer utilities {
+  .numeric {
+    font-variant-numeric: tabular-nums;
+  }
+}

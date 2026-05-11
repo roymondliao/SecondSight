@@ -28,12 +28,19 @@ secondsight = "secondsight.cli.app:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/secondsight"]
 
+# Ship the prebuilt dashboard bundle inside the Python package so
+# `secondsight serve` can mount `/dashboard` from an installed wheel,
+# not only from a source checkout with `frontend/dist/` present.
+[tool.hatch.build.targets.sdist.force-include]
+"frontend/dist" = "frontend/dist"
+
 # Bundle the canonical hook scripts at wheel-build time so a `pip install
 # secondsight` carries everything `secondsight init` needs to copy into
 # ~/.claude/hooks/. The dev-tree source-of-truth stays at scripts/hooks/
 # (kept there so shellcheck CI runs unchanged); installer.bundled_hook_dir()
 # probes both locations and uses whichever exists.
 [tool.hatch.build.targets.wheel.force-include]
+"frontend/dist" = "secondsight/_resources/dashboard"
 "scripts/hooks" = "secondsight/_resources/hooks"
 
 [tool.ruff]
