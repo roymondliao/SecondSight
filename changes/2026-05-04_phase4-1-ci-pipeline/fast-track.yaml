@@ -1,0 +1,171 @@
+type: fast_track
+issue: GUR-111
+description: |
+  Add .github/workflows/ci.yml running ruff + pre-commit + pytest on PR/push to main.
+  Pin Python 3.14, install via uv, target workflow file < 60 lines.
+death_clause: |
+  If CI passes when ruff/pre-commit/pytest would fail locally on a clean canonical
+  install (false-green), this change is failed.
+
+acceptance:
+  - Workflow file present at .github/workflows/ci.yml and < 60 lines (actual: 46)
+  - Triggers on pull_request (any branch) and push to main
+  - Runs ruff check, ruff format --check, pre-commit run --all-files, pytest
+  - Uses Python 3.14 (sourced from .python-version) and uv for deps
+  - Verified by a green CI run on a no-op PR (deferred — requires the workflow
+    to land on main first, then a separate no-op PR validates against canonical
+    GHA ruff)
+
+quick_autopsy:
+  scope: |
+    Single declarative GitHub Actions workflow + a [tool.ruff] config block in
+    pyproject.toml that excludes the changes/ research dir, pins target-version
+    py314, line-length 100. Plus one F841 fix in tests/poc/test_storage.py
+    (rename elapsed_ms → _elapsed_ms to satisfy the unused-var convention while
+    preserving evidence of an unasserted perf measurement).
+  silent_failure_modes:
+    - |
+      pytest exit code 5 (no tests collected) would fail CI. Verified locally
+      that the suite has 349 tests across 5 subdirs, so this isn't a current
+      risk. The 2 failing tests in tests/cli/ are in untracked Phase 1 API
+      work and won't run in CI until that work lands.
+    - |
+      Local ruff (arm64 binary at v0.15.5 and v0.15.12, plus pre-commit's own
+      ruff env) produced INVALID Python 3 when reformatting `except (A, B):`
+      clauses — stripped parens, yielding Python 2 syntax. Reproduced via
+      direct subprocess and verified via raw bytes / sha256 / ast.parse.
+      Filesystem write/read verified honest. The canonical x86_64 GHA ruff
+      may behave correctly, but I could NOT pre-validate `ruff format`
+      locally. The no-op PR (issue exit criterion) is the actual validation.
+    - |
+      Tool-version drift between explicit `uvx ruff@0.15.5` step and pre-
+      commit's pinned ruff-pre-commit v0.15.5 — kept identical for now;
+      bump together when upgrading.
+
+incident_log:
+  - id: incident-1
+    title: |
+      Local pre-commit run corrupted src/secondsight/poc/event_schema.py
+    detail: |
+      During death-test verification I ran `uvx pre-commit run --all-files
+      --show-diff-on-failure`. Pre-commit's ruff-format hook (using the
+      broken local arm64 binary) stripped parens from a multi-exception
+      clause at event_schema.py:590, leaving invalid Python 3
+      (`except json.JSONDecodeError, TypeError:`). Detected via ast.parse
+      check on all modified .py files. Recovery: `git checkout` restored
+      all 25 inadvertently-modified files to HEAD; verified event_schema.py
+      now parses, 347/349 tests pass (the 2 failures are untracked Phase 1
+      tests in tests/cli/, not caused by this incident). Lesson: until the
+      local ruff binary is investigated, do NOT run pre-commit or
+      `ruff format` locally — they will silently corrupt code on
+      multi-exception clauses.
+
+scar_tag: 5
+scar_items:
+  - id: scar-1
+    title: Local ruff binary corrupts valid Python (multi-exception clauses)
+    detail: |
+      Multiple ruff binaries (uv archive cache 0.15.5 + 0.15.12, pre-commit
+      repo cache 0.15.5) all strip parens from `except (FileNotFoundError,
+      ValueError):` producing invalid Python 3. Reproduced with a 5-line
+      minimal repro. NOT investigated to root cause (out of GUR-111 scope).
+      Follow-up: verify on a clean machine; if reproducible upstream, file
+      a ruff issue. Until resolved, devs on this machine MUST NOT run
+      pre-commit or `ruff format` locally.
+  - id: scar-2
+    title: Perf test measures elapsed time but never asserts on it
+    detail: |
+      tests/poc/test_storage.py::TestBatchOperations::test_batch_store has
+      docstring "Batch store should be faster than individual stores" but
+      only verifies event count, never asserts on elapsed_ms. Renamed to
+      _elapsed_ms (with comment) to satisfy F841 and preserve evidence.
+      Real fix (add a perf assertion or delete the measurement) is a
+      separate test-design decision for the original author. Recommend
+      a follow-up issue.
+  - id: scar-3
+    title: Four production files may need ruff format on canonical ruff
+    detail: |
+      My local broken ruff reported registry.py, server.py, daemon.py, and
+      tests/cli/test_serve_daemon.py as needing format. Did NOT run
+      `ruff format` locally because output cannot be trusted (see scar-1).
+      The no-op PR will reveal whether canonical GHA ruff agrees. If yes,
+      the format pass should be a follow-up PR by someone with a working
+      ruff binary, OR done in CI's environment.
+  - id: scar-4
+    title: pyproject.toml `tool.uv.dev-dependencies` deprecated
+    detail: |
+      `uv sync` warns: "The `tool.uv.dev-dependencies` field is deprecated;
+      use `dependency-groups.dev` instead." Out of scope for GUR-111 but
+      will surface again as uv versions advance. Recommend follow-up.
+  - id: scar-5
+    title: 2 daemon tests fail locally in untracked Phase 1 API work
+    detail: |
+      tests/cli/test_serve_daemon.py::test_death_stale_pid_kill_refused
+      and test_stop_daemon_returns_false_no_pidfile fail locally. These
+      tests live in an untracked directory (Phase 1 API server work in
+      progress) and will NOT run in CI until they're committed. Surfaced
+      here for the Phase 1 owner's awareness, not blocking GUR-111.
+
+files_changed:
+  - .github/workflows/ci.yml          # new — the workflow
+  - pyproject.toml                     # added [tool.ruff] block (5 lines)
+  - tests/poc/test_storage.py          # F841 rename elapsed_ms → _elapsed_ms (line 825)
+  - changes/2026-05-04_phase4-1-ci-pipeline/fast-track.yaml  # this autopsy
+
+quality_checklist:
+  - criterion: C5 Reuse
+    checked: true
+    note: |
+      Uses official Astral action (astral-sh/setup-uv@v4) and standard
+      actions/cache@v4 — no custom shell shims for uv install or pre-commit
+      cache. Ruff version pinned ONCE in workflow (v0.15.5) and matches
+      .pre-commit-config.yaml; future bumps need to update both, but no
+      logic is duplicated.
+  - criterion: C6 Clear Structure
+    checked: true
+    note: |
+      Single job "ci" with sequential steps. Each step has one tool with
+      one job — `ruff check`, `ruff format --check`, `pre-commit`, `pytest`
+      are separate steps so a failure points at the exact tool. No matrix,
+      no composite actions, no nested workflows.
+  - criterion: C7 Elegant Logic
+    checked: true
+    note: |
+      No conditional logic, no shell heredocs, no env-var indirection.
+      The [tool.ruff] block has 3 entries. No premature abstraction
+      (e.g., no reusable workflow for one consumer).
+  - criterion: C8 No Redundancy
+    checked: true
+    note: |
+      `python-version: "3.14"` keeps workflow Python aligned with pyproject
+      (>=3.14) and .python-version (3.14). Concurrency group keys are
+      derived from github context rather than hardcoded.
+
+deferred_validation: |
+  Local pytest passes (347/349 — 2 failures in untracked code). Local ruff
+  behavior is unreliable (see scar-1 and incident-1), so the workflow's
+  ruff steps are validated only against canonical GHA. The exit-criterion
+  no-op PR is the binding test. Until that runs green, this issue should
+  remain in_review, not done.
+
+next_actions:
+  - Open a no-op PR against this branch to trigger the new workflow and
+    observe the actual GHA result. If green: mark GUR-111 done. If red:
+    triage the failures (most likely scar-3 ruff format on 4 files or
+    additional F841 hits inside changes/ that the exclude doesn't cover).
+  - Create child issues for scars 1, 2, 4, and possibly 5 (Phase 1 API
+    daemon test flakes) so they don't get lost.
+
+board_decision_log:
+  - at: 2026-05-05T14:22:40Z
+    by: local-board
+    decision: |
+      Deferred CI run verification until after feature implementation is
+      complete.
+    status_effect: |
+      GUR-111 remains blocked on board-triggered verification timing rather
+      than implementation work.
+    unblock_owner: local-board
+    unblock_action: |
+      Trigger or approve a no-op PR CI run when feature implementation reaches
+      the agreed checkpoint.

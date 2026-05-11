@@ -1,0 +1,173 @@
+task_id: task-2
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      Three explicit methods on the Protocol (not a generic dispatcher).
+      This locks GUR-103 into providing exactly analyze_segments /
+      aggregate_flag_type / summarize_session as separate async methods.
+      A future `analyze[T](prompt: str) -> T` generic form is explicitly
+      rejected (requires runtime type-tag plumbing). If a fourth method
+      is needed, the Protocol will require a new method and a FakeAnalysisAgent
+      update — acceptable because Protocol changes are explicit contracts.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      @runtime_checkable checks method NAMES only, not signatures or async-ness.
+      A GUR-103 implementation with sync methods (not async) would still pass
+      isinstance(impl, AnalysisAgent) at import time, but raise TypeError at
+      call time when the orchestrator awaits the result. The caller sees a
+      TypeError, not an AnalysisAgentError — so the orchestrator's
+      skip-vs-fail-loud decision path is bypassed. mypy catches this at type-check
+      time, but only if GUR-103 annotates the implementation with the Protocol type.
+      Documented at both the Protocol class docstring (IMPORTANT-1 fix) and in
+      test DT-2.2 comment.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      SegmentAnalysis, AggregateOutput, and SummaryOutput exist in their
+      documented module locations with the field shapes used in the tests
+      (segment_summary: str, flags: list[BehaviorFlagDraft], etc.).
+    verified: true
+    note: >
+      Read src/secondsight/analysis/schemas.py and prompts/aggregate.py and
+      prompts/summary.py directly. All three models exist with the expected
+      field shapes. AggregateOutput.patterns is list[AggregatePattern],
+      SummaryOutput has headline/key_findings/body, SegmentAnalysis has
+      segment_summary/flags/total_events/flagged_events.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      pytest-asyncio 1.3.0 is installed and configured in STRICT mode
+      (no asyncio_mode=auto in pyproject.toml). All async tests require
+      explicit @pytest.mark.asyncio decorator.
+    verified: true
+    note: >
+      Confirmed via `uv run python -c "import pytest_asyncio; print(pytest_asyncio.__version__)"`
+      returning 1.3.0, and grep of pyproject.toml finding no asyncio_mode config.
+      Module-level pytestmark approach was initially used, generating warnings for
+      sync tests; corrected to per-method @pytest.mark.asyncio in self-iteration.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      FakeAnalysisAgent lives in the test file (not a shared _helpers module).
+      Task-3/4/5 implementers will import from tests/analysis/test_agent_protocol.py
+      or copy/re-implement as needed — the task spec says "task-3/4/5 will
+      copy/import it as needed."
+    verified: true
+    note: >
+      The task spec explicitly states this placement. CRITICAL-1 fix moved
+      FakeAnalysisAgent from src/secondsight/analysis/agent.py (where it
+      was incorrectly shipped) to tests/analysis/test_agent_protocol.py.
+      If cross-task import becomes awkward, a tests/analysis/conftest.py
+      fixture or tests/analysis/_helpers.py module can be extracted without
+      changing FakeAnalysisAgent's design.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      GUR-103 will implement AnalysisAgent using PydanticAI's async-native API.
+      If GUR-103 discovers PydanticAI requires sync-first usage, the Protocol's
+      async-first design forces GUR-103 to wrap sync PydanticAI calls in
+      asyncio.to_thread or similar — that is GUR-103's problem per the task spec.
+    verified: false
+    note: >
+      Cannot verify without reading GUR-103's scope. If PydanticAI's API has
+      changed to be sync-only, this Protocol design forces unnecessary
+      asyncio.to_thread overhead. The async-first rationale stands (PydanticAI
+      is documented as async-native in GUR-103's description).
+    deferred_to_feature_iteration: false
+
+debt_registered: false
+debt_location: >
+  No outstanding debt after targeted fixes. All CRITICAL and IMPORTANT items
+  from yin/quality reviews resolved. The remaining silent_failure_condition
+  (@runtime_checkable signature-blindness) is a structural Python limitation —
+  documented in the Protocol docstring and DT-2.2 test comment, not a debt item.
+
+narrative: >
+  Task-2 ships the typed seam between GUR-102 and GUR-103: the AnalysisAgent
+  Protocol, AnalysisAgentError, and FakeAnalysisAgent. The Protocol body was
+  copied verbatim from the 2-plan.md D1 ratified decision. FakeAnalysisAgent
+  uses prompt-string keying for aggregate_outputs (documented choice: explicit
+  over substring-search). Death tests cover all seven documented failure modes
+  (5 original + DT-2.6 + DT-2.7 from yin review remediation).
+
+  Yin reviewer returned FAIL with 3 Critical findings; quality reviewer returned
+  PASS_WITH_CONCERNS with 2 Important findings. Targeted remediation round:
+  CRITICAL-1 moved FakeAnalysisAgent to test file; CRITICAL-2 + CRITICAL-3 fixed
+  exception types; IMPORTANT-1 + IMPORTANT-2 added bets + runtime_checkable
+  warning to Protocol docstring. Final: 604 passed (3 new tests added), 0 failures.
+
+resolved_items:
+  - original_section: known_shortcuts
+    original_description: >
+      Module-level pytestmark = pytest.mark.asyncio caused PytestWarning on
+      3 sync test methods in the test file.
+    resolution: >
+      Removed pytestmark and added @pytest.mark.asyncio explicitly only to
+      async test methods. 3 warnings eliminated. Tests still pass: 13/13.
+      Full suite: 601 passed, 184 warnings (3 fewer than before fix).
+
+  - original_section: known_shortcuts (CRITICAL-1)
+    original_description: >
+      FakeAnalysisAgent was shipped in src/secondsight/analysis/agent.py
+      (production code). Test double was importable as
+      `from secondsight.analysis.agent import FakeAnalysisAgent` from any
+      production path, and agent.py was 154 lines instead of ~65.
+    resolution: >
+      Moved FakeAnalysisAgent class definition entirely from agent.py to
+      tests/analysis/test_agent_protocol.py (placed after imports, before
+      fixture helpers and test classes). Updated import in test file from
+      `from secondsight.analysis.agent import ..., FakeAnalysisAgent` to
+      `from secondsight.analysis.agent import AnalysisAgent, AnalysisAgentError`.
+      agent.py is now 72 lines (module docstring + imports + AnalysisAgentError
+      + AnalysisAgent Protocol only). No other files imported FakeAnalysisAgent
+      from the production path. Full suite: 604 passed.
+
+  - original_section: known_shortcuts (CRITICAL-2)
+    original_description: >
+      FakeAnalysisAgent.analyze_segments slices segment_outputs by
+      len(prompts) rather than asserting len(segment_outputs) >= len(prompts).
+      If a test passes 3 prompts but only configured 2 outputs, the call
+      silently returns 2 items (not 3), violating the Protocol's len(out)==len(in)
+      contract without raising any error.
+    resolution: >
+      Added guard at top of analyze_segments: when len(prompts) > len(self._segment_outputs),
+      raises AnalysisAgentError naming the count mismatch (not RuntimeError,
+      not AssertionError — uses the Protocol's declared exception type).
+      Added DT-2.6 death test verifying the path raises AnalysisAgentError
+      with the count mismatch message. Added HP-2.9 confirming spare outputs
+      (more outputs than prompts) are still valid. Full suite: 604 passed.
+
+  - original_section: silent_failure_conditions (CRITICAL-3)
+    original_description: >
+      FakeAnalysisAgent.summarize_session raises RuntimeError (not AnalysisAgentError)
+      when called with no summary_output configured. A caller using
+      `except AnalysisAgentError:` (which is what GUR-102 task-5 orchestrator
+      tests will do) would silently bypass this RuntimeError.
+    resolution: >
+      Changed `raise RuntimeError(...)` to `raise AnalysisAgentError(...)` in
+      summarize_session. aggregate_flag_type has no parallel RuntimeError path
+      (it raises KeyError for missing key, which is intentional test-setup-error
+      signal — unchanged per yin reviewer guidance). Added DT-2.7 death test
+      verifying summarize_session raises AnalysisAgentError (not RuntimeError)
+      on missing summary_output. Full suite: 604 passed.
+
+  - original_section: silent_failure_conditions (IMPORTANT-1 + IMPORTANT-2)
+    original_description: >
+      @runtime_checkable signature-blindness was documented only in the test
+      (DT-2.2 comment), not at the Protocol definition site. A GUR-103
+      implementer reading agent.py directly would infer stronger isinstance
+      guarantees than the decorator provides. The async-first and all-or-nothing
+      batch bets were documented in the module header and method bodies, but
+      not at the class signature.
+    resolution: >
+      Added comprehensive class-level docstring to AnalysisAgent Protocol
+      documenting: (a) the three planning-gate bets (async-first,
+      all-or-nothing batch, three explicit methods) and (b) the
+      @runtime_checkable limitation warning (isinstance checks names only —
+      not signatures, param types, return types, or async-ness; mypy catches
+      the rest). Both items are now visible to a GUR-103 implementer reading
+      agent.py directly without needing to cross-reference the test file.

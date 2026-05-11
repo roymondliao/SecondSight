@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "secondsight"
 version = "0.1.0"
@@ -5,25 +9,48 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "fastapi[standard]>=0.136.1",
-    "litellm>=1.83.0",
-    "loguru>=0.7.3",
-    "pendulum>=3.2.0",
-    "pydantic>=2.13.3",
-    "pydantic-ai>=1.87.0",
-    "pytest>=9.0.3",
-    "pytest-asyncio>=1.3.0",
-    "rich>=15.0.0",
-    "sqlalchemy>=2.0.49",
-    "typer>=0.24.2",
+  "fastapi[standard]>=0.136.1",
+  "litellm>=1.83.0",
+  "loguru>=0.7.3",
+  "pendulum>=3.2.0",
+  "pydantic>=2.13.3",
+  "pydantic-ai>=1.87.0",
+  "pytest>=9.0.3",
+  "pytest-asyncio>=1.3.0",
+  "rich>=15.0.0",
+  "sqlalchemy>=2.0.49",
+  "typer>=0.24.2"
 ]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[project.scripts]
+secondsight = "secondsight.cli.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/secondsight"]
 
+# Ship the prebuilt dashboard bundle inside the Python package so
+# `secondsight serve` can mount `/dashboard` from an installed wheel,
+# not only from a source checkout with `frontend/dist/` present.
+[tool.hatch.build.targets.sdist.force-include]
+"frontend/dist" = "frontend/dist"
+
+# Bundle the canonical hook scripts at wheel-build time so a `pip install
+# secondsight` carries everything `secondsight init` needs to copy into
+# ~/.claude/hooks/. The dev-tree source-of-truth stays at scripts/hooks/
+# (kept there so shellcheck CI runs unchanged); installer.bundled_hook_dir()
+# probes both locations and uses whichever exists.
+[tool.hatch.build.targets.wheel.force-include]
+"frontend/dist" = "secondsight/_resources/dashboard"
+"scripts/hooks" = "secondsight/_resources/hooks"
+
+[tool.ruff]
+extend-exclude = ["changes"]
+line-length = 100
+target-version = "py314"
+
 [tool.uv]
-dev-dependencies = ["pytest>=8.0", "pyyaml>=6.0"]
+dev-dependencies = [
+  "mypy>=1.20.2",
+  "pytest>=8.0",
+  "pyyaml>=6.0"
+]

@@ -1,0 +1,186 @@
+task_id: task-3
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      MH-3 stages the fallback file by firing real bash hooks against
+      a dead port (port=1) instead of writing the JSONL directly via
+      Python. The bash path is more authentic to the user-observable
+      flow but adds 5 subprocess invocations per test. Acceptable —
+      the test is fast (1.24s for 3 tests) and the alternative
+      (Python file IO) would skip the seam where bash + curl actually
+      decide to fall back. If runtime becomes a concern, the
+      tests/scripts/test_hook_fallback.py UT-2 already covers the
+      bash-side fallback write; MH-3 could shift to Python-direct
+      file staging without losing coverage.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      DT-3.3 (idempotency) only checks "no second .bak created" —
+      it does NOT assert that no .skipped sidecar files appeared,
+      that the fallback envelope shape is preserved across an
+      empty-then-rerun cycle, or that other home-dir state
+      (logs/, sync_log) is unchanged. Acceptable for Phase 1 — the
+      named .bak is the operator-visible signal — but a more rigorous
+      test would assert the full home-dir tree is unchanged.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      MH-3 imports `from secondsight.cli.sync import app as sync_app`
+      and `from typer.testing import CliRunner` INSIDE each test
+      function rather than at module top. This prevents an import
+      failure from poisoning the module load (helpful for the prereq
+      guard pattern), but it also means any bug in the sync module's
+      import side effects is invisible until the test runs. A future
+      refactor that moves work to import time could silently affect
+      test order.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The G1-α DB-zero-rows assertion uses `if db.exists()` to skip
+      the SQL when no DB was created (because no events ever reached
+      a project resource). This is correct — fallback events never
+      materialise a project — but a future change that creates the
+      DB lazily on `secondsight sync` invocation (even with no events)
+      would silently change the assertion shape: the COUNT(*)=0 check
+      would now run AND must also pass. Documented so the assertion's
+      conditional nature is visible.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      `bak_files = list(home.glob(f"{FALLBACK_FILENAME}.*.bak"))` does
+      not pin the timestamp pattern. If `archive_fallback_events`
+      ever writes a non-bak file matching the pattern (e.g.
+      ".jsonl.foo.bak.tmp"), the glob count would be wrong silently.
+      Acceptable risk: the archive function uses `os.replace` (atomic)
+      and the .bak suffix is a fixed string, not a glob.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      Phase 1 secondsight sync archives the fallback file but does
+      NOT replay events into the DB.
+    verified: true
+    note: >
+      Verified by reading src/secondsight/storage/filesystem_backfill.py:16-22
+      (Path C deferred comment) and confirmed by DT-3.2 going green:
+      after sync, COUNT(*) for the 5 fallback event_ids is 0. If a
+      future Path C implementation lands without updating GUR-99
+      scope, this assertion fails loudly with the named violation.
+
+  - assumption: >
+      `archive_fallback_events` short-circuits on empty/missing files
+      (no second .bak created on idempotent re-run).
+    verified: true
+    note: >
+      Verified by reading src/secondsight/storage/filesystem_backfill.py:287-288
+      (line_count==0 short-circuit) and confirmed by DT-3.3: second
+      sync produces zero new .bak files. The test's failure message
+      points at the source line if the regression occurs.
+
+  - assumption: >
+      typer.testing.CliRunner exercises the same code path as
+      `python -m secondsight sync ...` and `secondsight sync ...`
+      (when installed as a console script).
+    verified: true
+    note: >
+      Both paths reach `sync()` defined in src/secondsight/cli/sync.py
+      via Typer's command dispatch. CliRunner skips fork/exec but
+      runs the same Click context. For task-3's purposes (testing
+      sync semantics, not subprocess fork behavior) this is the
+      correct choice. Subprocess is reserved for task-5's daemon
+      lifecycle test where fork is intrinsic to the behavior.
+
+  - assumption: >
+      Port=1 is reliably bound to nothing on the test machine, so
+      bash hooks against it always fall through to fallback.
+    verified: true
+    note: >
+      Existing tests/scripts/test_hook_fallback.py uses port=1 the
+      same way (DT-1, DT-2, DT-4, etc.) — proven pattern. Port 1 is
+      privileged and reserved for tcpmux historically; modern
+      systems do not bind it by default.
+
+  - assumption: >
+      Test prereqs (bash/curl/jq) are sufficient for MH-3.
+    verified: true
+    note: >
+      All 3 tests in this task pass. No additional binary
+      dependencies introduced.
+
+debt_registered: true
+debt_location: >
+  tests/integration/test_phase1_e2e.py — MH-3 tests have local
+  imports of CliRunner and sync_app inside each test. If the import
+  pattern changes (e.g. moves to module top), update both tests.
+
+review_methodology:
+  mode: inline_self_review
+  reason: >
+    Subagent-based parallel review (samsara:code-reviewer +
+    samsara:code-quality-reviewer) failed across 4 consecutive
+    Paperclip heartbeats with `claude_transient_upstream: You've hit
+    your org's monthly usage limit`. Standard skill flow expects two
+    independent subagent reviews; that path was unavailable.
+    Instead, the main agent applied both review lenses (yin
+    deletion/naming/silent-rot/correctness + quality
+    S/O/L/I/D+Cohesion/Coupling/DRY/Pattern) inline on the task-3
+    diff. Findings and fixes recorded under resolved_items below.
+    Discipline preserved (review happened); independence reduced
+    (one reviewer instead of two). Documented openly so the
+    methodology change is auditable.
+
+resolved_items:
+  - original_section: "self-review-yin-1"
+    original_description: >
+      `test_mh3_dead_port_writes_five_fallback_lines` was a
+      pre-condition test, not a death test — it asserted the happy
+      path "5 hooks → 5 fallback lines" which is already covered by
+      tests/scripts/test_hook_fallback.py::UT-2 and UT-4. Duplicate
+      maintenance surface without raising signal.
+    resolution: >
+      Removed the test. Replaced with a NOTE comment in
+      TestMH3FallbackArchive explaining the removal and pointing at
+      UT-2/UT-4 as the canonical coverage for that behavior. The
+      remaining MH-3 tests absorb the precondition implicitly via
+      the new _stage_fallback_lines helper.
+
+  - original_section: "self-review-quality-1"
+    original_description: >
+      DRY: three (now two) MH-3 tests repeated the same staging
+      boilerplate (home=tmp_path/".secondsight"; mkdir; build_env;
+      loop firing N hooks). ~6 lines of repetition per test.
+    resolution: >
+      Extracted _stage_fallback_lines(home, count, *, project_id,
+      session_id, event_id_prefix) -> list[str] returning the
+      written event_ids in firing order. Both surviving MH-3 tests
+      now use it. Helper is documented with the seam-discovery
+      rationale (why bash, not Python file IO).
+
+  - original_section: "self-review-yin-2"
+    original_description: >
+      The G1-α DB-zero-rows assertion was wrapped in
+      `if db.exists()`. A future change that creates the DB on
+      every secondsight sync invocation (regardless of events) would
+      silently bypass the assertion, masking a Path C
+      implementation.
+    resolution: >
+      Removed the conditional. Assertion now: count is 0 either
+      because the DB is absent (no project ever materialised — the
+      current behavior) OR because the DB exists but has no rows
+      for these event_ids (the future-proof case). Either way the
+      assertion runs. Comment block records the reasoning.
+
+  - original_section: "self-review-quality-2"
+    original_description: >
+      Quality reviewer dimension: the new G1-α SQL site uses the
+      `id` column without referencing the existing SCHEMA CONTRACT
+      block.
+    resolution: >
+      Added an inline comment "See SCHEMA CONTRACT above
+      _wait_for_rows for the `id` column dependency" at the new
+      query site. The SCHEMA CONTRACT comment block at the top of
+      the helper section already lists `id` in its enumerated
+      columns, so the named contract anchor is honest and
+      complete.

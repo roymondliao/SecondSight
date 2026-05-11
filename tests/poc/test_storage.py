@@ -822,7 +822,8 @@ class TestBatchOperations:
 
         start = time.perf_counter()
         storage.store_events_batch(events)
-        elapsed_ms = (time.perf_counter() - start) * 1000
+        # Measured but never asserted on; kept for visibility. See GUR-111 follow-up.
+        _elapsed_ms = (time.perf_counter() - start) * 1000
 
         # Verify all events stored
         total = 0

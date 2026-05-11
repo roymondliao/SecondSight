@@ -1,0 +1,99 @@
+type: fast_track
+issue: GUR-112
+description: "Phase 4-2: install smoke test — fresh-env reproducible install + `secondsight --version` stub"
+
+death_clause: |
+  If `pip install <wheel>` succeeds in the python:3.14-slim container but
+  `secondsight --version` returns non-zero, hangs, or is silently bypassed
+  (e.g., `|| true`, `continue-on-error: true`), this CI step is considered
+  failed. A green smoke test that hides a broken install is worse than no
+  test — the entire forcing function is "fail loud on broken packaging".
+
+acceptance:
+  - "CI workflow `Install Smoke Test` builds wheel via `uv build --wheel`"
+  - "Wheel installs in clean `python:3.14-slim` container via `pip install`"
+  - "`secondsight --version` runs in the container with rc=0 and prints `secondsight <semver>`"
+  - "Workflow fails loud (rc != 0) on any step failure — verified locally via two death tests"
+  - "Stub is replaceable: GUR-98's full Typer CLI can swap `[project.scripts]` target without touching this workflow"
+
+scar_tag: 2
+scar_items:
+  - id: scar-1
+    file: src/secondsight/__main__.py
+    description: |
+      `try/except PackageNotFoundError` in main() defends a practically
+      unreachable path (pip-installed wheels always ship dist-info; PEP 660
+      editable installs do too). Borderline C7 (Elegant Logic) — 4 lines of
+      defense for ~zero real failures. Acceptable in a stub because the cost
+      is low and the error message is clearer than a raw stack trace, but
+      should be removed when GUR-98 replaces this stub with the Typer CLI.
+    resolution_trigger: "GUR-98 lands; this whole file is rewritten"
+  - id: scar-2
+    file: .github/workflows/install-smoke.yml
+    description: |
+      Smoke test only verifies the console script runs; it does NOT verify
+      `import secondsight` from user code, nor that transitive deps with
+      C-extensions (sqlalchemy, pydantic, etc.) actually built wheels for
+      Python 3.14. A green smoke test could hide "package installs but is
+      unusable for any real workflow." Acceptable per the issue's "stub now,
+      extend after GUR-98 lands" phasing.
+    resolution_trigger: "GUR-98 lands; smoke test extended to cover `init`/`serve`/`status` which exercise imports + deps"
+    tracked_by: GUR-113  # Phase 4-3 — filed by board so this scar survives GUR-112 closing
+
+files_changed:
+  - pyproject.toml                              # added [project.scripts] entry
+  - src/secondsight/__main__.py                 # new stub (~30 lines)
+  - .github/workflows/install-smoke.yml         # new workflow (~40 lines)
+  - changes/2026-05-04_phase4-2-install-smoke/fast-track.yaml  # this file
+
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: |
+      Version reads from `importlib.metadata.version("secondsight")` — single
+      source of truth in pyproject.toml. No duplicate version constant in
+      __init__.py. No re-implementation of console-script logic.
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: |
+      __main__.py is the canonical Python location for `python -m secondsight`
+      and a defensible target for [project.scripts]. Workflow file lives in
+      .github/workflows/ alongside ci.yml. Separate workflow (not merged into
+      ci.yml) because it has a different failure boundary (docker pull +
+      build + install vs. lint/typecheck) and a longer runtime; keeping them
+      separate avoids cross-contaminating concurrency groups.
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: |
+      Stub is ~30 lines, no wrappers, no abstractions. ONE flagged concern
+      (scar-1): the try/except for PackageNotFoundError defends an
+      effectively unreachable path. Kept because cost is small and message
+      clarity matters when a stub is replaced; flagged as scar for cleanup
+      when GUR-98 lands.
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: |
+      Version is single-sourced in pyproject.toml. The workflow does not
+      duplicate any logic from ci.yml — install smoke is a distinct test
+      category (integration), not a copy of the unit-test pipeline.
+
+verification:
+  death_tests_run:
+    - test: "bash -euo pipefail -c 'false; echo UNREACHABLE'"
+      expected: "rc != 0, no UNREACHABLE printed"
+      actual: "rc=1, no UNREACHABLE printed — PASS"
+    - test: "Build wheel with [project.scripts] removed, install, run secondsight --version"
+      expected: "rc != 0 (command not found)"
+      actual: "rc=127 — PASS, smoke test would catch entry-point regressions"
+  local_dry_run:
+    - command: "uv build --wheel --out-dir dist"
+      result: "Successfully built dist/secondsight-0.1.0-py3-none-any.whl"
+    - command: "pip install dist/*.whl && secondsight --version (in py3.14 venv)"
+      result: "rc=0, output: 'secondsight 0.1.0'"
+    - command: "secondsight foo (unknown arg)"
+      result: "rc=2, loud stderr message — fails as designed"
+  ci_dry_run: "Not executed — requires GitHub Actions runner. Logic verified equivalent locally."
+
+unknowns:
+  - "First CI run will pull python:3.14-slim — image is verified to exist on Docker Hub but cold-pull adds ~30s to first run. Acceptable."
+  - "If a transitive dependency drops a Python 3.14 wheel in a future version, this smoke test will catch it — but only at the install step, not at runtime. Once GUR-98 extends the smoke to exercise init/serve/status, runtime-import failures will also be caught."

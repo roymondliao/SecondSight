@@ -1,0 +1,80 @@
+task_id: task-1
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      `Directive` and `BehaviorFlag` use `extra="forbid"` but NOT
+      `frozen=True`. The Event model in src/secondsight/event.py uses
+      `frozen=True` for write-once semantics. I left these mutable
+      because Directive intentionally mutates (status changes), and
+      I wanted symmetry between BehaviorFlag and Directive for callers.
+      The trade-off: a caller could mutate a BehaviorFlag instance
+      after construction without revalidation.
+    deferred_to_feature_iteration: false  # acknowledged trade-off
+
+  - description: >
+      `SegmentData.events: list[ToolUseSpan | dict[str, Any]]` relies on
+      Pydantic v2's smart union to discriminate. A raw dict that happens
+      to match ToolUseSpan field names would be coerced into a
+      ToolUseSpan instance. v1-spec callers (segmenter, GUR-101) treat
+      the result correctly because they dispatch on isinstance(...).
+      A stricter discriminator (tagged union) would be more verbose
+      without solving a real problem at v1.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      `BehaviorFlag.event_ids` accepts an empty list `[]`. The acceptance
+      contract doesn't say a flag must reference at least one event,
+      but in practice an empty event_ids array would mean "the LLM
+      flagged something that referenced no concrete events" — likely
+      a false positive. No min_length=1 constraint enforced. If GUR-101
+      starts producing empty-event_ids flags we'll see noise but no
+      contract violation.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      `Directive.source_sessions` defaults to `[]`. A directive with
+      zero source sessions is a contract violation per SD §5.3.2
+      ("Convention 的品質來自統計基礎"), but we don't enforce this here.
+      The frequency field is also not required to be > 0 for active
+      conventions. GUR-101's aggregator owns these constraints; the
+      schema allows the loose form for testability.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The `model_validator` for ToolUseSpan checks
+      `success=True && duration_ms=None` but NOT
+      `success=False && duration_ms=None`. A failed-but-unknown-duration
+      span is allowed. Rationale: a tool can fail synchronously with
+      no measured duration (e.g. validation error before execution
+      started). If this turns out to be wrong, add the symmetric
+      validator.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: "Pydantic v2.13.3 supports `list[ModelA | dict]` smart union"
+    verified: true
+    note: >
+      Verified empirically: tests/analysis/test_schemas.py::test_segment_data_with_heterogeneous_events
+      passes — Pydantic v2 keeps a raw dict as dict and a ToolUseSpan-shaped
+      construction as ToolUseSpan in the same list.
+
+  - assumption: "Project uses Pydantic v2 (model_validator decorator + ConfigDict)"
+    verified: true
+    note: "pydantic==2.13.3 confirmed via .venv/bin/python -c 'import pydantic'"
+
+  - assumption: >
+      `extra="forbid"` is the right default for these contract models.
+    verified: true
+    note: >
+      Existing Event model uses extra="forbid"; matching that convention
+      makes the analysis-layer schemas behave identically when an LLM
+      output includes a stray field.
+
+debt_registered: true
+debt_location: "src/secondsight/analysis/schemas.py — see known_shortcuts above"
+
+resolved_items: []
+  # No self-iteration fixes performed — initial implementation passed
+  # all 27 tests on first run; nothing to iterate on at task-1 scope.

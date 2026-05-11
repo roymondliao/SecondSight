@@ -1,0 +1,95 @@
+type: fast_track
+issue: GUR-116
+parent: GUR-96
+description: >-
+  Consolidate the duplicated two-level lock-on-first-init pattern at three
+  sites (ProjectRegistry, SessionTracker, AppState tracker cache) into a
+  single LazyCacheWithLocking[K, V] utility under secondsight._common.
+death_clause: >-
+  If concurrent get(K) for the same unseen K invokes the materialiser more
+  than once, OR if a materialiser exception poisons the cache permanently,
+  OR if aclose() invokes the finaliser more than once per cached value, this
+  change is failed.
+acceptance:
+  - "secondsight._common.lazy_cache.LazyCacheWithLocking exists with materialiser, optional finaliser, get(key), invalidate(key), and aclose()."
+  - "ProjectRegistry.get delegates to LazyCacheWithLocking; the per-project DBEngine disposal lives in a finaliser."
+  - "SessionTracker._get_or_create_state delegates to LazyCacheWithLocking; reset_session uses invalidate to preserve the per-key lock (split-brain guard)."
+  - "AppState.get_or_create_tracker delegates to LazyCacheWithLocking; the resources argument was removed from the public signature, hooks.py caller updated."
+  - "Single-loop / GIL atomicity assumption block lives once, in lazy_cache.py module docstring."
+  - "Cross-reference NOTE comments at the three sites are removed."
+  - "All 414 existing tests remain green; 7 new tests in tests/_common/test_lazy_cache.py pass."
+  - "mypy clean across the new generic and the four migrated source files."
+scar_tag: 1
+scar_items:
+  - >-
+    KS-1 / KS-2 (memory growth and per-key lock retention) carry forward
+    unchanged — both dicts inside LazyCacheWithLocking grow unboundedly and
+    invalidate() intentionally keeps the per-key lock. Tracked in the
+    parent autopsy; out of scope for this consolidation.
+files_changed:
+  - "src/secondsight/_common/__init__.py (new)"
+  - "src/secondsight/_common/lazy_cache.py (new)"
+  - "tests/_common/__init__.py (new)"
+  - "tests/_common/test_lazy_cache.py (new, 7 tests including 5 death tests)"
+  - "src/secondsight/api/registry.py (rewired to LazyCacheWithLocking)"
+  - "src/secondsight/observation/tracker.py (rewired; reset_session uses invalidate)"
+  - "src/secondsight/api/server.py (rewired; get_or_create_tracker signature dropped resources arg)"
+  - "src/secondsight/api/hooks.py (updated caller for new signature)"
+verification:
+  pytest: "414 passed, 0 failed"
+  mypy: "Success: no issues found in 6 source files"
+  ruff: "All checks passed!"
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: >-
+      Three identical two-level lock blocks (registry.py:84, tracker.py:156,
+      server.py ~98) collapsed into one utility. The "must apply changes to
+      ALL THREE sites" obligation captured by the cross-ref comments is now
+      structurally impossible.
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: >-
+      secondsight._common is a new package whose docstring scopes it to
+      cross-cutting internal patterns. lazy_cache.py has one responsibility
+      (lazy materialisation with per-key locking). registry.py keeps its
+      _closed flag and disposal log message because they are part of its
+      external contract (RuntimeError text, per-project debug log).
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: >-
+      The utility get() is 18 lines mirroring the original three-site shape
+      with no additional ceremony. No extra wrapper types, no extra public
+      surface beyond get/invalidate/aclose. Sync vs async finaliser handled
+      by inspect.isawaitable on the return value (no separate code paths).
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: >-
+      The single-asyncio-loop + GIL atomicity assumption now appears in
+      exactly one docstring (lazy_cache.py). Each call site references it by
+      module pointer instead of restating it. tracker.py's "GIL acts as full
+      memory barrier" full paragraph collapsed into a one-line reference.
+yin_checklist:
+  - check: "Can anything be deleted?"
+    result: >-
+      ProjectRegistry._closed is technically redundant with the cache's own
+      closed flag, but the registry's RuntimeError message text is part of
+      its public contract (used by hooks.py to surface 503 to clients).
+      Kept to preserve message stability.
+  - check: "Are any names lying?"
+    result: >-
+      No. `_materialise`/`_finalise`/`invalidate` describe exactly what
+      runs. `LazyCacheWithLocking` says what it is. The retained
+      ProjectRegistry._closed flag is genuinely different from the cache's
+      internal flag (different error message, different observability).
+death_tests_added:
+  - "DT-1: Same-key concurrent first-init invokes materialiser exactly once."
+  - "DT-2: Different keys do not serialise on each other."
+  - "DT-3: Materialiser failure is not cached; retry re-invokes materialiser."
+  - "DT-4: aclose() finaliser idempotency — fires once per value across multiple aclose() calls."
+  - "DT-5: invalidate(key) drops value but preserves per-key lock identity."
+notes_for_followups:
+  - >-
+    A fourth instance of this pattern in any future code should reuse
+    LazyCacheWithLocking. If a future site needs eviction, that is Phase 2
+    (TTL/LRU) — adding it here would be premature without a workload.

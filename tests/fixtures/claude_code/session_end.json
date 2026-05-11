@@ -1,0 +1,25 @@
+{
+  "_meta": {
+    "_source": "documented",
+    "_capture_origin": "Claude Code hooks documentation, SessionEnd event (snapshot 2026-05-04). Documented fields: session_id, transcript_path, cwd, hook_event_name, reason. URL: https://docs.claude.com/en/docs/claude-code/hooks",
+    "_claude_code_hook_event_name": "SessionEnd",
+    "_secondsight_event_type": "session_end",
+    "_privacy_canary_field": "session_id",
+    "_privacy_canary_field_rationale": "session_id routes to PartialEvent.session_id (top-level Event column per SD §3.7.5), NOT to data. The canary fires if the adapter regresses and copies session_id into the data dict. SessionEnd payloads have no §5-explicit drop-listed fields, so this 'drop-from-data, route-to-column' rule is the relevant invariant."
+  },
+  "payload": {
+    "session_id": "PRIVACY_CANARY_DO_NOT_STORE",
+    "transcript_path": "/Users/example/.claude/projects/example/transcript.jsonl",
+    "cwd": "/Users/example/work/repo",
+    "hook_event_name": "SessionEnd",
+    "reason": "exit"
+  },
+  "expected_partial_event_data": {
+    "action_metadata": {
+      "reason": "exit",
+      "transcript_path": "/Users/example/.claude/projects/example/transcript.jsonl",
+      "cwd": "/Users/example/work/repo"
+    }
+  },
+  "privacy_canary": "PRIVACY_CANARY_DO_NOT_STORE"
+}

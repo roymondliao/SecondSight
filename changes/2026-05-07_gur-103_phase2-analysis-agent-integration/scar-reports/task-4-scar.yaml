@@ -1,0 +1,252 @@
+task_id: task-4
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      When agent_factory is provided (test double path), all three sub-routers
+      use it. End-to-end tool scoping (D4) is NOT enforced via PydanticAI for
+      this path — the injected factory creates its own Agents without the scoped
+      tool lists. This is by design: test doubles cannot enforce PydanticAI's
+      structural scoping without a real PydanticAI Agent. The DT-4.1 static check
+      via _scoped_tools verifies the production scoping; DT-4.1 end-to-end
+      verifies the live path with a bad model and a scoped factory.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      analyze_segments is sequential (one await per prompt, no concurrency). For large
+      batches, this means latency = N * per_call_timeout_s in the worst case. Concurrent
+      batching (asyncio.gather with per-prompt error isolation) is the v2 nice-to-have
+      documented in the Protocol. The sequential contract is explicitly documented in
+      the Protocol (all-or-nothing semantics require sequential processing in v1).
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: >
+      DT-4.1 static check inspects _scoped_tools (the tool callable lists). If
+      _build_scoped_tools is correct but _build_sub_routers passes different tools
+      to _make_scoped_agent_factory, the static check would pass while the live
+      path uses wrong tools. The end-to-end DT-4.1 is the safety net, but it only
+      verifies the aggregate path (bad model requesting read_project_file during
+      aggregate_flag_type). A misconfigured segment or summary scoping would not
+      be caught end-to-end without additional tests.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      PydanticAI tool scoping is enforced via tools= at Agent construction time.
+      If pydantic-ai changes this mechanism (e.g., tools= no longer restricts
+      which tools are visible to the LLM), the aggregate agent would silently gain
+      access to read_project_file without any test failure from DT-4.1 static.
+      The DT-4.1 end-to-end test would catch this only if it runs the production
+      factory path (which it does via bad_agent_factory using scoped tools).
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The three sub-routers each log WARN at construction ("LLMRouter constructed with
+      empty fallback chain") when fallbacks=[] — which is expected in many test
+      scenarios. In production, this warning fires correctly only when the user
+      explicitly configures empty fallbacks. The three identical WARN messages (one
+      per sub-router) at startup could confuse operators who see three warnings
+      instead of one.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      exc.add_note() attaches a note to the exception but does NOT change str(exc).
+      The prompt-index context appears in exc.__notes__ (Python 3.11+ list of strings)
+      and in the warning log, but NOT in the exception message seen by callers who
+      only check str(exc). Callers must check exc.__notes__ to get the prompt index.
+      This is a Python 3.11+ behavior — verified in Python 3.14 (the required version).
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      LLMRouter.config returns a RouterConfig with the correct model chain and
+      timeout values (primary, fallbacks, per_call_timeout_s, chain_total_timeout_s)
+      as passed to the LLMRouter constructor.
+    verified: true
+    note: >
+      Verified by test_HP_router_config_public_api_returns_constructor_values in
+      test_router.py. The RouterConfig frozen dataclass is populated directly from
+      the private attributes in the config property, which was verified against
+      known constructor values.
+
+  - assumption: >
+      AnalysisTools methods (read_traces, read_project_file, etc.) have correct
+      runtime-resolvable return annotations. Removing the TYPE_CHECKING guard from
+      tools.py allows PydanticAI to inspect return types at Agent construction time
+      without NameError.
+    verified: true
+    note: >
+      Verified: all tools.py imports (Event, BehaviorFlagsRepository, DirectivesRepository,
+      EventsRepository) are importable at module level without circular imports.
+      Confirmed via uv run python -c "from secondsight.event import Event" and
+      test_real_analysis_tools_construction_does_not_raise which constructs
+      PydanticAIAnalysisAgent with a real AnalysisTools instance.
+
+  - assumption: >
+      pydantic-ai >= 1.87.0 supports tools= as an Agent constructor parameter and
+      enforces tool scoping per-Agent instance: if the LLM requests a tool not in
+      the registered list, PydanticAI raises UnexpectedModelBehavior after retries
+      are exhausted.
+    verified: true
+    note: >
+      Verified experimentally: Agent with tools=[allowed_tool] + a test model that
+      requests 'forbidden_tool' → RetryPromptPart with "Unknown tool name: 'forbidden_tool'.
+      Available tools: 'allowed_tool'" → UnexpectedModelBehavior after retries exhausted.
+      Confirmed in dev session 2026-05-08 with pydantic-ai 1.87.0.
+
+  - assumption: >
+      Python 3.14 (the required version per pyproject.toml) has exc.add_note()
+      available (Python 3.11+ feature). Notes accumulate in exc.__notes__ as a
+      list of strings and do NOT modify str(exc).
+    verified: true
+    note: >
+      Confirmed via uv run python test. exc.add_note() adds to __notes__,
+      str(exc) is unchanged. DT-4.2 now asserts exc.__notes__ instead of str(exc).
+
+debt_registered: true
+debt_location: "src/secondsight/sdk/agent.py — test double path loses end-to-end tool scoping"
+
+narrative: >
+  Fix-loop resolved all 4 Critical and all 5 Important issues from the dual-reviewer
+  report. Key architectural changes:
+
+  1. RouterConfig public API (router.py): Frozen dataclass + .config property replaces
+     all private attribute access (router._primary, etc.). No cross-module identity
+     dependency on _default_agent_factory.
+
+  2. __init__ decomposition (agent.py): Three private helpers with single-death-reasons
+     — _extract_router_config (reads RouterConfig), _build_scoped_tools (builds the D4
+     tool lists), _build_sub_routers (wires three LLMRouters with the right factories).
+     __init__ is now a thin composer.
+
+  3. Factory injection (agent.py): The `is`-identity check against _default_agent_factory
+     is removed entirely. PydanticAIAnalysisAgent now accepts an optional agent_factory
+     parameter. When None (production), three separate scoped factories are built. When
+     provided, all three sub-routers use it (test double path). No cross-module identity
+     dependency.
+
+  4. Debug log (agent.py): Removed the unconditional access to
+     _segment_agent._function_toolset.tools (the pydantic-ai internal that ran in
+     production even when DEBUG logging was disabled). The debug log now uses
+     _scoped_tools which is safe and does not access pydantic-ai internals.
+
+  5. Inert proxy agents removed (#5 option a): The three _segment_agent, _aggregate_agent,
+     _summary_agent attributes were removed. DT-4.1 static check now inspects _scoped_tools
+     (the live-path tool callable lists) instead of _function_toolset.tools. This eliminates
+     the structural split between the inert proxy layer and the live factory layer.
+
+  6. TYPE_CHECKING guard removed from tools.py (#6): Event, BehaviorFlagsRepository,
+     DirectivesRepository, EventsRepository are now imported at module level. No circular
+     imports were introduced. _tool_with_any_return is deleted from agent.py — tools can
+     be passed directly to PydanticAI without annotation stripping.
+
+  7. __cause__ chain preservation + subclass preservation (#8, #9): DT-4.2 now asserts
+     exc.__notes__ contains the prompt index AND that the raised exception is the same
+     type as the router raised (RouterTerminalError, not base AnalysisAgentError).
+     analyze_segments uses exc.add_note(f"batch failed at prompt index {i}"); raise
+     instead of raise AnalysisAgentError(...) from exc.
+
+  Collateral improvement: fixing tools.py TYPE_CHECKING guard also fixed 5 previously
+  failing tests in tests/cli/test_analyze.py that were blocked by a tools.py import error
+  in the task-5 analyze CLI code. Total test count went from 795 passing (pre-fix) to
+  800 passing post-fix.
+
+resolved_items:
+  # ---- Critical fixes ----
+  - original_section: known_shortcuts
+    original_description: >
+      PydanticAIAnalysisAgent accesses router's private attributes (_primary, _fallbacks,
+      _per_call_timeout_s, _chain_total_timeout_s, _agent_factory). If router.py refactors
+      them, agent.py breaks at runtime with AttributeError.
+    resolution: >
+      Added RouterConfig frozen dataclass to router.py and exposed it via LLMRouter.config
+      property. agent.py now reads router.config and extracts primary, fallbacks, and timeouts
+      from RouterConfig fields — no private attribute access. RouterConfig added to __all__
+      and verified by test_HP_router_config_public_api_returns_constructor_values.
+
+  - original_section: known_shortcuts
+    original_description: >
+      Factory injection detection via identity check (provided_factory is _router_default).
+      If the default factory is wrapped or renamed, all three sub-routers silently use the
+      injected factory (wrong tool scoping in production).
+    resolution: >
+      Replaced the is-identity check with explicit injection. PydanticAIAnalysisAgent now
+      accepts agent_factory: AgentFactory | None = None parameter. When None (default),
+      three separate scoped factories are built. When provided, all three use it (test
+      double path). The _router_default import and identity check are deleted entirely.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      Debug log accesses self._segment_agent._function_toolset.tools.keys() unconditionally.
+      Runs in production at every construction. If pydantic-ai renames _function_toolset,
+      raises AttributeError at construction time in production.
+    resolution: >
+      Removed the three inert proxy agents entirely (#5 option a). The debug log now uses
+      [fn.__name__ for fn in self._scoped_tools["segment"]] etc., which accesses only the
+      tool callable lists — no pydantic-ai internal attributes. Safe to call unconditionally.
+
+  - original_section: narrative (design split)
+    original_description: >
+      __init__ was doing 4 unrelated things. Hard to reason about which part could silently
+      fail and why.
+    resolution: >
+      Decomposed into three private helpers: _extract_router_config (router.config API),
+      _build_scoped_tools (D4 tool list construction), _build_sub_routers (LLMRouter wiring).
+      __init__ is a thin composer calling the three helpers.
+
+  # ---- Important fixes ----
+  - original_section: silent_failure_conditions
+    original_description: >
+      The three pre-built Agents (_segment_agent, _aggregate_agent, _summary_agent) were
+      inert proxies never called for LLM operations. DT-4.1 verified their tool registry
+      (static layer) while the live layer used factory closures. Divergence could pass DT-4.1
+      while silently misrouting in production.
+    resolution: >
+      Removed all three inert proxy agents (#5 option a). DT-4.1 static check now inspects
+      _scoped_tools (the callable lists passed to _make_scoped_agent_factory). This IS the
+      live path — no structural split. The end-to-end DT-4.1 test remains for runtime
+      verification. Tests that previously accessed _function_toolset.tools now check
+      _scoped_tools.
+
+  - original_section: assumptions_made
+    original_description: >
+      AnalysisTools methods are directly passable to pydantic-ai's Agent(tools=[...])
+      without additional wrapping. Previously disproved: read_traces had TYPE_CHECKING-only
+      Event import causing NameError.
+    resolution: >
+      Root cause fixed upstream in tools.py: removed TYPE_CHECKING guard for Event,
+      BehaviorFlagsRepository, DirectivesRepository, EventsRepository. All four are now
+      imported at module level — no circular imports introduced. _tool_with_any_return
+      wrapper deleted from agent.py entirely. assumption.verified updated to true.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      Five tests accessed _function_toolset.tools via double-private path into pydantic-ai.
+      If pydantic-ai renames _function_toolset, all fail with AttributeError.
+    resolution: >
+      All tests migrated from _function_toolset.tools to _scoped_tools. No pydantic-ai
+      internal access in any remaining test (the DT-4.1 end-to-end test uses a scoped
+      Agent directly, not via _function_toolset). DT-4.1 static test now verifies the
+      live path's tool lists, not a proxy layer.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      DT-4.2 did not verify __cause__ chain preservation. If 'from exc' was removed,
+      test still passed.
+    resolution: >
+      Initial fix-loop landed isinstance(exc, RouterTerminalError) which proved the
+      subclass propagation but did NOT explicitly assert __cause__. The yin re-review
+      flagged this as scar-overstatement; corrected by orchestrator inline:
+      DT-4.2 (test_dt_4_2_partial_batch_failure_stops_at_first_error) now ALSO asserts
+      exc_info.value.__cause__ is not None with a docstring explaining the guard
+      (preserves the chain through router's `raise RouterTerminalError(...) from exc`).
+
+  - original_section: known_shortcuts
+    original_description: >
+      analyze_segments re-wraps with base AnalysisAgentError losing the subclass type.
+      Callers cannot distinguish RouterChainExhaustedError from RouterTerminalError.
+    resolution: >
+      Changed to exc.add_note(f"batch failed at prompt index {i}"); raise. The original
+      exception type (RouterTerminalError, RouterChainExhaustedError, etc.) is preserved.
+      DT-4.2 now asserts isinstance(exc, RouterTerminalError) (the specific type from
+      the router) and checks exc.__notes__ for the prompt-index context.

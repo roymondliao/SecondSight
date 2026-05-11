@@ -1,0 +1,126 @@
+feature: gur-149-analysis-ttl-and-post-analysis-trigger
+status: planned
+parent_issue: GUR-149
+sub_scope_of: GUR-107
+gating: "Carry-forward of GUR-107b per ship-manifest. Board confirmed scope reframes via comment 6578b671 on 2026-05-07."
+plan_ref_doc: changes/2026-05-07_gur-149_analysis-ttl-and-post-analysis-trigger/2-plan.md
+acceptance_ref_doc: changes/2026-05-07_gur-149_analysis-ttl-and-post-analysis-trigger/acceptance.md
+design_ref_doc: docs/system_design.md §3.10, §3.10.1, §7.2
+
+dependency_situation:
+  unblocked_by: "Board comment 6578b671 (2026-05-07) accepted folding the post-analysis hook into this ticket's scope rather than waiting on a separate event-bus delivery."
+  predecessor: GUR-147 (raw_traces TTL + Observation API + cleanup CLI shipped)
+
+accepted_gaps:
+  - id: gap-fs-collision
+    summary: "Eager raw_traces purge also removes the orchestrator's session_report.json FS backup (same `sessions/{session_id}/` tree)."
+    carried_forward_in: "2-plan.md §5 D5; PostAnalysisCleanupTrigger module docstring; acceptance B-H3."
+  - id: gap-callback-arity
+    summary: "Callback receives session_id only (not full AnalyzeSessionResult)."
+    carried_forward_in: "2-plan.md §2.3."
+  - id: gap-callback-failure-policy
+    summary: "Callback exception swallowed + logged; analysis result not poisoned."
+    carried_forward_in: "2-plan.md §2.3 + §3 DC-B3; acceptance B-S2."
+
+tasks:
+  # --- Wave 1: Independent foundations ---
+  - id: task-B1
+    title: "Extend RetentionConfig with analysis_ttl_days field + DC-B1"
+    status: completed
+    depends_on: []
+    plan_ref: "2-plan.md §2.1, D6"
+    wave: 1
+    sd_ref: ["3.10.1"]
+    death_cases: ["DC-B1"]
+    notes: "Pure config. Reuses _validate_ttl. New BUILTIN_DEFAULT_ANALYSIS_TTL_DAYS=365."
+    scar_count: 6
+    scar_ref: "scar-reports/task-B1-scar.yaml"
+    review_outcomes:
+      yin: PASS_WITH_CONCERNS
+      quality: PASS
+
+  - id: task-B2
+    title: "AnalysisResultsPurger + ExpiredAnalysis enumerator + DC-B6, DC-B7"
+    status: completed
+    depends_on: [task-B1]
+    plan_ref: "2-plan.md §2.2, D1, D4"
+    wave: 1
+    sd_ref: ["3.10.1"]
+    death_cases: ["DC-B6", "DC-B7"]
+    notes: "Pure storage. behavior_flags first, session_reports second. New module storage/analysis_retention.py."
+    scar_count: 6
+    scar_ref: "scar-reports/task-B2-scar.yaml"
+    review_outcomes:
+      yin: "PASS_WITH_CONCERNS (2 Critical resolved)"
+      quality: PASS_WITH_CONCERNS
+
+  # --- Wave 2: Orchestrator + consumer ---
+  - id: task-B3
+    title: "Orchestrator on_analysis_complete callback + DC-B3"
+    status: completed
+    depends_on: []
+    plan_ref: "2-plan.md §2.3, D2, D3"
+    wave: 2
+    sd_ref: []
+    death_cases: ["DC-B3"]
+    notes: "Modify Orchestrator.__init__ + analyze_session. Internal swallow in _invoke_on_analysis_complete. Async-callback fail-closed at construction time."
+    scar_count: 6
+    scar_ref: "scar-reports/task-B3-scar.yaml"
+    review_outcomes:
+      yin: "PASS_WITH_CONCERNS (1 Important resolved)"
+      quality: PASS
+
+  - id: task-B4
+    title: "PostAnalysisCleanupTrigger consumer + DC-B5 (DC-B4 deferred to B6)"
+    status: completed
+    depends_on: [task-B3]
+    plan_ref: "2-plan.md §2.4, §3 DC-B5; D5"
+    wave: 2
+    sd_ref: ["3.10.1", "7.2"]
+    death_cases: ["DC-B5"]
+    death_cases_deferred: ["DC-B4 → task-B6 factory wiring"]
+    notes: "New module analysis/post_analysis_cleanup.py with _PurgerProtocol for structural typing. Reuses GUR-147 RawTracesPurger. gap-fs-collision disclosed in module docstring + success log line."
+    scar_count: 9
+    scar_ref: "scar-reports/task-B4-scar.yaml"
+    review_outcomes:
+      yin: "PASS_WITH_CONCERNS (2 Important resolved)"
+      quality: "PASS_WITH_CONCERNS (1 Important resolved)"
+
+  # --- Wave 3: CLI integration ---
+  - id: task-B5
+    title: "secondsight cleanup CLI: include AnalysisResultsPurger + DC-B1 logging + DC-B7"
+    status: completed
+    depends_on: [task-B1, task-B2]
+    plan_ref: "2-plan.md §4, D7"
+    wave: 3
+    sd_ref: ["3.10"]
+    death_cases: ["DC-B1", "DC-B7"]
+    notes: "Auto-include both purgers per project. Structured INFO log per project. Resolves prior scar-B1-3 (JSON rename) + scar-B1-5 (B-S1 log half)."
+    scar_count: 15
+    scar_ref: "scar-reports/task-B5-scar.yaml"
+    review_outcomes:
+      yin: "FAIL → resolved (4 Critical fixed, 5 Important resolved/documented)"
+      quality: "PASS_WITH_CONCERNS (2 Important resolved)"
+
+  # --- Wave 3: Factory wiring ---
+  - id: task-B6
+    title: "Orchestrator factory wiring: pass trigger when cleanup_after_analysis=true"
+    status: completed
+    depends_on: [task-B4]
+    plan_ref: "2-plan.md §4 + tasks/task-B6.md"
+    wave: 3
+    sd_ref: []
+    death_cases: ["DC-B4"]
+    notes: "New module analysis/factory.py with build_orchestrator + OrchestratorWiringError. RetentionConfig extended with cleanup_after_analysis bool. No production caller yet (documented gap, scar-B6-1)."
+    scar_count: 10
+    scar_ref: "scar-reports/task-B6-scar.yaml"
+    review_outcomes:
+      yin: "PASS_WITH_CONCERNS (4 Important resolved)"
+      quality: PASS
+
+exit_criteria:
+  - "B-S1 through B-S5 (silent-failure death tests)"
+  - "B-D1, B-D2 (degradation)"
+  - "B-H1 through B-H5 (happy path)"
+  - "B-X1, B-X2, B-X3 (coverage gates)"
+  - "B-D1, B-D2, B-D3 (documentation gates)"

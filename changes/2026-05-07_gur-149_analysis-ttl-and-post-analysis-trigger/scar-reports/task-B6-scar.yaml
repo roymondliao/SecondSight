@@ -1,0 +1,299 @@
+task: task-B6
+title: "Orchestrator factory wiring + DC-B4 boot-time guard"
+status: review_passed
+review_outcomes:
+  yin: "PASS_WITH_CONCERNS — 4 Important (all resolved by labeling fixes)"
+  quality: "PASS — 2 Suggestions (1 resolved, 1 deferred per rule-of-three)"
+
+death_cases_covered:
+  - id: DC-B4
+    description: "Boot-time wiring guard — config says cleanup_after_analysis=true but factory drops trigger wiring"
+    tests:
+      - "TestDcB4BootTimeGuard::test_factory_raises_when_config_enabled_but_trigger_builder_returns_none"
+    note: >
+      Implementation chose policy (B) raise (per task-B6.md
+      recommendation). New `OrchestratorWiringError(RuntimeError)` is
+      raised by the factory when `config.cleanup_after_analysis is True`
+      AND `on_analysis_complete is None`. Test pins the contract by
+      monkeypatching `_build_cleanup_trigger` to a broken-builder spy.
+
+tests_written:
+  total: 4
+  classes:
+    - TestDcB4BootTimeGuard (1)
+    - TestFactoryDisabledPath (1)
+    - TestFactoryEnabledPath (1)
+    - TestFactoryNonBoolConfigRaises (1)
+test_results: "4 new tests pass; analysis+storage+cli suite 394 pass (was 390 after B5)"
+
+scar_items:
+  - id: scar-B6-1
+    severity: medium
+    title: "Factory's DC-B4 guard is bypassed by cli/analyze.py (cross-ticket gap)"
+    description: >
+      CORRECTION (security review GUR-149 finding 1, 2026-05-08): the
+      original verification claim ("zero matches outside tests") was
+      factually wrong. `src/secondsight/cli/analyze.py` (GUR-103
+      territory) constructs `Orchestrator(...)` directly at the
+      `_build_in_process_trigger` site, BYPASSING this factory. The
+      DC-B4 guard, the `cleanup_after_analysis` config wiring, and the
+      async-callback fail-closed check are silently absent on this
+      path. An operator who sets `[retention].cleanup_after_analysis
+      = true` in their TOML config and triggers analysis via
+      `secondsight analyze` will see no eager cleanup and no error —
+      exactly the silent-failure pattern DC-B4 was designed to close.
+    decision_taken: >
+      Cross-ticket coordination required. `cli/analyze.py` is owned
+      by GUR-103, not GUR-149. The fix is for GUR-103 to route through
+      `factory.build_orchestrator` rather than constructing
+      `Orchestrator` directly. Reaching into GUR-103's CLI from
+      GUR-149 would overstep ticket boundaries. Carry forward as
+      accepted risk: ship GUR-149 with the factory built and DC-B4
+      guard exercised in tests, but `cleanup_after_analysis = true`
+      is operationally inert on the CLI analyze path until GUR-103
+      adopts the factory.
+    deferred_to_feature_iteration: true
+    deferral_rationale: >
+      Cross-ticket fix (GUR-103 owns the bypassing call site); ship-
+      manifest must surface this as accepted risk. The two NEW
+      surfaces shipped by GUR-149 — (i) the `secondsight cleanup` CLI
+      with `analysis_ttl_days` enforcement, and (ii) the trigger
+      consumer + DC-B4 guard — are both functional. The gap is the
+      orchestrator entry-point wire-up.
+    resolved_items: []
+
+  - id: scar-B6-2
+    severity: low
+    title: "Config schema expanded with `cleanup_after_analysis: bool`"
+    description: >
+      Added new boolean field to `[retention]` TOML section. New
+      `_resolve_bool_field` helper in retention.py handles the
+      per-project → global → builtin chain (defaults to False, the
+      safe direction). Bool typing is strict — string values raise
+      RetentionConfigError rather than coercing. Source attribution
+      is intentionally NOT tracked for booleans (no value choice to
+      disambiguate vs. typo; typo on key falls through to False,
+      which is the safe default).
+    decision_taken: >
+      Match raw_traces_ttl_days's strict-int validation for symmetry.
+      A future contributor who adds a non-bool boolean-like config
+      should follow this pattern.
+    deferred_to_feature_iteration: false
+    resolved_items: []
+
+  - id: scar-B6-3
+    severity: low
+    title: "Factory builds 4 analysis repos lazily from db_engine"
+    description: >
+      `ProjectResources` only exposes events_repository + raw_trace_store
+      + db_engine. The factory constructs BehaviorFlagsRepository,
+      DirectivesRepository, AnalysisRunsRepository, and
+      SessionReportsRepository directly from `resources.db_engine`,
+      mirroring the CLI's pattern from task-B5. Schemas are NOT created
+      by the factory — the test fixture pre-creates them via
+      `create_schema()`, and a real entry point would either create
+      schemas on init or rely on the orchestrator's own schema-creation
+      semantics (which currently don't exist for these repos at
+      orchestrator scope).
+    decision_taken: >
+      Consistent with task-B5 CLI pattern. A future ProjectResources
+      that eagerly wires up all four repos would simplify both this
+      factory and cli/cleanup.py.
+    deferred_to_feature_iteration: true
+    deferral_rationale: "Architectural change to ProjectRegistry; cross-cuts GUR-147."
+    resolved_items: []
+
+  - id: scar-B6-4
+    severity: low
+    title: "Factory does not own DBEngine lifecycle"
+    description: >
+      Per docstring: "Caller owns the DBEngine lifecycle — the factory
+      does NOT dispose." This shifts dispose responsibility to the
+      caller (future entry point). Without that contract being
+      enforced, a caller could leak resources.
+    decision_taken: >
+      Documented in factory docstring. Once a production entry point
+      lands, an integration test should pin the dispose ordering.
+    deferred_to_feature_iteration: true
+    deferral_rationale: "No production caller exists to test against yet."
+    resolved_items: []
+
+  - id: scar-B6-5
+    severity: low
+    title: "DC-B4 test uses monkeypatch on private helper"
+    description: >
+      The DC-B4 test monkeypatches `factory._build_cleanup_trigger`
+      to simulate a wiring drop. The private helper is the only seam
+      I could simulate without inventing a different injectable. This
+      means the helper's name + signature are part of an implicit
+      test contract — renaming would break the test silently.
+    decision_taken: >
+      Acceptable: scar-B6-5 documents the implicit contract. The
+      alternative (passing the trigger builder as a kwarg to
+      build_orchestrator) would inflate the public surface.
+    deferred_to_feature_iteration: false
+    resolved_items: []
+
+assumptions_made:
+  - id: asm-B6-1
+    description: >
+      ProjectRegistry's `_build_resources` is the production path for
+      wiring per-project resources. The factory accepts a pre-built
+      ProjectResources rather than constructing one itself.
+    risk: "Caller must use the registry pattern; bypassing it would create resource bookkeeping drift. Documented in factory docstring."
+
+  - id: asm-B6-2
+    description: >
+      `cleanup_after_analysis` defaults to False. Operators who want
+      the eager-cleanup behavior must explicitly opt in.
+    risk: "Matches plan accepted gap [gap-callback-failure-policy] — opt-in is correct because SD §3.10.1 sets analysis_ttl > raw_traces_ttl precisely so operators can keep analysis around longer than raw events."
+
+  - id: asm-B6-3
+    description: >
+      The factory's DC-B4 guard fires only when `_build_cleanup_trigger`
+      returns None on the enabled path. A future code change that
+      bypasses the helper entirely (e.g., directly returning
+      `Orchestrator(..., on_analysis_complete=None)`) would not trip
+      the guard.
+    risk: >
+      Documented in scar-B6-5. The guard is a contract on the
+      factory's normal flow; alternative flows would need their own
+      contracts.
+
+  - id: scar-B6-6
+    severity: low
+    title: "Yin Important: factory `Raises:` section omitted AttributeError"
+    description: >
+      Yin reviewer Important: the factory's `Raises:` docstring section
+      listed only OrchestratorWiringError and RetentionConfigError. A
+      missing `resources` attribute (e.g., a future ProjectResources
+      refactor drops one) would raise AttributeError, propagating
+      through `build_orchestrator` uncaught. This is the correct
+      behavior (fail loud), but the docstring left it unlabeled.
+    decision_taken: >
+      Added explicit AttributeError to `Raises:` with a short
+      description noting the future-refactor scenario. Mother Rule 2
+      applied: assumption labeled at the API boundary.
+    deferred_to_feature_iteration: false
+    resolved_items:
+      - "fix-B6-B (Raises section + Precondition added)"
+
+  - id: scar-B6-7
+    severity: low
+    title: "Yin Important: DC-B4 test message assertion was OR-loose"
+    description: >
+      Yin reviewer Important: the DC-B4 test asserted
+      `"on_analysis_complete" in msg or "trigger" in msg.lower()` —
+      a future message refactor that drops "on_analysis_complete"
+      would still pass as long as anything containing "trigger"
+      remained. The OR clause weakened the contract.
+    decision_taken: >
+      Tightened to `assert "on_analysis_complete" in msg` (AND, not OR).
+      A message refactor must preserve both substrings or update the
+      test. Contract pinned.
+    deferred_to_feature_iteration: false
+    resolved_items:
+      - "fix-B6-C (DC-B4 test message AND-strict)"
+
+  - id: scar-B6-8
+    severity: low
+    title: "Yin Important: `_resolve_bool_field` validation asymmetry undocumented"
+    description: >
+      Yin reviewer Important: `_validate_ttl` explicitly documents
+      "A boolean is technically an int in Python but is rejected here"
+      because `isinstance(True, int)` is True. `_resolve_bool_field`
+      did not document why its `isinstance(value, bool)` check is
+      sufficient on its own. A future reader could wonder if a
+      symmetric int-check is missing.
+    decision_taken: >
+      Added a note in `_resolve_bool_field` docstring explaining the
+      asymmetry: bool is the PRIMARY check here (vs. _validate_ttl
+      where bool is a guard against bool-as-int). TOML native typing
+      produces bool for true/false literals.
+    deferred_to_feature_iteration: false
+    resolved_items:
+      - "fix-B6-D (bool validation note added)"
+
+  - id: scar-B6-9
+    severity: low
+    title: "Quality Suggestion: events_repository tacit boundary at trigger-builder site"
+    description: >
+      Quality reviewer Suggestion (O — tacit boundary):
+      `_build_cleanup_trigger` passes `resources.events_repository` to
+      BOTH `RawTracesPurger` (DB-delete path) AND
+      `PostAnalysisCleanupTrigger` (event-lookup path). This is sound
+      today (one project, one engine) but a future ProjectResources
+      refactor that splits raw-trace storage from event storage would
+      silently target two different scopes.
+    decision_taken: >
+      Added a 6-line marked-bet comment block at the dual-use site
+      naming the assumption. A future refactorer narrowing
+      ProjectResources sees the constraint at the commitment site,
+      not buried in scars.
+    deferred_to_feature_iteration: false
+    resolved_items:
+      - "fix-B6-E (events_repository tacit boundary marked)"
+
+  - id: scar-B6-10
+    severity: low
+    title: "Quality Suggestion: RawTracesPurger construction duplicated in factory + CLI"
+    description: >
+      Quality reviewer Suggestion (DRY): `RawTracesPurger(repo=...,
+      raw_trace_store=...)` is constructed identically in
+      factory.py:75-78 and cli/cleanup.py:451-454. Two sites for one
+      construction fact; if ProjectResources's shape changes, both
+      must update in lockstep.
+    decision_taken: >
+      Defer per rule-of-three. Two sites today; a third would warrant
+      extracting a shared helper (e.g.,
+      `ProjectResources.build_raw_traces_purger()`). Documented for
+      future contributor.
+    deferred_to_feature_iteration: true
+    deferral_rationale: "Rule-of-three; only two sites today."
+    resolved_items: []
+
+self_iteration_pass:
+  reviewed: true
+  fixes_applied:
+    - id: fix-B6-A
+      addresses_review: "self-iteration during initial test run"
+      change: >
+        First-pass factory tried to read repos like
+        `resources.behavior_flags_repository` from ProjectResources,
+        which only exposes events + raw_trace_store + db_engine.
+        Refactored to construct the analysis repos directly from
+        `resources.db_engine` (consistent with cli/cleanup.py's pattern).
+    - id: fix-B6-B
+      addresses_review: "yin Important: Raises section omitted AttributeError"
+      change: >
+        Added AttributeError to `Raises:` block with future-refactor
+        rationale. Added Precondition section noting the four analysis
+        repos must have schemas already created.
+    - id: fix-B6-C
+      addresses_review: "yin Important: DC-B4 test message assertion OR-loose"
+      change: >
+        Tightened test assertion from
+        `"on_analysis_complete" in msg or "trigger" in msg.lower()`
+        to `assert "on_analysis_complete" in msg`. Inline comment
+        documents the contract tightening.
+    - id: fix-B6-D
+      addresses_review: "yin Important: _resolve_bool_field validation asymmetry"
+      change: >
+        Added docstring note in `_resolve_bool_field` explaining why
+        the `isinstance(value, bool)` check is sufficient on its own
+        (asymmetry with `_validate_ttl`'s bool-as-int guard).
+    - id: fix-B6-E
+      addresses_review: "quality Suggestion: events_repository tacit boundary"
+      change: >
+        Added 6-line marked-bet comment at the dual-use site in
+        `_build_cleanup_trigger` naming the assumption that
+        events_repository serves both purger and trigger paths.
+  rationale: >
+    Implementation followed task-B6.md + 2-plan.md §2.4 + plan §4 file
+    map. Five scar items: factory has no production caller (the
+    documented gap), config schema expansion (bool field), repo
+    lazy-construction pattern, DBEngine lifecycle contract, monkeypatch
+    on private helper for DC-B4 test. None are actionable Level-1
+    cleanup beyond the test fixture refactor already applied.
+
+next_action: "Dispatch parallel code review (samsara:code-reviewer + samsara:code-quality-reviewer). After both pass, update index.yaml. With B6 complete, all 6 wave tasks done — ready for samsara:iteration / samsara:security-privacy-review / samsara:validate-and-ship."

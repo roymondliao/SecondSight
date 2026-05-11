@@ -1,0 +1,199 @@
+feature: gur-100-phase2-analysis-core
+coverage_type: verified
+
+# Death-first ordering enforced: silent failure -> degradation ->
+# unknown outcome -> happy path with evidence chain.
+# Decisions encoded: D1 (repo Python enum guard), D2 (one PR / 5 tasks),
+# D3 (same-PR SD update as ship gate).
+
+scenarios:
+  # =====================================================================
+  # SILENT FAILURE PATHS — most dangerous; tested first
+  # =====================================================================
+
+  - name: "Silent failure - flag_type drift via Pydantic bypass"
+    type: death_path
+    given: "A BehaviorFlag instance constructed via BaseModel.model_construct(flag_type='over_thinking', ...) bypassing Pydantic validation"
+    when: "BehaviorFlagsRepository.insert(flag) is called"
+    then:
+      - "insert raises ValueError naming the invalid flag_type"
+      - "no row is inserted into behavior_flags"
+      - "if a row is silently inserted with flag_type='over_thinking', the test fails with 'enum-bypass guard missing'"
+      - "intent: SD 5.5.1 single-source-of-truth promise is enforced at the repository layer, not just at Pydantic construction"
+
+  - name: "Silent failure - directive status drift via model_construct bypass"
+    type: death_path
+    given: "A Directive instance constructed via model_construct(status='frozen', ...)"
+    when: "DirectivesRepository.insert(directive) is called"
+    then:
+      - "insert raises ValueError naming the invalid status"
+      - "no row is inserted into directives"
+      - "intent: GUR-104 PATCH endpoint can rely on the DB never holding an out-of-enum status"
+
+  - name: "Silent failure - disabled transition without reason"
+    type: death_path
+    given: "A directive in status='active' persisted via DirectivesRepository.insert"
+    when: "update_status(directive_id, DirectiveStatus.DISABLED, reason=None) is called"
+    then:
+      - "raises ValueError naming the missing reason"
+      - "no UPDATE is issued; status remains 'active'"
+      - "if status silently transitions without a reason, the test fails with 'audit trail killer — disabled without reason'"
+      - "intent: SD 7.4 + memory contract require disabled_reason for every disable transition"
+
+  - name: "Silent failure - re-active leaves stale disabled metadata"
+    type: death_path
+    given: "A directive that was previously disabled (status=disabled, disabled_at=2026-05-05T12:00:00Z, disabled_reason='legacy convention')"
+    when: "update_status(directive_id, DirectiveStatus.ACTIVE) is called"
+    then:
+      - "row updated to status='active'"
+      - "disabled_at IS NULL after the transition"
+      - "disabled_reason IS NULL after the transition"
+      - "if either field still carries the prior disable metadata, the test fails with 'stale disable metadata leaked across re-activate'"
+      - "intent: re-active means a clean slate; lifecycle history lives in events, not in row mutation"
+
+  - name: "Silent failure - segmenter drops orphan tool_use_start"
+    type: death_path
+    given: "A session whose events table contains tool_use_start at sequence_number=5 with no matching tool_use_end"
+    when: "Segmenter(events_repo).segment_session(session_id) is called"
+    then:
+      - "Output contains a ToolUseSpan with start_seq=5, end_seq=None, success=None, duration_ms=None"
+      - "If the orphan is silently omitted, the test fails with 'orphan tool_use_start dropped — analysis loses a real action'"
+      - "intent: server crashes mid-tool MUST NOT make the action invisible to analysis"
+
+  - name: "Silent failure - segmenter drops orphan tool_use_end"
+    type: death_path
+    given: "A session whose events table contains tool_use_end at sequence_number=7 with no preceding tool_use_start (e.g. ingest replay artifact)"
+    when: "Segmenter(events_repo).segment_session(session_id) is called"
+    then:
+      - "Output contains a synthesized ToolUseSpan at sequence_number=7 with start_seq=end_seq=7"
+      - "WARNING log emitted naming 'orphan_tool_use_end' and the event_id"
+      - "If the orphan is silently omitted, the test fails with 'orphan tool_use_end dropped'"
+
+  - name: "Silent failure - pre-prompt segment merged into segment 1"
+    type: death_path
+    given: "A session whose first events (segment_index=0) include thinking and tool_use_start before any USER_PROMPT event"
+    when: "segment_session(session_id) is called"
+    then:
+      - "Output contains TWO SegmentData entries: segment_index=0 with user_prompt=None, and segment_index=1 with user_prompt=<the first USER_PROMPT event>"
+      - "Pre-prompt events appear in the segment_index=0 SegmentData, NOT silently merged into segment 1"
+      - "intent: SessionTracker initial-state semantics are preserved; analysis sees what actually happened"
+
+  - name: "Silent failure - empty segment dropped from output"
+    type: death_path
+    given: "A session with sequence: USER_PROMPT (segment_index=1), USER_PROMPT (segment_index=2), tool_use_start, tool_use_end (in segment 2)"
+    when: "segment_session(session_id) is called"
+    then:
+      - "Output contains TWO SegmentData entries: segment_index=1 with events=[] (empty segment), and segment_index=2 with one ToolUseSpan"
+      - "If segment 1 (empty) is silently dropped, the test fails with 'empty segment elided — analysis cannot see no-op user prompts'"
+
+  - name: "Silent failure - segmenter silently sorts out-of-order events"
+    type: death_path
+    given: "A session whose events table contains rows with sequence_numbers in [1, 3, 2, 4, 5] order (impossible at ingest, but possible after manual DB edit)"
+    when: "segment_session(session_id) is called"
+    then:
+      - "Segmenter raises ValueError naming the out-of-order sequence_number boundary"
+      - "Segmenter does NOT silently re-sort and proceed"
+      - "intent: corrupted ingest is a real bug; silent recovery hides it from operators"
+
+  - name: "Silent failure - null token_count silently coerces or raises"
+    type: death_path
+    given: "A SegmentData containing one thinking event with token_count=None and one with token_count=500"
+    when: "compute_segment_metrics(segment) is called"
+    then:
+      - "Returned total_tokens = 500 (None contributes 0)"
+      - "WARNING log emitted naming the event_id of the None-token event"
+      - "If the function raises TypeError, the test fails with 'null token_count not handled'"
+      - "If the function silently treats None as 0 with no log, the test fails with 'null contribution invisible to debuggers'"
+
+  # =====================================================================
+  # DEGRADATION PATHS — fallback active but must be marked degraded
+  # =====================================================================
+
+  - name: "Degradation - directive expires_at column carries unverified time"
+    type: degradation
+    given: "An existing directive with expires_at='2025-01-01T00:00:00Z' (in the past, status still 'active')"
+    when: "DirectivesRepository.get_active_conventions(project_id) is called"
+    then:
+      - "The expired-but-active directive IS returned (GUR-100 does not enforce expiry)"
+      - "Comment in directives_repository.py points to GUR-101 as the owner of expiry-enforcement logic"
+      - "intent: GUR-100 stores the column; GUR-101 acts on it. No silent filtering at this layer."
+
+  # =====================================================================
+  # UNKNOWN OUTCOME PATHS — explicit ToolUseSpan(success=None)
+  # =====================================================================
+
+  - name: "Unknown outcome - tool execution outcome not recorded"
+    type: death_path
+    given: "Two events: tool_use_start at seq=10 (data.tool_name='Read', target='/x.py'), no matching tool_use_end (server died)"
+    when: "segment_session(session_id) is called and the segment is rendered for the LLM"
+    then:
+      - "ToolUseSpan in output has tool_name='Read', target='/x.py', start_seq=10, end_seq=None, success=None, duration_ms=None"
+      - "success is exactly one of: True, False, None — never coerced to False on orphan"
+      - "intent: 'unknown' state is observable to the LLM, never silently classified as failure"
+
+  # =====================================================================
+  # SHIP-MANIFEST GATE — D3 same-PR SD update
+  # =====================================================================
+
+  - name: "Ship gate - PR diff includes SD 5.5.2 confidence patch"
+    type: death_path
+    given: "Implementation of all 5 tasks complete; ship-manifest.yaml gate runs pre-merge"
+    when: "git diff base..HEAD -- docs/system_design.md is inspected"
+    then:
+      - "Diff includes a hunk that adds 'confidence' to the prompt output schema in 5.5.2"
+      - "If the hunk is absent, ship-manifest gate FAILS with 'D3 gate: SD 5.5.2 confidence field missing'"
+      - "Merge is blocked"
+
+  - name: "Ship gate - PR diff includes SD 7.4 directive lifecycle columns"
+    type: death_path
+    given: "Implementation of all 5 tasks complete; ship-manifest.yaml gate runs pre-merge"
+    when: "git diff base..HEAD -- docs/system_design.md is inspected"
+    then:
+      - "Diff includes a hunk that adds 'disabled_at' to the directives DDL block in 7.4"
+      - "Diff includes a hunk that adds 'disabled_reason' to the directives DDL block in 7.4"
+      - "If either hunk is absent, ship-manifest gate FAILS with 'D3 gate: SD 7.4 directive lifecycle columns missing'"
+
+  # =====================================================================
+  # HAPPY PATHS WITH EVIDENCE CHAIN
+  # =====================================================================
+
+  - name: "Success - BehaviorFlag round-trips through repository"
+    type: happy_path
+    given: "A valid BehaviorFlag with all 9 fields populated (event_ids=['e1','e2','e3'], confidence='high')"
+    when: "repo.insert(flag) then repo.get_session_flags(flag.session_id)"
+    then:
+      - "Returned list has exactly one element"
+      - "Returned flag equals input flag (all fields)"
+      - "event_ids decoded back to list[str] in original order"
+      - "Evidence chain: a future audit can reconstruct the flag from the DB row alone (no out-of-band metadata)"
+
+  - name: "Success - directive lifecycle active -> disabled -> active"
+    type: happy_path
+    given: "A directive inserted with status=active, disabled_at=None, disabled_reason=None"
+    when: "update_status(id, DISABLED, reason='superseded by D-2'); update_status(id, ACTIVE)"
+    then:
+      - "After step 1: status=disabled, disabled_at != None, disabled_reason='superseded by D-2'"
+      - "After step 2: status=active, disabled_at=None, disabled_reason=None"
+      - "updated_at advances on each transition"
+      - "Evidence chain: each transition's effect is observable in a single SELECT"
+
+  - name: "Success - segment_session produces SD 5.5.2-shaped output"
+    type: happy_path
+    given: "An 8-event session: session_start, USER_PROMPT (idx=1), thinking, tool_use_start, tool_use_end, USER_PROMPT (idx=2), tool_use_start, tool_use_end, session_end"
+    when: "Segmenter(events_repo).segment_session(session_id)"
+    then:
+      - "Returns 3 SegmentData entries: idx=0 (pre-prompt with session_start only), idx=1 (1 thinking + 1 paired ToolUseSpan), idx=2 (1 paired ToolUseSpan)"
+      - "Each ToolUseSpan has start_seq < end_seq"
+      - "ToolUseSpan.success matches event.data['success']; duration_ms matches the end event's duration_ms"
+      - "Evidence chain: GUR-101 prompt builder consumes this output without further preprocessing"
+
+  - name: "Success - compute_segment_metrics on 5-event fixture matches hand-computed values"
+    type: happy_path
+    given: "A SegmentData with: 2 thinking events (token_count 1000+1500), 3 tool_use spans (1 Read /a.py success, 1 Edit /a.py success, 1 Bash 'pytest' failure), span durations 200/100/2100 ms, segment time-span 7.5 seconds"
+    when: "compute_segment_metrics(segment)"
+    then:
+      - "total_tokens == 2500"
+      - "unique_files == 1 (/a.py; Bash command not file-touching)"
+      - "duration == 7.5"
+      - "error_count == 1 (Bash failure)"
+      - "Re-running on the same input returns identical values (purity)"

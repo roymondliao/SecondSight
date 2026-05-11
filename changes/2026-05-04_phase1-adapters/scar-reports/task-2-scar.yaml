@@ -1,0 +1,177 @@
+task_id: task-2
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: |
+      `pre_tool_use_bash.json` carries `_source: "verified"` even though only
+      the `tool_input.command` field path is empirically grounded by
+      `~/.claude/hooks/rtk-rewrite.sh`. The wrapping fields (session_id,
+      transcript_path, cwd, hook_event_name, tool_name) are documented within
+      a verified envelope. A future reader may misread the top-level label
+      as "every field in this fixture is verified". Mitigated by the
+      `_capture_origin` paragraph that explicitly distinguishes verified field
+      from documented envelope, plus the corresponding paragraph in
+      `_README.md` ("verified vs documented"). Cannot be reduced further
+      without a per-field provenance schema, which would over-fit P1.
+    deferred_to_feature_iteration: false  # documented at fixture site + README; per-field provenance is a Phase-3 concern if/when more fixtures land
+
+  - description: |
+      Privacy canary placement for `session_start.json` and `session_end.json`
+      uses `payload.session_id` because plan §5 lists no §5-explicit
+      drop-listed fields for session events. The canary semantics is therefore
+      "drop-from-data, route-to-column" (session_id must surface only on
+      PartialEvent.session_id, never inside `data`) rather than the
+      "drop entirely" semantics used for tool/prompt events. This widening of
+      the canary contract is intentional and documented in the per-fixture
+      `_meta._privacy_canary_field_rationale` plus `_README.md`, but the
+      DT-3 death test cannot itself distinguish "drop-from-data" from
+      "drop-entirely" — it only verifies canary placement, not the meaning
+      of that placement. Task-4 (ClaudeCodeAdapter) is the enforcer.
+    deferred_to_feature_iteration: false  # binds to task-4 GUR-124 adapter death tests
+
+silent_failure_conditions:
+  - description: |
+      DT-2/DT-3/DT-4/DT-5 are `@pytest.mark.parametrize` over `_fixture_paths()`
+      called at module-import time. If a future change deletes ALL fixtures,
+      parametrize binds to an empty list and the four parametrized tests
+      silently skip (4 skipped, 0 failed). Only DT-1 (`test_dt1_every_fixture
+      _parses_as_json`) and `test_p1_floor_fully_covered` use the
+      session-scope `fixture_paths` fixture which calls `pytest.fail` on
+      empty. These two non-parametrized tests are the actual gate against
+      "all fixtures deleted". The parametrized skips are ergonomic
+      (per-fixture failure messages) but are not the safety net.
+    deferred_to_feature_iteration: false  # the two non-parametrized gates are sufficient; over-engineering parametrize-on-empty would obscure the real failure path
+
+  - description: |
+      `_value_appears_in()` uses substring match for canary detection
+      (`needle in haystack` for str values). Pathological case: if
+      `expected_partial_event_data` legitimately contains a string field whose
+      value happens to embed the canary literal (e.g. user-authored
+      documentation in a fixture), DT-3 fails even though no real leak
+      occurred. Accepted because (a) `PRIVACY_CANARY_DO_NOT_STORE` is a
+      deliberately unique sentinel unlikely to appear except by intent, and
+      (b) substring match is the only honest detection — equality match would
+      miss "value embedded inside larger string", which is the exact
+      regression mode (e.g. command_length serialized as f"len={cmd}"
+      accidentally including the raw command).
+    deferred_to_feature_iteration: false  # accepted trade-off; documented inline in _value_appears_in docstring intent
+
+  - description: |
+      `_resolve_path()` uses simple dotted-path traversal — does not handle
+      list indices (e.g. `tool_input.args[0]`). The current §5 drop_list
+      contains no list-indexed fields, so this is sufficient for P1. If a
+      future Claude Code hook event nests a drop-listed field inside an
+      array (likely candidate: `tool_input.commands[]` for a multi-bash
+      hypothetical), the canary path syntax must be extended. DT-3 would
+      surface this as `KeyError` on resolution, which is loud-fail rather
+      than silent — preferred over silently accepting a missing canary.
+    deferred_to_feature_iteration: false  # path syntax is per-fixture-author concern; loud-fail is correct
+
+  - description: |
+      Documented fixtures (`post_tool_use`, `user_prompt_submit`,
+      `session_start`, `session_end`) snapshot the Claude Code v1.x hooks
+      schema at 2026-05-04. If Claude Code adds a NEW field to a documented
+      hook event between now and v2 protocol — without a version bump —
+      these fixtures will silently under-cover the real payload. ClaudeCode
+      Adapter (task-4) plus the `_unmapped` allow-list logic per plan §9
+      risk row 3 are the runtime mitigation; the integration test in task-5
+      is the verification gate. Within task-2 alone, this is a real but
+      bounded silent-failure surface: the worst case is "adapter sees a
+      field the fixture doesn't mention", which `_unmapped` captures.
+    deferred_to_feature_iteration: true  # belongs to the feature-level (task-4 + task-5) cross-cutting concern about schema drift detection
+
+assumptions_made:
+  - assumption: "Plan §7 G1 hook-event → EventType mapping is correct"
+    verified: true
+    note: "Mapping table reproduced in _README.md inventory; DT-4/DT-5 enforce that each fixture's hook event name and EventType value pair conforms. If the mapping is wrong, the fixtures encode the wrong contract — but task-4 will catch this as round-trip failure on AC-5."
+
+  - assumption: "rtk-rewrite.sh truly observes Claude Code v1.x PreToolUse stdin shape (specifically the `tool_input.command` field path)"
+    verified: true
+    note: "Inspected `~/.claude/hooks/rtk-rewrite.sh` line 36 (`jq -r '.tool_input.command // empty'`). The hook is registered in user's Claude Code config and runs against real stdin during sessions. The script's continued operation (rtk gain shows non-zero savings) is empirical evidence."
+
+  - assumption: "Claude Code hooks documentation at https://docs.claude.com/en/docs/claude-code/hooks accurately describes v1.x payloads as of 2026-05-04"
+    verified: false
+    note: "Documentation is the only source for non-PreToolUse fixtures. If docs and runtime have already diverged at 2026-05-04, all four `documented` fixtures encode the wrong contract and adapter will be trained on a subtly wrong shape. Mitigation: task-5 integration test re-runnable against live capture in next phase per plan §9 risk row 1."
+    deferred_to_feature_iteration: true  # integration-test re-run gate is the feature-level mitigation
+
+  - assumption: "PartialEvent shape (tracker.py:72-87) is stable through Phase 1"
+    verified: true
+    note: "Confirmed by task-1 scar (verified: true). Field set: id, session_id, project_id, event_type, timestamp, sequence_number, data, duration_ms, token_count. expected_partial_event_data describes the `data` dict only; session_id, project_id, etc. are tracker-bound and not in fixture scope."
+
+  - assumption: "EventType enum values are stable through Phase 1"
+    verified: true
+    note: "Confirmed by task-1 scar. event.py:29-43 unchanged since GUR-96 task-2. DT-4 reads `EventType.__members__.values` at test time, so any future enum rename will trip the death test rather than silently mismatching fixtures."
+
+  - assumption: "P1 hook event floor (PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SessionEnd) matches plan §7 G1"
+    verified: true
+    note: "Hardcoded `P1_HOOK_EVENT_NAMES` set in test_fixtures.py mirrors plan §7. DT-5 + test_p1_floor_fully_covered enforce both directions (no fixture outside the floor; every floor event has exactly one fixture)."
+
+  - assumption: "The 1 pre-existing test failure (`tests/scripts/test_hook_fallback.py::TestDeathTests::test_dt2_parallel_writes_no_truncation`) is unrelated to task-2"
+    verified: true
+    note: "Test passes in isolation (`pytest tests/scripts/test_hook_fallback.py::TestDeathTests::test_dt2_parallel_writes_no_truncation` — 1 passed). Fails only under full-suite contention. Same flake noted in task-1-scar.yaml. No shared imports between `tests/scripts/` and `tests/fixtures/claude_code/` or `tests/adapters/test_fixtures.py`."
+
+  - assumption: "Canary substring match in `_value_appears_in` is appropriate detection semantics"
+    verified: true
+    note: "Substring match is correct for the regression mode it targets — adapter accidentally embedding raw value inside a derived string (e.g. log line, error message). Equality match would miss this. Documented in `_README.md` and inline."
+
+debt_registered: true
+debt_location: |
+  tests/fixtures/claude_code/pre_tool_use_bash.json (`_source: verified` is field-narrow, not envelope-wide — relies on _capture_origin and README to disambiguate);
+  tests/fixtures/claude_code/session_start.json and session_end.json (canary placement uses widened "drop-from-data" semantics — bound to task-4 GUR-124 adapter death tests for runtime enforcement);
+  tests/fixtures/claude_code/* (documented fixtures locked to 2026-05-04 Claude Code v1.x docs snapshot — drift-policy in _README.md is the human-readable contract; task-5 integration test is the runtime contract)
+
+resolved_items: []  # no Level 1 self-iteration: this task ships fixtures + JSON-validity tests; there is no production code to receive yin/quality review
+
+narrative: |
+  This task is fixture-only. There is no production code in `src/`; the
+  five JSON fixtures plus the validation test are the entire deliverable.
+  Consequently the scar surface is narrower than task-1's: no ABC seam, no
+  registry, no runtime path. The remaining concerns are exclusively about
+  fixture authorship honesty and forward drift.
+
+  Three load-bearing decisions surfaced during authoring:
+
+  1. **`_source: verified` for pre_tool_use_bash.json** is narrowly scoped
+     to the `tool_input.command` field path (verified empirically against
+     `~/.claude/hooks/rtk-rewrite.sh`). The wrapping envelope fields
+     (session_id, transcript_path, cwd, hook_event_name, tool_name) are
+     documented within a verified envelope. The honesty-preserving move is
+     not to invent a per-field provenance schema; it is to make the
+     `_capture_origin` paragraph explicit and re-state it in `_README.md`.
+
+  2. **Privacy canary placement for session events** widens the canary
+     semantics from "drop-entirely" (tool/prompt events, plan §5) to
+     "drop-from-data, route-to-column" (session events: session_id must
+     surface only on the top-level Event column per SD §3.7.5, never in
+     `data`). Documented per-fixture in `_meta._privacy_canary_field_rationale`
+     and in `_README.md`. The DT-3 death test verifies placement;
+     meaningfulness is verified by the README + task-4 runtime enforcement.
+
+  3. **Privacy canary substring match** in `_value_appears_in` accepts
+     `canary in str(value)` rather than equality. This is the correct
+     detection for the regression mode (adapter embedding raw value
+     inside a derived string), but pathological fixture authorship could
+     produce a false positive. The sentinel string is unique enough that
+     this is a paper risk only.
+
+  Test results:
+  - Fixture death tests: 22/22 passed (DT-1 + 4 parametrized × 5 fixtures + p1_floor coverage).
+  - Full suite via `.venv/bin/pytest -q`: 449 passed, 1 failed (the same pre-existing
+    `test_hook_fallback.py::TestDeathTests::test_dt2_parallel_writes_no_truncation`
+    flake noted in task-1-scar.yaml; passes in isolation).
+  - mypy: not exercised (no .py production code added; only test code, which is permitted to skip mypy per pre-commit config).
+
+  Carry-forward to task-4 (GUR-124):
+  - Adapter must enforce: canary at `_meta._privacy_canary_field` MUST NOT
+    appear in `Event.data` JSON serialization.
+  - Adapter must satisfy AC-5: `normalize().data` ⊇ each fixture's
+    `expected_partial_event_data`, with no canary leakage.
+  - Adapter must satisfy "drop-from-data, route-to-column" for session_id
+    in session events.
+
+  Carry-forward to task-5 (P1-9-int):
+  - Integration test should optionally support a "live capture" mode that
+    re-validates `documented` fixtures against a real Claude Code v1.x
+    session, promoting them to `verified` if successful. This is the
+    long-term mitigation for plan §9 risk row 1 (documented-only fixtures
+    drift from real Claude Code v1.x emission). Not blocking for P1 ship.

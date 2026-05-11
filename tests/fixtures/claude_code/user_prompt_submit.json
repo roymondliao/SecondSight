@@ -1,0 +1,24 @@
+{
+  "_meta": {
+    "_source": "documented",
+    "_capture_origin": "Claude Code hooks documentation, UserPromptSubmit event (snapshot 2026-05-04). Documented fields: session_id, transcript_path, cwd, hook_event_name, prompt. URL: https://docs.claude.com/en/docs/claude-code/hooks",
+    "_claude_code_hook_event_name": "UserPromptSubmit",
+    "_secondsight_event_type": "user_prompt",
+    "_privacy_canary_field": "prompt"
+  },
+  "payload": {
+    "session_id": "01JBQ8XYZK7P3M5N9R2W4D6E8H",
+    "transcript_path": "/Users/example/.claude/projects/example/transcript.jsonl",
+    "cwd": "/Users/example/work/repo",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "PRIVACY_CANARY_DO_NOT_STORE"
+  },
+  "expected_partial_event_data": {
+    "action_metadata": {
+      "prompt_length": 27,
+      "transcript_path": "/Users/example/.claude/projects/example/transcript.jsonl",
+      "cwd": "/Users/example/work/repo"
+    }
+  },
+  "privacy_canary": "PRIVACY_CANARY_DO_NOT_STORE"
+}

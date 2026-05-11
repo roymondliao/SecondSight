@@ -1,0 +1,57 @@
+type: fast_track
+description: >-
+  GUR-98 review #2 follow-up — fix only MUST-FIX-NOW (#1 ClickException
+  uncaught) and SHOULD-FIX-NOW (#2 multi-project mixed-failure path
+  untested). Defer #3-#7 to a Phase 2 follow-up issue per board direction.
+death_clause: >-
+  If `secondsight bogus` reverts to exit 1 with a Rich traceback, this
+  change is failed. If reverting cli/sync.py's per-project try/except wrap
+  does NOT make test_death_sync_multi_project_failure_does_not_abort_loop
+  go RED, the test is dishonest theatre and must be rewritten.
+acceptance:
+  - "secondsight bogus exits 2 (Click usage-error convention) with clean message, no traceback"
+  - "secondsight init --no-such-flag exits 2 (BadParameter is a ClickException too)"
+  - "secondsight sync with two projects A+B where A's _build_resources raises produces reports for BOTH projects: A with error!=null & backfill==null, B with error==null & populated backfill"
+  - "Honesty check #1 verified: reverting the click.ClickException catch in app.py makes both DT-6 tests go RED"
+  - "Honesty check #2 verified: reverting the per-project try/except wrap in sync.py makes DT-7 go RED (CliRunner output empty -> json parse error)"
+scar_tag: 5
+scar_items:
+  - "[deferred to Phase 2 follow-up issue] #3 cli/status.py happy path entirely untested — must land before any operator depends on `status --format json` for monitoring"
+  - "[deferred to Phase 2 follow-up issue] #4 storage/filesystem_backfill.py:301 os.replace uncaught — cross-fs/EACCES/NFS-stale leaks past structured-error contract"
+  - "[deferred to Phase 2 follow-up issue] #5 settings_invalid_after_hook_copy race-window has zero coverage — pin the half-state error-code branch"
+  - "[deferred to Phase 2 follow-up issue, HARD GATE before any external-input vector] #6 cli/sync.py --project-id is unvalidated — path-traversal trivial in single-user-local model but unsafe the moment HTTP/IPC/agent-CLI lands"
+  - "[deferred to Phase 2 follow-up issue] #7 hook_install copyfile-fails branch untested — TOCTOU window mid-write is uncovered"
+files_changed:
+  - "src/secondsight/cli/app.py"
+  - "tests/cli/test_cli_app.py"
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: >-
+      No duplicate helper. The click.ClickException catch is in the single place
+      Click is invoked (cli/app.py:main). Tests reuse the existing CliRunner
+      and ProjectRegistry import, no new fixtures.
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: >-
+      New except branch sits between typer.Exit and SystemExit — the same
+      exception-handling boundary, ordered child-to-parent (typer.Exit is the
+      most specific, ClickException is the parent of UsageError, SystemExit
+      is the catch-all). DT-6 / DT-7 are appended to test_cli_app.py alongside
+      DT-1..DT-5 which already cover the same module.
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: >-
+      Two lines of production code: `exc.show()` and `return exc.exit_code`.
+      No wrappers, no helper, no hand-written exit-code constants. The fix
+      delegates to Click's own conventions (exc.show writes the formatted
+      "Error: ..." to stderr; exc.exit_code is 2 for UsageError, 1 for plain
+      ClickException — Click's own source of truth).
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: >-
+      No fact restated. We do NOT hard-code the exit code 2 — we read it from
+      exc.exit_code so a future Click upgrade that revises the convention
+      (e.g. shell-style 64 for usage errors) flows through without a code
+      change. Test asserts `code == 2` literally because that IS the contract
+      we're pinning, not a value derived elsewhere.

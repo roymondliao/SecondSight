@@ -1,0 +1,32 @@
+{
+  "_meta": {
+    "_source": "documented",
+    "_capture_origin": "OpenCode plugin API (@opencode-ai/plugin, packages/plugin/src/index.ts), chat.message hook (snapshot 2026-04-24)",
+    "_opencode_hook_event_name": "chat.message",
+    "_secondsight_event_type": "user_prompt",
+    "_privacy_canary_field": "output.message"
+  },
+  "payload": {
+    "hook_event_name": "chat.message",
+    "input": {
+      "sessionID": "oc-sess-001",
+      "agent": "default",
+      "model": {
+        "providerID": "anthropic",
+        "modelID": "claude-sonnet-4-6"
+      }
+    },
+    "output": {
+      "message": "PRIVACY_CANARY_DO_NOT_STORE",
+      "parts": [
+        {"type": "text", "text": "example prompt"}
+      ]
+    }
+  },
+  "expected_partial_event_data": {
+    "agent": "default",
+    "model_id": "claude-sonnet-4-6",
+    "part_count": 1
+  },
+  "privacy_canary": "PRIVACY_CANARY_DO_NOT_STORE"
+}

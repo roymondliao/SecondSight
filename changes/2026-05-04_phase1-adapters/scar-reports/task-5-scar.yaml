@@ -1,0 +1,244 @@
+task_id: task-5
+completion_status: done
+
+known_shortcuts:
+  - description: |
+      The integration test exercises each fixture in its own session
+      (`sess-int-<fixture-stem>`) with `sequence_number=0`. This avoids
+      cross-event ordering invariants in SessionTracker (segment_index
+      bumping on USER_PROMPT, sub-agent stack management) that are
+      unrelated to the north-star fidelity assertion. Consequence: this
+      test cannot catch a regression that only manifests across
+      multi-event sessions (e.g. SessionStart → UserPromptSubmit →
+      PreToolUse → PostToolUse → SessionEnd in one session). Same-session
+      integration coverage is deferred until Phase-2 ships a verified
+      multi-event capture.
+    deferred_to_feature_iteration: false  # plan-bound: spec scopes per-fixture round-trip, not session continuity
+  - description: |
+      `_wait_for_event_row` is a generic "poll SQLite until row appears"
+      helper that lives in this test file but is also needed at three
+      other sites currently using `time.sleep(...)` followed by inline
+      sqlite3 queries: `tests/api/test_hooks_endpoint.py:283,342` and
+      `tests/scripts/test_hook_fallback.py:611`. Promoting it to a
+      shared `tests/_common/db_helpers.py` would eliminate three
+      `time.sleep` flakiness vectors at the same time. Not done in this
+      task because the task scope (per task-5.md) is the integration
+      test file only — touching three other test files crosses the
+      stated boundary.
+    deferred_to_feature_iteration: true  # cross-task: shared test helper extraction owned by feature-level iteration
+
+silent_failure_conditions:
+  - description: |
+      `_wait_for_event_row` polls for up to 2.0s with a clear
+      AssertionError on timeout. It cannot distinguish "pipeline.ingest
+      task crashed silently inside the done_callback" from "DB write
+      genuinely took >2s under heavy load". On a slow CI runner this
+      could surface as a false-positive failure. Mitigation: 2.0s is
+      ~100× typical write latency (<20ms observed); a 2s breach is a
+      real wiring or perf regression, not load.
+    deferred_to_feature_iteration: false  # bounded; mitigated by ratio of timeout to typical latency
+  - description: |
+      `_check_partial_match` enforces "every key in expected MUST be
+      present and equal in actual" but ALLOWS actual to carry extra keys
+      not listed in expected. If the adapter ever silently adds a field
+      that does NOT contain the privacy canary but does carry user
+      content (e.g. a future regression that copies `tool_input.command`
+      under a new key like `data.raw_command`), this test would pass.
+      Mitigation: every fixture has at least one drop-listed field set
+      to the canary; for THAT field, leakage is caught. Generalised
+      "no field in `data` ever contains user content" coverage is owned
+      by ClaudeCodeAdapter's per-event-type unit tests + DROP_LIST
+      review at PR time.
+    deferred_to_feature_iteration: false  # by-design partial-match semantics; canary is the load-bearing guard
+  - description: |
+      The test asserts the SQLite event row exists and that `Event.data`
+      JSON matches expected. It does NOT assert that
+      `RawTraceStore` wrote the raw envelope file to
+      `<home>/projects/<pid>/sessions/<sid>/events/*.json`. A regression
+      that dropped the raw-trace-write side of pipeline.ingest while
+      keeping the DB-write side would not surface here. Coverage of the
+      raw-trace path lives in
+      `tests/api/test_hooks_endpoint.py::test_unit_happy_path_valid_envelope_returns_ok`,
+      which checks both legs but only for one fixture-shaped envelope.
+    deferred_to_feature_iteration: false  # covered elsewhere; intentional separation of concerns
+  - description: |
+      The bash hook test fixture
+      (`tests/scripts/conftest.py:_ClaudeCodeAdapterStub`) is registered
+      for `agent="claude-code"` (kebab-case) and is unrelated to the
+      real `ClaudeCodeAdapter` which is registered for `agent="claude_code"`
+      (snake_case). This integration test exercises the FastAPI route
+      with `agent="claude_code"` only — it does NOT cover the actual
+      bash hook script (`secondsight/scripts/secondsight-hook.sh`)
+      driving stdin payloads through to the route. A regression that
+      broke the bash hook's payload shaping would not surface here. The
+      stub-retirement carry-forward (task-4 GUR-124) is the path to
+      closing this gap.
+    deferred_to_feature_iteration: true  # cross-task: requires retiring _ClaudeCodeAdapterStub (task-4 carry-forward)
+
+assumptions_made:
+  - assumption: |
+      The 2.0s ingest poll deadline is sufficient under all test
+      conditions (local dev + CI).
+    verified: true
+    note: |
+      Verified: integration test wall time 0.4s for 5 fixtures × ingest
+      cycle; full suite 490 passed in 13.7s. Per-fixture poll typically
+      completes in <50ms (one poll iteration at 20ms interval).
+  - assumption: |
+      Each fixture's `_meta._secondsight_event_type` is a valid EventType
+      enum value, usable as the `/hook/{event_type}` route param.
+    verified: true
+    note: |
+      Verified at fixture authorship by tests/adapters/test_fixtures.py::
+      test_dt4_secondsight_event_type_is_real (task-2 DT-4). Locked at
+      collect time.
+  - assumption: |
+      `ClaudeCodeAdapter` is the registered adapter for
+      `agent="claude_code"` and wins dispatch for any P1-floor event type.
+    verified: true
+    note: |
+      Verified at src/secondsight/api/server.py:197 — ClaudeCodeAdapter
+      is registered BEFORE IdentityAdapter inside the lifespan startup
+      block; first-match-wins dispatch in AdapterRegistry.for_()
+      guarantees Claude wins. Test green is the runtime witness.
+  - assumption: |
+      The fixture's `payload` is byte-equivalent to what the production
+      bash hook (`secondsight-hook.sh`) would forward into FastAPI.
+    verified: false
+    note: |
+      Documented-source fixtures (4 of 5) are taken from Claude Code v1.x
+      docs, not from a captured bash-hook-routed payload. The
+      `pre_tool_use_bash.json` fixture has the verified `tool_input.command`
+      empirical mapping (task-2 _README.md) but its envelope wrapping
+      is documented-within-verified. A live re-capture pass against
+      Claude Code v1.x bash hook output is the only way to graduate this
+      to verified=true.
+    deferred_to_feature_iteration: true  # cross-task: requires task-2 fixture refresh against live capture
+  - assumption: |
+      Fire-and-forget ingest writes the SQLite row before TestClient
+      context manager exits.
+    verified: true
+    note: |
+      The TestClient `with` block exit triggers FastAPI lifespan shutdown,
+      which drains in-flight tasks (server.py:_SHUTDOWN_DRAIN_TIMEOUT_S=1.0s).
+      The poll inside the test runs BEFORE context exit and observes the
+      committed row, so we are not relying on shutdown drain semantics —
+      the row is committed during the request lifetime.
+
+debt_registered: true
+debt_location: "tests/adapters/test_integration_claude_code.py — partial-match semantics, per-fixture session isolation; cross-task gap in bash hook coverage owned by task-4 GUR-124 carry-forward"
+
+resolved_items:
+  - original_section: silent_failure_conditions
+    original_description: |
+      Loop-ate-zero-fixtures: a test that discovers zero fixture files
+      would pass the fidelity assertion vacuously, silently shrinking
+      the contract surface from 5 fixtures to 0.
+    resolution: |
+      Added `test_p1_floor_coverage` as a separate test that asserts
+      `EXPECTED_FIXTURE_FILENAMES == discovered`. Deleting any P1-floor
+      fixture now fails this guard with a named missing/extra set,
+      independent of `test_fidelity_against_fixtures`.
+  - original_section: known_shortcuts
+    original_description: |
+      Initial draft used `time.sleep(0.3)` between POST and DB query
+      (matching the existing pattern in tests/api/test_hooks_endpoint.py),
+      which couples test runtime to fixed wall-clock waits and produces
+      flake under load.
+    resolution: |
+      Replaced fixed sleep with bounded `_wait_for_event_row` poll
+      (2.0s deadline, 20ms interval). Test is now fast on the happy
+      path (~50ms per fixture) and produces a clear AssertionError
+      with diagnostic context (events table count at last poll) on
+      timeout — making real wiring failures distinguishable from flake.
+  - original_section: silent_failure_conditions
+    original_description: |
+      Naive dict equality (`actual == expected`) on Event.data would
+      either over-assert (extra adapter-added fields would fail the
+      test) or under-assert (substituting `set(expected) <= set(actual)`
+      catches missing keys but not equality of values).
+    resolution: |
+      Wrote `_check_partial_match` recursive helper that enforces the
+      task-5 spec step 6 verbatim: "fields in expected MUST be present
+      and equal in Event.data" — present at every depth, equal at
+      every leaf. Extra keys allowed. Returns named-path mismatches
+      for actionable failure diagnostics.
+  - original_section: silent_failure_conditions
+    original_description: |
+      Code-review surfaced: `matched = total_expected - len(mismatches)`
+      lies. `_check_partial_match` produces one mismatch entry per
+      missing branch, not per leaf. The arithmetic is accidentally
+      correct only on the all-green path (zero mismatches); under any
+      partial-fidelity scenario it would emit a misleading ratio.
+    resolution: |
+      Deleted the `matched`/`ratio`/`fidelity_per_fixture` machinery
+      entirely. The spec's "matched/expected == 1.0" reduces to "no
+      mismatches" given a non-empty expected leaf set, which we now
+      assert directly via `assert not mismatches`. A clarifying
+      comment names this equivalence at the assertion site so a
+      future maintainer adapting for partial fidelity does not
+      reintroduce the same lie.
+  - original_section: silent_failure_conditions
+    original_description: |
+      Code-review surfaced: the bundle-level
+      `assert all(v == 1.0 for v in fidelity_per_fixture.values())`
+      was a redundant assertion — per-fixture `assert not mismatches`
+      always fires first, and the bundle check could not catch any
+      case the per-fixture check did not already abort on. It also
+      created a false sense of layered protection.
+    resolution: |
+      Removed the redundant bundle-level fidelity assertion. Replaced
+      with an honest `fixtures_exercised` set guard that catches a
+      different real regression: a future `continue`/`break` inside
+      the loop silently skipping fixtures.
+  - original_section: silent_failure_conditions
+    original_description: |
+      Code-review surfaced: a fixture whose `expected_partial_event_data`
+      is `{}` (or a nested-only structure with zero leaves) would
+      produce zero mismatches and contribute nothing to the fidelity
+      contract, vacuously passing the per-fixture assertion.
+    resolution: |
+      Added `assert _count_leaf_fields(expected) > 0` per fixture as
+      a vacuous-pass guard. `_count_leaf_fields` is now load-bearing
+      for THIS check (its previous role as a fidelity denominator
+      was deleted), and its docstring states the new sole purpose.
+  - original_section: known_shortcuts
+    original_description: |
+      Code-quality review surfaced: `EXPECTED_FIXTURE_FILENAMES` was
+      claimed as "intentionally duplicated to surface drift" against
+      `tests/adapters/test_fixtures.P1_HOOK_EVENT_NAMES`, but the two
+      sets are not structurally isomorphic — `"PreToolUse"` ↔
+      `"pre_tool_use_bash.json"` is asymmetric, and a future second
+      tool variant for the same hook event would expand THIS set
+      without changing the other. The naming convention was
+      undocumented.
+    resolution: |
+      Expanded the comment block above `EXPECTED_FIXTURE_FILENAMES`
+      to declare the naming convention (snake_case of hook event
+      name, optionally suffixed with tool variant) AND the asymmetry
+      with `P1_HOOK_EVENT_NAMES` (NOT one-to-one) AND the loud-failure
+      path for Phase-2 multi-variant extension. The duplication is
+      now honest: it is the test's wiring contract, not a parallel
+      truth claim.
+  - original_section: known_shortcuts
+    original_description: |
+      Code-review surfaced: `TestClient(app, raise_server_exceptions=False)`
+      is the project convention but was unlabeled at this call site,
+      requiring a reader to infer the choice from sibling tests.
+    resolution: |
+      Added an inline comment naming the choice and its consequence:
+      the `status_code == 200` assertion is the load-bearing signal,
+      and a 500 from the route handler still fails the test.
+  - original_section: silent_failure_conditions
+    original_description: |
+      Code-quality cross-referral / yin code-review noted: the
+      `_wait_for_event_row` timeout message read identically when
+      "DB exists but is empty" and "DB file never appeared" — both
+      states reported `events table count at last poll: 0`, hiding
+      a meaningful diagnostic distinction.
+    resolution: |
+      Initialised `last_count: int | None = None` (sentinel for
+      "DB never seen") and emit a distinct error string for that
+      branch. The timeout message now names three plausible causes
+      (ingest crash, adapter not registered, project resources
+      never materialised) instead of two.

@@ -1,0 +1,262 @@
+task_id: task-3
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      _ADAPTER_DEFAULTS mirrors SD §5.7.1 at the time of writing. If that table
+      evolves (e.g. codex gets a real default after Phase 0, or opencode registers
+      a default model), _ADAPTER_DEFAULTS in sdk/model_selection.py MUST be updated.
+      The module docstring names the SD section and contains a reference table;
+      update both together. The _verify_adapter_registry_consistency() check at
+      module load catches ModelsConfig↔adapter drift but does NOT catch SD§5.7.1
+      drift (no SD document parser available).
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Provider inference (anthropic/openai/google) for explicit model names is
+      prefix-based and intentionally minimal. A model name that doesn't start
+      with 'claude-', 'gpt-', or 'gemini-' defaults to 'openai'. Project-level
+      overrides using exotic or vendor-specific model names (e.g. 'mistral-7b')
+      will silently get provider='openai', which may cause the router to use the
+      wrong PydanticAI provider client. v1 accepts this; Phase 2+ should extend
+      the config schema to accept an explicit provider alongside the model name.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      analysis/config.py was extended with GlobalAnalysisConfig, ProjectAnalysisConfig,
+      ModelsConfig, and FallbackModelsConfig dataclasses, but NO TOML loader was
+      added for these new config keys. The select_model() function uses duck typing
+      (accepts any object with the right attributes). The actual wiring of TOML →
+      GlobalAnalysisConfig → select_model() is deferred to the caller (trigger.py,
+      cli/analyze.py). Without a TOML loader, operators who set these values in
+      config.toml will be silently ignored until a loader is wired.
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: >
+      EventsRepository.get_latest_session_agent_type() always returns None because
+      the Phase 1 events table has no agent_type column. When default_agent='auto',
+      select_model() now raises ModelSelectionError immediately (instead of silently
+      falling back to claude_code). This means auto-mode is operationally unusable
+      until the schema migration lands — but the failure is now explicit, not silent.
+      The operator will see ModelSelectionError with a suggested_config TOML snippet.
+      Tracked by test_events_repository_get_latest_session_agent_type_always_returns_none
+      as a migration marker.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      Provider inference for fallback model names uses the same prefix-based rule.
+      If a user configures fallback_models = ["mistral-7b-instruct"], they'll get
+      a ModelSpec with provider='openai', which will fail at the router level when
+      the router tries to construct an OpenAI client for a Mistral model. The failure
+      will happen at call time, not at config load time — after the primary model
+      already failed.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      The config schema classes in analysis/config.py (GlobalAnalysisConfig etc.)
+      are not connected to the existing AnalysisConfig class that task-1 created.
+      They coexist in the same file but are separate dataclasses. A future refactor
+      that merges them into one config object must not forget to carry the
+      read_project_file fields through. Currently there's no enforcement that the
+      two config sets are loaded from the same TOML file — they could diverge.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      provider inference for exotic model names silently defaults to "openai". A
+      model named "mistral-7b" gets provider="openai" without warning. This is
+      not closed by task-3 — the prefix list (_PROVIDER_PREFIXES) is intentionally
+      minimal and extending it is a feature-iteration concern.
+    deferred_to_feature_iteration: true
+
+assumptions_made:
+  - assumption: >
+      The events table has an agent_type column that get_latest_session_agent_type
+      can query, as stated in the task description ("The events table has an
+      agent_type column (see src/secondsight/storage/events_table.py)").
+    verified: false
+    note: >
+      VERIFIED FALSE. Reading events_table.py directly confirms no agent_type column
+      exists in Phase 1 schema. The task description is incorrect. The method is
+      implemented as a safe stub returning None with a detailed comment explaining
+      the schema gap and the future implementation. The auto→ModelSelectionError
+      path now handles this correctly (raise, not silent fallback).
+
+  - assumption: >
+      project_config.analysis.model and global_config.analysis.models.* are strings,
+      never None. Empty string means "not set".
+    verified: true
+    note: >
+      Verified: MagicMock tests confirm the duck-typing contract works. The
+      ProjectAnalysisConfig and GlobalAnalysisConfig dataclasses in analysis/config.py
+      define these as str with default="", enforcing the empty-string-means-not-set
+      contract at the schema level.
+
+  - assumption: >
+      global_config.analysis.models.fallback.fallback_models is always a list[str],
+      never None. Empty list is valid and intentional (D13 strict-mode escape valve).
+    verified: true
+    note: >
+      Verified: FallbackModelsConfig dataclass defines this field with a list
+      default_factory. The empty-list test (test_empty_fallbacks_list_is_valid)
+      confirms the function handles it without error.
+
+  - assumption: >
+      select_model() is called synchronously. events_repo.get_latest_session_agent_type
+      is a sync method. If a future async repo is introduced, select_model must NOT
+      use asyncio.run() internally (would make it impure / unrunnable inside an
+      existing event loop). Instead, callers must pre-resolve agent_type or make
+      select_model async.
+    verified: true
+    note: >
+      Verified: EventsRepository.get_latest_session_agent_type is defined as sync.
+      The Protocol in model_selection.py defines the sync signature. The module
+      docstring explicitly names this implication for async callers.
+
+  - assumption: >
+      ModelSpec is NOT yet defined in sdk/router.py (task-2 is parallel). Defining
+      ModelSpec in sdk/_specs.py avoids the conflict.
+    verified: true
+    note: >
+      Verified in fix loop: task-2 has completed and sdk/_specs.py is the source
+      of truth. ModelSpec is imported from _specs.py in model_selection.py and
+      (confirmed) router.py. No duplicate definition.
+
+  - assumption: >
+      _KNOWN_AGENT_TYPES derived at module load time is stable for the lifetime
+      of the process. No dynamic adapter registration is supported.
+    verified: true
+    note: >
+      _KNOWN_AGENT_TYPES is a frozenset derived from the module-level constants
+      _ADAPTER_DEFAULTS and _ADAPTER_ERROR_CONFIGS at import time. It is immutable.
+      _verify_adapter_registry_consistency() checks it stays consistent with
+      ModelsConfig at import time. Adding a new adapter at runtime is not supported
+      and would require a process restart.
+
+debt_registered: true
+debt_location: >
+  src/secondsight/sdk/model_selection.py:module docstring (SD §5.7.1 sync requirement);
+  src/secondsight/storage/events_repository.py:get_latest_session_agent_type (schema migration TODO);
+  src/secondsight/analysis/config.py:GlobalAnalysisConfig (TOML loader deferred to caller)
+
+narrative: >
+  Fix loop (task-3 FAIL resolution) addressed 4 critical issues and 2 important issues:
+
+  CRITICAL-1 (auto-mode silent fallback): The old code substituted "claude_code"
+  silently when events_repo returned None. A codex-only user would be billed for
+  Anthropic with no signal. Fixed: auto+None now raises ModelSelectionError with
+  suggested_config pointing to explicit default_agent config. The silent failure
+  path is closed.
+
+  CRITICAL-2 (garbage agent_type validation): The old code used getattr with ""
+  default for unvalidated values from events_repo. A garbage string like "cursor"
+  or "CLAUDE_CODE" flowed through to a generic error with no source information.
+  Fixed: explicit validation against _KNOWN_AGENT_TYPES before getattr, with error
+  message naming events_repo as the source and listing valid values.
+
+  CRITICAL-3 (ModelsConfig↔_ADAPTER_DEFAULTS coupling): Added _verify_adapter_registry_consistency()
+  called at module import. Also added test TestRegistryConsistency with two subtests
+  that enforce the same invariant from the test side.
+
+  CRITICAL-4 (scar report false resolved_items[2]): Corrected. The old entry claimed
+  "provider inference silently defaults to openai" was resolved by an unrelated test.
+  The item is now moved to silent_failure_conditions with deferred_to_feature_iteration: true
+  and honest rationale.
+
+  IMPORTANT-5 (_resolve_adapter_default naming honesty): Added docstring sentence
+  making explicit that the function raises for codex/opencode adapters.
+
+  IMPORTANT-6 (TestEventRepoSchemaGap testing the fake): Added
+  test_events_repository_get_latest_session_agent_type_always_returns_none using the
+  real EventsRepository with a real SQLite DB (via tmp_path). This test will fail
+  when the schema migration lands, forcing an update to auto-mode behavior.
+
+  Original narrative:
+  The task description incorrectly stated "The events table has an agent_type column."
+  Reading events_table.py directly confirmed this is false — no such column exists.
+  This was caught in STEP 0 question 3. Resolution: implemented get_latest_session_agent_type
+  as a documented stub returning None, which now triggers ModelSelectionError (not silent
+  fallback). The scar report records this as assumption A1 (verified: false).
+
+  The most significant architectural gap is that the TOML loader for the new config
+  keys (default_agent, models.*, fallback_models) was not wired — task-1's config.py
+  only covers read_project_file. The config dataclasses are defined correctly, but
+  the TOML→dataclass loading path does not yet exist. This is deferred to trigger.py
+  (task-5) which is the natural caller site.
+
+  All 24 tests pass (original 16 + 8 new). No regressions in the 755-test suite.
+
+resolved_items:
+  - original_section: assumptions_made
+    original_description: "events table has agent_type column (task description claim)"
+    resolution: >
+      Verified FALSE by reading events_table.py. Implemented get_latest_session_agent_type
+      as a stub returning None with a detailed inline comment documenting the schema gap
+      and the future implementation. Added EventsRepoProtocol to model_selection.py
+      documenting the schema note so callers understand the current limitation.
+      Added test TestEventRepoSchemaGap::test_get_latest_session_agent_type_with_no_events_returns_none
+      to serve as a migration marker — when schema adds agent_type, this test must be updated.
+
+  - original_section: assumptions_made
+    original_description: "ModelSpec conflict with task-2 (router.py)"
+    resolution: >
+      Resolved by creating src/secondsight/sdk/_specs.py as the single source of truth
+      for ModelSpec. Module docstring explicitly directs both router.py and any future
+      SDK file to import from here, not redefine. Verified in fix loop: task-2 has
+      confirmed _specs.py exists and router.py imports from it.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      auto-mode silent fallback to claude_code when events_repo returns None (CRITICAL-1)
+    resolution: >
+      Raised ModelSelectionError instead of silently substituting "claude_code".
+      Error message: "default_agent='auto' but no session has been observed for this
+      project; auto-inference returned None." with suggested_config TOML snippet showing
+      how to set an explicit default_agent. Death tests DT-3.2 (3 subtests) enforce
+      this behavior. The silent failure path is closed.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      garbage agent_type from events_repo passes through getattr silently (CRITICAL-2)
+    resolution: >
+      Added _KNOWN_AGENT_TYPES frozenset and explicit validation before getattr in
+      select_model(). Error message names events_repo as the source and lists valid
+      values. Death tests DT-3.4 (4 subtests) enforce this behavior.
+
+  - original_section: known_shortcuts
+    original_description: "ModelsConfig↔_ADAPTER_DEFAULTS coupling not enforced (CRITICAL-3)"
+    resolution: >
+      Added _verify_adapter_registry_consistency() called at module import. Raises
+      RuntimeError immediately if the sets diverge — fail fast at import time, never
+      silently at runtime. Added TestRegistryConsistency (2 subtests) that enforce
+      the invariant from the test side and also confirm _KNOWN_AGENT_TYPES covers
+      all ModelsConfig adapters.
+
+  - original_section: known_shortcuts
+    original_description: "_ADAPTER_DEFAULTS sync with SD §5.7.1 — no automated check"
+    resolution: >
+      Added module-level docstring table in sdk/model_selection.py that names SD §5.7.1
+      explicitly as source of truth, with instruction to update both the dict and the
+      docstring together. Cannot add automated test without either a SD document parser
+      or a separate contract test — accepted as known limitation.
+
+  - original_section: resolved_items
+    original_description: >
+      (Correction) The previous resolved_items[2] falsely claimed to resolve
+      "provider inference for exotic model names silently defaults to openai" via
+      test_model_spec_is_frozen_and_hashable. That test is unrelated.
+    resolution: >
+      Moved the item to silent_failure_conditions with deferred_to_feature_iteration: true
+      and honest rationale. The false resolution claim is removed. test_model_spec_is_frozen_and_hashable
+      remains as a valid hashability test (correct but mislabeled as a resolution).
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      TestEventRepoSchemaGap tested the fake, not the real repo (IMPORTANT-6)
+    resolution: >
+      Added test_events_repository_get_latest_session_agent_type_always_returns_none
+      that instantiates the real EventsRepository with a real SQLite DB (tmp_path).
+      The test asserts the method returns None and includes a comment explaining
+      what to do when the schema migration lands. When the migration adds the
+      agent_type column and the stub is removed, this test will fail — forcing
+      the maintainer to update auto-mode behavior.

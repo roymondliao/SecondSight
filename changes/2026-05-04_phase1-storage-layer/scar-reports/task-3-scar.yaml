@@ -1,0 +1,70 @@
+task: task-3
+title: "Events Table — SQLAlchemy Core schema + repository"
+plan_ref: P1-3
+sd_refs: ["3.7.5", "3.7.6", "3.7.7"]
+status: done
+tests:
+  death: 6/6
+  unit: 7/7
+  total: 13/13
+
+step0_prerequisite_questions:
+  - q: "Most-wanted impl path to NOT take?"
+    a: "ORM with relationships (Event ↔ Session) modeled in code. Avoided — SD §3.7.5 explicitly states 'single events table'; relationships live in the analysis layer's segmenter, not the storage layer. Used SQLAlchemy Core (Table + select/insert) instead of declarative ORM."
+  - q: "When should this not be implemented?"
+    a: "If we move to a column-store like ClickHouse or DuckDB for analytical queries, the per-row INSERT pattern becomes a bottleneck. SD §3.6 names DuckDB as future migration path; this repository's surface (insert/insert_many/select) generalizes."
+  - q: "If a silent failure occurs, who notices first?"
+    a: "Phase-2 segmenter producing wrong segments because get_max_segment_index returned 0 when caller expected None — analyst sees 'first segment is empty' and blames the analysis prompts. The death test pinning the None vs 0 distinction is in place."
+  - q: "Will this still be alive in the future?"
+    a: "Yes. The `events` table is the most-load-bearing schema in the system. Migrations (ALTER TABLE) handled by Phase 2; the death test for forward-compat (extra column survives create_schema) protects this path."
+
+silent_failure_paths_now_covered:
+  - id: SF-1
+    description: "Idempotent INSERT silently overwrites existing data on retry"
+    detection: "test_death_idempotent_insert_does_not_overwrite"
+    resolution: "ON CONFLICT(id) DO NOTHING — original data preserved. Distinct from `INSERT OR IGNORE` which would silence (session_id, sequence_number) violations too."
+  - id: SF-2
+    description: "(session_id, sequence_number) collision silently dropped, corrupting segment index"
+    detection: "test_death_unique_session_seq_violation_raises, test_death_concurrent_unique_violation_one_winner"
+    resolution: "ON CONFLICT scoped to id only; UNIQUE constraint surfaces sequence-number conflicts as IntegrityError"
+  - id: SF-3
+    description: "Empty session indistinguishable from session with segment_index=0"
+    detection: "test_death_get_max_segment_index_distinguishes_zero_from_none"
+    resolution: "explicit `None if value is None else int(value)` mapping; documented in docstring"
+  - id: SF-4
+    description: "JSON data column corrupting unicode or nested structures"
+    detection: "test_death_unicode_and_nested_data_roundtrip"
+    resolution: "json.dumps with ensure_ascii=False; SQLite TEXT stores UTF-8 natively; round-trip test in suite"
+  - id: SF-5
+    description: "create_schema dropping forward-compat columns added by future migrations"
+    detection: "test_death_create_schema_idempotent_with_extra_column"
+    resolution: "metadata.create_all uses checkfirst=True; existing tables are not modified"
+
+silent_failure_paths_remaining:
+  - id: SF-6
+    description: "data column is unindexed; queries that filter on JSON fields will table-scan. At low row count this is fine; at 1M rows / project (SD §3.6 future) it will need json_extract + indexed virtual column."
+    severity: low
+    deferred_to_feature_iteration: true
+    reason: "Phase 1 scale (0.5–2 events/sec × 90 day TTL ≈ 7M events / project worst case, but typical is 100k–500k). Index strategy is a Phase 2.5 concern."
+  - id: SF-7
+    description: "INSERT OR IGNORE / ON CONFLICT silently masks an `id` collision with DIFFERENT data — the second writer's intent is silently lost. We log nothing about this. Repeats with different data may indicate a bug upstream."
+    severity: medium
+    deferred_to_feature_iteration: true
+    reason: "Adding 'detect-and-warn-on-id-conflict-with-changed-data' requires a SELECT before INSERT — doubles write latency. Defer to monitoring rather than write-path."
+
+assumptions_made_explicit:
+  - "SQLite ON CONFLICT (UPSERT) syntax is available — true since SQLite 3.24 (2018)."
+  - "SQLAlchemy 2.0 RowMapping interface is stable; bound types map column → python correctly for our 12 columns."
+  - "json.dumps with ensure_ascii=False produces stable bytes for the same input dict — Python 3.7+ preserves insertion order for dicts so this holds."
+
+resolved_items:
+  - "Self-iteration Level 1: changed `metadata.create_all(checkfirst=False)` (initial draft) to `checkfirst=True` so re-running create_schema is safe even if other modules/tests created the table."
+  - "Self-iteration Level 1: tightened `_row_to_event` to use Pydantic's `model_validate` path for forward-compat — actually kept direct constructor call since extra=forbid catches drift loudly."
+
+design_decisions_logged:
+  - "Repository pattern over Core Tables — no ORM session/identity-map needed for write-heavy ingest path."
+  - "_event_to_row / _row_to_event are static methods so they can be reused by test fixtures."
+  - "events_table.py is data-only (Table + Indexes); no behavior. EventsRepository has all behavior. Easy to swap data definition for migrations."
+
+unresolved_assumptions: 0
+deferred_items_count: 2

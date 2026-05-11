@@ -1,0 +1,15 @@
+{
+  "_meta": {
+    "_source": "documented",
+    "_capture_origin": "OpenCode plugin API, session.idle event (snapshot 2026-04-24)",
+    "_opencode_hook_event_name": "session.idle",
+    "_secondsight_event_type": "session_end"
+  },
+  "payload": {
+    "hook_event_name": "session.idle",
+    "properties": {
+      "sessionID": "oc-sess-001"
+    }
+  },
+  "expected_partial_event_data": {}
+}

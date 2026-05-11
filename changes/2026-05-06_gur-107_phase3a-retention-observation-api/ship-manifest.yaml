@@ -1,0 +1,211 @@
+# Ship Manifest — GUR-147 (unblocked subset of GUR-107 Phase 3A)
+# Validate-and-ship gate complete on 2026-05-06.
+
+scope_note: >
+  GUR-147 is the unblocked subset of GUR-107 (P3A) per board confirmation
+  `a0a92005` (option A split, accepted 2026-05-06T02:32:13Z). The remainder
+  — analysis_ttl_days enforcement + post-analysis trigger — is filed as
+  GUR-107b and remains blocked on GUR-101 analysis orchestrator
+  (per CEO advisory `e3c7e9ee`).
+
+delivered_capability: >
+  Three operator-facing surfaces grounded against SD §3.10 + §10.4:
+  (1) raw_traces TTL retention via TOML config + RetentionConfig +
+  enumerate_expired_sessions + RawTracesPurger with FS-first / DB-second
+  partial-failure contract; (2) `secondsight cleanup [--dry-run]
+  [--project-id PID] [--format json|text]` CLI subcommand reusing the
+  cli/sync.py FS-walk pattern (D8 asymmetry: CLI is sync, API uses async
+  ProjectRegistry); (3) Observation API with 4 GET endpoints (sessions
+  list/detail, segments list/detail) over the existing events table,
+  required project_id query param (DC-4) closing cross-project leakage,
+  ETag freshness markers (DC-7) + opaque cursor pagination. NO new auth
+  surface — inherits Phase 1 local-only-bind trust model. NO LLM calls
+  — those land in GUR-101.
+
+# --- What was built ---
+production_modules:
+  - id: A1
+    path: src/secondsight/storage/retention.py (RetentionConfig + helpers)
+    closes: >
+      First config consumer in the codebase (verification finding C1).
+      stdlib tomllib loader; per-project TOML > global TOML > built-in
+      default (90 days). Resolved value carries source attribution
+      (per_project_config / global_config / builtin_default) so cleanup
+      logs prove which file the TTL came from. DC-6 (malformed/wrong-type/
+      negative raises RetentionConfigError) + DC-6b (no files → built-in
+      default, never raises) both pinned by death tests.
+
+  - id: A2
+    path: src/secondsight/storage/retention.py (enumerate_expired_sessions + ExpiredSession)
+    closes: >
+      Pure read-side enumerator. Single SQL aggregate
+      (SELECT session_id, MAX(timestamp) FROM events GROUP BY session_id
+      HAVING MAX(timestamp) <= cutoff) returns sessions whose
+      last_event_at is at or before the TTL cutoff. Boundary is
+      last_event_at, NOT created_at (decision D1) — DC-2 pins this.
+      DC-1 pins empty-table → empty list. Inclusive cutoff (exact-boundary
+      IS expired) verified by TestBoundaryPrecision.
+
+  - id: A3
+    path: src/secondsight/api/observation.py (Pydantic schemas)
+    closes: >
+      Frozen + extra=forbid response shapes for SD §10.4 endpoints:
+      SessionSummary, SessionDetail, SegmentSummary, SegmentDetail,
+      ListSessionsResponse, ListSegmentsResponse. SegmentSummary surfaces
+      aggregate duration_ms / token_count so dashboard Level 2 can render
+      without a follow-up Level 3 fetch.
+
+  - id: A4
+    path: src/secondsight/storage/retention.py (RawTracesPurger + PurgeResult + PurgeFailure)
+    closes: >
+      Destructive side. FS-first (shutil.rmtree on
+      sessions/{session_id}/) then DB-second
+      (DELETE FROM events WHERE session_id=?). Per-session try/except
+      so one corrupt session cannot kill the batch. DC-5 partial-failure
+      contract: FS-success/DB-failure logs structured ERROR with
+      session_id and surfaces as PurgeFailure(stage=database) which the
+      CLI maps to non-zero exit. shutil.rmtree on missing dir is
+      idempotent — operator-cleaned-then-cleanup converges.
+
+  - id: A5
+    path: src/secondsight/api/observation.py (router) + src/secondsight/api/server.py (mount)
+    closes: >
+      4 GET endpoints under /api/sessions[...]. project_id is a required
+      Query parameter on every endpoint (DC-4) — FastAPI returns 422 if
+      absent; cross-project enumeration impossible by construction. DC-7
+      ETag is SHA-1(project_id|max_timestamp|count) with
+      usedforsecurity=False; If-None-Match matches return 304.
+      Aggregation queries are SQL-only (D7); only segment-detail opens
+      events.data JSON. Resources resolved via
+      AppState.registry.get(project_id), reusing the Phase 1 hooks
+      router pattern.
+
+  - id: A6
+    path: src/secondsight/cli/cleanup.py + src/secondsight/cli/app.py (subcommand mount)
+    closes: >
+      `secondsight cleanup [--home PATH] [--project-id PID] [--dry-run]
+      [--format text|json]`. FS-walks `<home>/projects/` (D8 / verification
+      C2: NOT via async ProjectRegistry). DC-3 enforced via shared
+      _enumerate_for_project helper — dry-run and real-run consume the
+      same _EnumerationOutcome shape so they cannot diverge. DC-5
+      propagation: any PurgeFailure or enumeration error sets non-zero
+      exit. Per-project errors do not abort the loop.
+
+  - id: A7
+    path: src/secondsight/api/observation.py (pagination + ETag wiring)
+    closes: >
+      Bounded JSON listing (D6 — no streaming). Either ?offset=N OR
+      ?cursor=str(offset); supplying both is rejected with 422 to keep
+      the cursor contract unambiguous. ETag preserves freshness across
+      the cursor walk. limit defaults 50, max 500.
+
+# --- Acceptance verification ---
+acceptance:
+  total: 24  # A-F1..A-F7 + A-T1..A-T4 + A-T4b + A-B1..A-B3 + A-E1..A-E3 + A-X1..A-X3 + A-D1..A-D2
+  passed: 24
+  breakdown:
+    functional:    "A-F1..A-F7  (7/7) — 4 endpoints + cleanup --dry-run + cleanup actual + cleanup --project-id"
+    ttl_resolution: "A-T1..A-T4b (5/5) — per-project / global / builtin / malformed / no-files"
+    boundary:      "A-B1..A-B3  (3/3) — last_event_at boundary, dry-run/real identity, partial-failure exit-code"
+    etag_pagination: "A-E1..A-E3 (3/3) — ETag set + 304 on match + ETag changes on new event + limit/offset bounds"
+    coverage_gate: "A-X1..A-X3 (3/3) — new test files at expected paths, all 8 death cases represented, no Phase 1 regressions"
+    documentation: "A-D1..A-D2 (2/2) — SD §3.10 reference confirmed, --help lists --dry-run + --project-id + exit codes"
+
+# --- Death-case ledger ---
+death_cases:
+  total: 8
+  green: 8
+  enumerated:
+    - "DC-1: empty events → [] (no spurious deletions on fresh install)"
+    - "DC-2: old-first/recent-last NOT expired (boundary on last_event_at, NOT created_at)"
+    - "DC-3: --dry-run and real-run share enumeration helper (no drift)"
+    - "DC-4: every API endpoint requires project_id (no cross-project leak)"
+    - "DC-5: FS-success/DB-failure surfaces as PurgeFailure + non-zero CLI exit"
+    - "DC-6: malformed TOML / wrong-type / negative all raise RetentionConfigError"
+    - "DC-6b: no config files → built-in default, never raises (fresh-install path)"
+    - "DC-7: ETag stable across identical state, changes on new event"
+
+# --- Test counts ---
+tests:
+  new_tests: 74
+  retention_config: 11    # tests/storage/test_retention_config.py
+  retention_enumerator: 8  # tests/storage/test_retention_enumerator.py
+  retention_purger: ~8    # tests/storage/test_retention_purger.py (DC-5 + idempotency)
+  observation_schemas: 21  # tests/api/test_observation_schemas.py
+  observation_router: 17   # tests/api/test_observation_router.py
+  observation_pagination: 10  # tests/api/test_observation_pagination.py
+  cleanup_cli: 7          # tests/cli/test_cleanup.py
+  full_suite_status: "GUR-147 task suites 74/74 green; full suite green modulo pre-existing test_hook_fallback parallel-write flake (passes in isolation, recorded in changes/2026-05-04_phase1-adapters/scar-reports/)"
+
+# --- Security & privacy ---
+security_privacy_review:
+  artefact: changes/2026-05-06_gur-107_phase3a-retention-observation-api/security-privacy-review.md
+  verdict: PASS  # revised after re-review (board choice B at cd574a9a)
+  high: 0
+  medium: 0
+  history: >
+    Initial review (commit bec91ce) shipped as PASS_WITH_ONE_MEDIUM and
+    missed two findings. Re-review surfaced HIGH-1 (Observation API
+    project_id path traversal) and MEDIUM-1 (cleanup CLI --project-id
+    same class). Board chose option (B) at comment cd574a9a: pause ship,
+    fix all three findings, re-review. Hardening commit added shared
+    api/_id_safety.is_safe_id helper, applied at three call sites
+    (Observation API _aresources, cleanup CLI cleanup(), purger
+    _delete_fs_session via raw_trace_store.is_safe_session_id). All
+    three findings now RESOLVED.
+  risks_accepted: 0
+
+# --- Carry-forward (NOT blocking ship) ---
+carry_forward:
+  - id: GUR-107b
+    summary: "analysis_ttl_days enforcement + post-analysis cleanup trigger"
+    rationale: >
+      Defers to GUR-101 analysis orchestrator (still missing the
+      post-completion event hook that cleanup will register against).
+      Behavior_flags + directives tables already shipped via GUR-100.
+    blocking_ship: false  # explicitly out-of-scope per board (A) split
+
+# --- Provenance chain ---
+provenance:
+  research:
+    - "ce37ad5 — GUR-107 research kickoff + scope-split proposal"
+  planning:
+    - "4706f7c — GUR-107a planning (2-plan + acceptance + index.yaml)"
+    - "432d52a — GUR-107a verification: code-grounded plan amendments + DC-6b"
+  implementation:
+    - "3278492 — task-A1: RetentionConfig with TOML loader (DC-6, DC-6b)"
+    - "328456e — task-A2: enumerate_expired_sessions with DC-1, DC-2"
+    - "517b23c — task-A3: Observation API Pydantic schemas"
+    - "bde1262 — task-A4: RawTracesPurger with DC-5 partial-failure contract"
+    - "a5da2ea — task-A5: Observation API router (DC-4 + DC-7)"
+    - "e4ea98e — task-A6: secondsight cleanup CLI (DC-3 + DC-5 propagation)"
+    - "06eb44f — task-A7: pagination cursor + ETag wiring on listing endpoints"
+  hardening:
+    - "GUR-147 hardening: shared is_safe_id helper applied at Observation API, cleanup CLI, and RawTracesPurger; resolves HIGH-1 + MEDIUM-1 + MEDIUM-2 from re-review"
+  gate_records:
+    confirmation_a0a92005:
+      kind: request_confirmation
+      idempotency_key: "confirmation:GUR-107:scope-split:1"
+      resolved_at: "2026-05-06T02:32:13.739Z"
+      outcome: accepted
+      option: "A — split into GUR-147 (this) + GUR-107b (deferred)"
+    ceo_advisory_e3c7e9ee:
+      kind: comment
+      verified_artefacts: ["plan-verification.md@432d52a"]
+      stance: "endorse wait pattern; recommend (A) split"
+
+# --- Plan reference ---
+plan_refs:
+  kickoff: changes/2026-05-06_gur-107_phase3a-retention-observation-api/1-kickoff.md
+  plan: changes/2026-05-06_gur-107_phase3a-retention-observation-api/2-plan.md
+  acceptance: changes/2026-05-06_gur-107_phase3a-retention-observation-api/acceptance.md
+  index: changes/2026-05-06_gur-107_phase3a-retention-observation-api/index.yaml
+  verification: changes/2026-05-06_gur-107_phase3a-retention-observation-api/plan-verification.md
+  security_privacy: changes/2026-05-06_gur-107_phase3a-retention-observation-api/security-privacy-review.md
+
+# --- Ship status ---
+status: ready_to_ship
+final_decisions:
+  - decision: "GUR-147 ships after hardening commit; HIGH-1 + MEDIUM-1 + MEDIUM-2 all resolved on the same fresh commit per board option (B). Out-of-scope items pinned to GUR-107b."
+  - decision: "Default retention TTL = 90 days (per SD §3.10.1). Operator overrides via per-project config.toml."
+  - decision: "Observation API binds local-only (inherits Phase 1)."

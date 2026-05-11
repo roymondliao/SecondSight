@@ -1,0 +1,113 @@
+task_id: task-4
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      Pairing key is `(tool_name, target)`. Two concurrent tool calls
+      with identical (tool_name, target) within a single segment FIFO-
+      pair correctly, but a real-world scenario where two Read calls
+      to the SAME path are in flight simultaneously and the END events
+      arrive in REVERSE order (LIFO instead of FIFO) would mis-pair.
+      Likelihood: extremely low (Claude Code is single-threaded per
+      sub-agent), but documented.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      End-only synthesis preserves `success` from `end.data.get("success")`.
+      If the LLM analyzes an end-only span and sees `success=True`, it
+      may treat it as a successful tool call — but we don't know what
+      the start *intended* (the start event is missing). Trust trade-off:
+      we trust the recorded outcome; the LLM may misinterpret. Acceptable
+      for v1; reconsider if false-positive flags arise from end-only spans.
+    deferred_to_feature_iteration: true  # cross-task with GUR-101 prompt design
+
+  - description: >
+      `_event_to_dict` includes the full `data` field as-is (no PII
+      redaction). For events where `data` carries user-prompt text or
+      tool stdout, the LLM analyzer sees raw content. SD §3.7 (raw
+      trace store) handles content separately; the events table in
+      Phase 1 already excludes large content. Privacy review (Phase
+      "security-privacy-review") will catch any leakage; documented.
+    deferred_to_feature_iteration: true  # security review concern
+
+  - description: >
+      `_validate_sequence_order` checks for monotonic increase but
+      only RAISES on violation — there's no "warn-and-continue" mode.
+      For a real-world scenario where a manual DB edit corrupted a
+      single row's sequence_number, the entire segmenter call fails.
+      Acceptable: corrupted ingest is a real bug, surface it.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      The pre-prompt `segment_index=0` segment is constructed with
+      `user_prompt=None`. If a future ingest writes a USER_PROMPT
+      event WITH segment_index=0 (instead of incrementing first per
+      tracker.py:193-195), the segmenter would silently treat it as
+      the segment_index=0 prompt and the next user_prompt would
+      become segment_index=1. This depends on tracker invariants
+      that GUR-99 already tested; if those break, segmenter output
+      becomes weird but doesn't raise.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      `_assemble_events` calls `sorted(out, key=self._sort_key)` to
+      restore chronological order. If two items share the same
+      sort key (e.g. start_seq == sequence_number for a raw dict),
+      the relative order between them depends on Python's stable sort.
+      Currently no test exercises this; could surface a deterministic
+      but non-obvious ordering for adjacent thinking + tool spans.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      events_repository.get_session_events returns events sorted by
+      sequence_number ascending.
+    verified: true
+    note: >
+      Confirmed by reading events_repository.get_session_events:
+      `.order_by(events.c.sequence_number.asc())`.
+
+  - assumption: >
+      EventType.USER_PROMPT is the only event type that increments
+      segment_index per tracker.py:193-195.
+    verified: true
+    note: >
+      Confirmed by reading observation/tracker.py. Critical assumption
+      for the pre-prompt vs. user-prompt segment distinction.
+
+  - assumption: >
+      ToolUseSpan model_validator only runs at construction; bypassed
+      paths (synthesized spans) all go through normal Pydantic flow.
+    verified: true
+    note: >
+      Verified: _synthesize_start_only_span uses success=None which
+      passes the validator (only success=True/duration=None is rejected).
+
+  - assumption: >
+      The duplicate-sequence_number test (DT-4.5) reflects a real-world
+      corrupted-DB scenario. In practice ingest's UNIQUE constraint
+      prevents this at write time; the segmenter's check is defense
+      in depth against later corruption.
+    verified: true
+    note: "DT-4.5 test passes"
+
+debt_registered: true
+debt_location: >
+  src/secondsight/analysis/segmenter.py — see end-only synthesis trust
+  semantics (deferred to GUR-101); raw data passthrough (deferred to
+  security-privacy-review); sort-key tie-breaking on adjacent items.
+
+resolved_items:
+  - original_section: silent_failure_conditions
+    original_description: >
+      _sort_key default `0` for missing sequence_number sorted unknown-
+      position raw dicts to position 0, silently floating them to the
+      front of the segment. (Yin-reviewer Important finding.)
+    resolution: >
+      _sort_key now raises ValueError on a raw dict with no
+      sequence_number key, with a message naming the upstream contract
+      break. _event_to_dict always emits sequence_number so
+      segmenter-built dicts pass; only externally-injected dicts
+      missing the key would now surface — exactly the bug detection
+      path we want.

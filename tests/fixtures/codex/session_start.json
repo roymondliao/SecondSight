@@ -1,0 +1,19 @@
+{
+  "_meta": {
+    "_source": "documented",
+    "_capture_origin": "Codex CLI hooks source (codex-rs/hooks/src/events/session_start.rs), session_start hook (snapshot 2026-04-24)",
+    "_codex_hook_event_name": "session_start",
+    "_secondsight_event_type": "session_start"
+  },
+  "payload": {
+    "session_id": "550e8400-e29b-41d4-a716-446655440000",
+    "cwd": "/Users/example/work/repo",
+    "triggered_at": "2026-05-10T12:00:00Z",
+    "hook_event_name": "session_start"
+  },
+  "expected_partial_event_data": {
+    "action_metadata": {
+      "cwd": "/Users/example/work/repo"
+    }
+  }
+}

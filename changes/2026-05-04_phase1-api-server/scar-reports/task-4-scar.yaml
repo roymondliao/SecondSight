@@ -1,0 +1,420 @@
+task_id: task-4
+title: "Bash Hook Scripts — _lib.sh, per-event hooks, fallback JSONL, subprocess tests"
+plan_ref: GUR-96
+sd_refs: ["3.1", "3.7.5"]
+completion_status: done
+iteration: 2
+
+tests:
+  death: 10/10  # DT-1..DT-9 + DT-5b
+  unit: 9/9     # UT-1 (real-server), UT-1b (concurrent), UT-2..UT-8
+  total: 19/19
+  full_suite: 407/407  # verified post-iteration-3 by main agent via `pytest --tb=no -q`. The earlier "193/193" claim in iteration 2 was a miscount: the implementer ran a sub-directory only and reported its count as the full suite. Round-3 review caught it.
+
+step0_prerequisite_questions:
+  - q: "Most-wanted impl path to NOT take?"
+    a: >
+      A bash hook that uses set -e globally, builds the JSON envelope via string
+      interpolation (printf/echo with variable substitution), and falls through
+      naturally on curl failure. Avoided because: (1) set -e can propagate through
+      subshells and cause the hook to exit non-zero, cancelling the agent's tool
+      call; (2) string interpolation breaks fatally on payloads containing single
+      quotes, dollar signs, or backticks — eval or word-splitting would corrupt or
+      execute the payload; (3) plain echo >> on macOS has PIPE_BUF=512 bytes,
+      meaning concurrent writes >512 bytes will interleave. Instead: no set -e,
+      jq for envelope construction, explicit exit 0 at every code path, flock where
+      available.
+
+      Also: the fix-pass most-wanted path NOT taken was sed-replacing event_type
+      strings and using FastAPI TestClient (in-process) for UT-1.  TestClient
+      doesn't exercise the actual HTTP path that bash curl traverses, so it would
+      have silently re-approved the C1 bug.
+
+  - q: "When should this NOT be implemented?"
+    a: >
+      If jq is not installed in the agent's execution environment, the hook
+      degrades to a stub envelope that preserves payload byte-count and a truncated
+      base64 snapshot (C4 fix; actual payload is still lost in the degraded mode).
+      This is documented but represents data loss. The implementation should not be
+      considered fully deployed on environments without jq.
+
+      The symlink-install path (C3 fix) relies on BASH_SOURCE and a readlink loop.
+      On environments where bash is not the interpreter (e.g. dash shebang or
+      explicit sh invocation), BASH_SOURCE is undefined — sourcing would fall back
+      to the pre-fix dirname behavior.  Since the shebang is #!/usr/bin/env bash
+      and tests use explicit bash invocation, this is covered for normal usage.
+
+  - q: "If silent failure occurs, who discovers it first and when?"
+    a: >
+      C1 (wrong event_type URL, pre-fix): Every hook POST to the live server returned
+      422 and fell through to JSONL fallback. The operator saw exit 0 and a file
+      written, but nothing in the DB. Discovery: when Phase 2 analysis ran and found
+      all events in JSONL with zero in DB. Timeline: potentially weeks of lost DB
+      observation. The new UT-1 (real-server) is the regression guard that would have
+      caught C1 immediately in CI.
+
+      C3 (symlink install, pre-fix): _lib.sh sourcing fails silently; exit 0 with zero
+      observation. Discovery: user running dashboard seeing 0 events. Timeline: within
+      first day of symlink install, but only if they check the dashboard.
+
+known_shortcuts:
+  - id: KS-1
+    description: >
+      macOS ships without flock(1) (part of Linux util-linux). The hook degrades
+      to plain >> for JSONL append. For payloads >512 bytes written concurrently,
+      PIPE_BUF on macOS allows interleaving — a corrupted JSONL line could result.
+      In practice: most hook payloads from Claude Code are <200 bytes (just metadata);
+      the risk is theoretical for Phase 1 typical usage.
+    deferred_to_feature_iteration: true
+    rationale: >
+      P1-13 (backfill sync) will implement a Python-based atomic writer
+      (advisory flock via fcntl, cross-platform) that replaces the bash >>
+      append. The bash hook will then delegate to the Python writer when available.
+
+  - id: KS-2
+    description: >
+      --connect-timeout 0.1 and --max-time 1 may be too aggressive on systems
+      recovering from sleep (network stack cold-start) or under heavy load.
+      This produces false fallbacks: events are written to JSONL instead of the
+      server even though the server is running.
+    deferred_to_feature_iteration: true
+    rationale: >
+      False fallbacks are safe (no data loss) and P1-13 will backfill them.
+      Phase 1 accepts occasional false fallbacks in exchange for never blocking
+      the agent's tool call.
+
+  - id: KS-3
+    description: >
+      jq is a hard runtime dependency for correct envelope construction. If jq
+      is absent, the hook degrades to a stub envelope that loses the real payload
+      (though now preserves byte-count + truncated base64 per C4 fix).
+    deferred_to_feature_iteration: true
+    rationale: >
+      jq is ubiquitous on developer machines. A pure-bash JSON encoder (or
+      Python subprocess delegation) is deferred to the P1-13 hardening phase.
+
+  - id: KS-4
+    description: >
+      Splitting _secondsight_resolve_home into a _lib_paths.sh module.
+      Currently _lib.sh is ~180 lines; splitting is premature.
+    deferred_to_feature_iteration: true
+    rationale: >
+      Defer until _lib.sh exceeds ~500 lines per the fix-pass directive.
+
+  - id: KS-5
+    description: >
+      jq-failure path is indistinguishable from jq-absent (both result in
+      missing envelope + stderr warning) — needs distinct error log strings.
+    deferred_to_feature_iteration: true
+    rationale: >
+      Diagnostic-only; not a correctness issue. Deferred per fix-pass directive.
+
+  - id: KS-6
+    description: >
+      flock disk-full retry idempotency — printf to a full disk is atomic-fail;
+      the documented edge case is a non-issue in practice.
+    deferred_to_feature_iteration: true
+    rationale: >
+      Accepted non-issue per fix-pass directive.
+
+  - id: KS-7
+    description: >
+      UT-4 / DT-2 are probabilistic on macOS (I4): both tests run with port=1
+      (no listener) and assert that 100/50 concurrent JSONL lines are intact.
+      On macOS without flock, this tests application-level JSON construction,
+      not OS-level PIPE_BUF atomicity.  The test can intermittently fail under
+      heavy system load (subprocess timeout) — observed once in pre-fix baseline
+      (1 failed, 189 passed) and 0 times in post-fix baseline (193/193 twice).
+    deferred_to_feature_iteration: true
+    rationale: >
+      Tracked as KS-1 for the architectural fix. The test now carries a comment
+      (I4 fix) acknowledging the non-determinism and referencing KS-1.
+
+silent_failure_conditions:
+  - id: SF-1
+    description: >
+      mkdir -p $SECONDSIGHT_HOME succeeds but the fallback_events.jsonl write
+      fails (e.g. disk full, file permission issue after directory creation).
+      The hook does `>> "$fallback_file" 2>/dev/null || true`, so the write
+      failure is silently swallowed. The event is lost with no indication.
+    severity: medium
+    mitigation: >
+      The || true prevents exit non-zero (correct). Adding a stderr warning on
+      write failure would require capturing the exit status of the append, which
+      complicates the code significantly. Accepted for Phase 1; P1-13 Python
+      writer will properly handle this case.
+    deferred_to_feature_iteration: true
+
+  - id: SF-2
+    description: >
+      SECONDSIGHT_AGENT is unset: the envelope uses "unknown" as the agent value.
+      If the backfill processor requires a real agent name to select the correct
+      normalizer, these events will fail backfill silently.
+    severity: low
+    mitigation: >
+      The installation documentation (P1-12 CLI scaffold) will require users to
+      set SECONDSIGHT_AGENT in their shell profile. The default "unknown" is a
+      valid string that will at least preserve the event with a clear marker.
+
+  - id: SF-3
+    description: >
+      jq construction of the envelope uses ($full_payload.payload // $full_payload).
+      If the incoming payload does not have a "payload" key (non-standard hook
+      format), the entire outer envelope is used as the payload field. This may
+      include fields like project_id, session_id, etc. that then appear nested
+      inside the fallback envelope's payload — a semantically incorrect shape.
+    severity: low
+    mitigation: >
+      Phase 1 assumes the hook payload is a Claude Code-style JSON object with
+      a "payload" sub-key. The P1-9 adapter will confirm this shape. Until then,
+      the fallback for missing .payload (the entire outer object) is at least
+      lossless — all data is preserved, just structured differently.
+
+  - id: SF-4
+    description: >
+      The hook reads its payload via PAYLOAD=$(cat). If stdin is not connected
+      (hook invoked without stdin piping), cat returns empty string immediately.
+      The empty string guard in secondsight_post() emits a warning and returns 0,
+      but the event is lost.
+    severity: low
+    mitigation: >
+      Resolved in iteration 1: secondsight_post() now checks if payload_json
+      is empty before any jq call. If empty, emits a stderr warning and returns
+      0. The event is still lost, but there is now an explicit warning rather
+      than silent jq failure.
+
+  - id: SF-5
+    description: >
+      I6 (curl error log): curl errors are now redirected to
+      $SECONDSIGHT_HOME/logs/curl-errors.log instead of /dev/null. If the logs
+      directory cannot be created (disk full, permissions), the `mkdir -p` silently
+      fails (|| true) and curl's stderr continues to /dev/null effectively —
+      because the `2>>"$curl_error_log"` on a non-existent path creates the file
+      anyway if the directory exists; if the directory does not exist, the redirect
+      itself fails and curl's stderr is lost.  The curl POST and fallback logic
+      are unaffected (exit-code based, not stderr-based).
+    severity: low
+    mitigation: >
+      Accepted for Phase 1. Operator diagnostic loss is preferable to hook
+      correctness regression. The fallback logic remains correct regardless.
+
+assumptions_made:
+  - id: A-1
+    description: >
+      Hook payload arrives on stdin (not as argv or environment variable).
+      The scripts use PAYLOAD=$(cat) to read stdin. Claude Code's hook contract
+      delivers payload on stdin; other agents may differ.
+    verified: false
+    verification_method: >
+      P1-9 (Claude Code adapter) will confirm. For Phase 1, all tests deliver
+      payload on stdin to match the Claude Code contract.
+    deferred_to_feature_iteration: true
+
+  - id: A-2
+    description: >
+      jq is available in the PATH when hook scripts run. The degraded mode
+      (no jq) now preserves payload metadata (C4 fix) but actual payload is
+      still lost.
+    verified: true
+    verification_method: >
+      DT-5 tests the curl-absent degraded mode (jq present). DT-5b tests the
+      jq-AND-curl absent degraded mode and asserts _original_payload_bytes and
+      _original_payload_b64_truncated are present in the fallback envelope.
+
+  - id: A-3
+    description: >
+      SECONDSIGHT_HOME, if set, is an absolute path. A relative path would
+      resolve against the hook's working directory, which is the project root
+      in Claude Code context — causing events to be written to
+      <project_root>/.secondsight/fallback_events.jsonl instead of
+      ~/.secondsight/fallback_events.jsonl.
+    verified: true
+    verification_method: >
+      UT-6 verifies: relative SECONDSIGHT_HOME → exit 0 + stderr warning.
+      _lib.sh _secondsight_resolve_home() detects non-absolute paths, emits a
+      warning, and falls back to $HOME/.secondsight.
+
+  - id: A-4
+    description: >
+      The shell executing the hook is bash (not sh, dash, or zsh). The scripts
+      use bash-specific features: local variables in functions, command -v for
+      command detection, set -u, BASH_SOURCE (C3 fix).  Using /usr/bin/env bash
+      in the shebang is correct for most developer systems but may fail in minimal
+      containers where bash is not in the PATH resolved by env.
+    verified: true
+    verification_method: >
+      UT-5 (shellcheck) uses --shell=bash to validate. The shebang is
+      #!/usr/bin/env bash throughout. Tests run via explicit `bash <script>`
+      invocation from subprocess.run, bypassing the shebang.  DT-9 verifies
+      the BASH_SOURCE symlink-resolution loop works correctly.
+
+  - id: A-5
+    description: >
+      C2 fix: the ClaudeCodeNormalizer registered in the real_secondsight_server
+      fixture is a test-only stub (subclasses IdentityNormalizer, accepts
+      agent='claude-code'). It is injected post-startup into app.state.
+      In production, P1-9 will register the real ClaudeCode adapter that does
+      semantic field mapping, not identity pass-through.
+    verified: true
+    verification_method: >
+      The stub is documented in conftest.py with explicit comment. UT-1 and UT-1b
+      verify that the end-to-end path from bash hook to DB row works correctly.
+      The adapter is a test concern only; no production code was changed for this.
+
+debt_registered:
+  - "KS-1: macOS PIPE_BUF race on parallel writes >512 bytes (P1-13)"
+  - "KS-2: --connect-timeout 0.1 false fallbacks on cold systems (accepted Phase 1)"
+  - "KS-3: jq as hard dependency; pure-bash fallback or Python delegation (P1-13)"
+  - "KS-4: _secondsight_resolve_home split deferred until _lib.sh >500 lines"
+  - "KS-5: jq-failure vs jq-absent indistinguishable in error log (deferred)"
+  - "KS-6: flock disk-full retry idempotency (accepted non-issue)"
+  - "KS-7: UT-4/DT-2 probabilistic on macOS; comment added referencing KS-1"
+  - "SF-1: disk-full write failure silently swallowed in fallback append (P1-13)"
+  - "SF-2: SECONDSIGHT_AGENT unset → 'unknown' agent in fallback envelopes (P1-12)"
+  - "SF-3: missing .payload key in outer envelope uses entire outer object (P1-9)"
+  - "SF-4: empty stdin → jq fails → event lost (P1-9 adapter hardening)"
+  - "SF-5: curl-errors.log may not be written if logs dir creation fails"
+  - "A-1: stdin delivery assumption unconfirmed until P1-9"
+
+debt_location:
+  - "scripts/hooks/_lib.sh:secondsight_fallback_append — write failure silently swallowed"
+  - "scripts/hooks/_lib.sh:secondsight_post — --connect-timeout 0.1 hard-coded"
+  - "scripts/hooks/_lib.sh:_secondsight_resolve_home — jq absence degrades to lossy stub"
+  - "tests/scripts/conftest.py:real_secondsight_server — ClaudeCodeNormalizer is test stub; P1-9 ships real adapter"
+
+narrative: >
+  The core risk in task-4 is the interaction between three constraints:
+  (1) the hook must NEVER exit non-zero (Claude Code PreToolUse contract),
+  (2) the hook must provide a durable fallback when the server is down, and
+  (3) bash is a primitive tool with minimal atomicity primitives on macOS.
+
+  Iteration 1 (original) resolved these tensions by making exit-0 structural
+  (no set -e, explicit exit 0, || true on all writes) and making the durability
+  guarantee best-effort with documented PIPE_BUF gap.  However, iteration 1
+  shipped with four correctness defects:
+
+  C1 (BLOCKING): Hook scripts posted to /hook/pre-tool-use (hyphenated) instead
+  of /hook/tool_use_start (underscore enum value).  The live server rejected all
+  POSTs with 422 and the hooks fell through to JSONL — silently defeating the entire
+  live-server path.  The original UT-1 used a fake server (accepts any URL) and
+  therefore could not catch this.
+
+  C2 (BLOCKING): UT-1 used a fake HTTP server that accepted any URL path.  It
+  silently approved the C1 mismatch.  The fix replaces UT-1 with a real create_app()
+  integration test that exercises the actual EventType enum validation.
+
+  C3 (BLOCKING): `dirname "$0"` gives the symlink's directory, not the real script's
+  directory.  Symlink-installed hooks could not source _lib.sh, producing silent
+  zero-observation exit-0.  Fixed via BASH_SOURCE + readlink loop in all per-event
+  scripts.
+
+  C4 (BLOCKING): The degraded envelope (jq absent) stored only
+  `{"_fallback_degraded": true}` — no information about the original payload.
+  Fixed by adding _original_payload_bytes and _original_payload_b64_truncated
+  (first 4096 bytes) to the degraded payload field.
+
+  Iteration 2 resolves all four critical defects.  The version constant
+  (_SECONDSIGHT_VERSION) is now centralized in _lib.sh (I1 fix) and the test
+  constants (EXPECTED_VERSION, FALLBACK_FILENAME) are centralized in conftest.py
+  (I2 fix).  The flock comment is reworded to be OS-agnostic (I3 fix).  The
+  UT-4/DT-2 probabilistic nature is documented with reference to KS-1 (I4 fix).
+  curl stderr is redirected to a per-day log file instead of /dev/null (I6 fix).
+
+resolved_items:
+  # -----------------------------------------------------------------------
+  # Iteration 1 resolutions (carried forward)
+  # -----------------------------------------------------------------------
+  - >
+    Iteration 1 / A-2 (jq assumption): the jq-absent code path is implemented
+    in _lib.sh and now produces a degraded envelope with _original_payload_bytes
+    and _original_payload_b64_truncated (C4 fix, iteration 2).
+
+  - >
+    Iteration 1 / A-3 (relative SECONDSIGHT_HOME): implemented in
+    _secondsight_resolve_home() with a case statement detecting non-/ prefixed
+    paths. UT-6 verifies exit 0 + stderr warning.
+
+  - >
+    Iteration 1 / SF-3 (missing .payload key): addressed via jq fallback
+    expression `($full_payload.payload // $full_payload)`.
+
+  - >
+    Iteration 1 / SF-4 (empty stdin guard): secondsight_post() now checks if
+    payload_json is empty before any jq call.
+
+  # -----------------------------------------------------------------------
+  # Iteration 2 resolutions (C1..C4, I1..I6)
+  # -----------------------------------------------------------------------
+  - >
+    C1 / event_type URL mismatch: all five per-event scripts now POST to
+    canonical EventType enum values (tool_use_start, tool_use_end, session_start,
+    session_end, user_prompt) instead of hyphenated hook filenames.  Each script
+    has a FILENAME vs URL NOTE comment explaining the intentional discrepancy.
+    UT-1 (new real-server test) would have caught this in CI; DT-9 is the
+    regression guard for C3.
+
+  - >
+    C2 / spec compliance: UT-1 replaced with a real create_app() integration test
+    using a uvicorn server in a background thread.  A _ClaudeCodeNormalizer stub
+    is registered post-startup for agent='claude-code'.  UT-1 asserts: exit 0,
+    no fallback JSONL, one DB row matching the event_id, one raw trace file.
+    UT-1b asserts 100 concurrent hooks → 100 DB rows, 0 JSONL lines.
+    Original iteration-1 test was non-spec-compliant (fake server) and missed C1.
+
+  - >
+    C3 / symlink install: all five per-event scripts now use a BASH_SOURCE +
+    readlink loop to resolve the real script directory before sourcing _lib.sh.
+    DT-9 verifies: pre-tool-use.sh symlinked without _lib.sh co-located → exit 0
+    + fallback file written. The loop handles multi-hop symlinks and relative
+    symlink targets (case statement for relative-to-absolute resolution).
+
+  - >
+    C4 / degraded envelope metadata: the jq-absent degraded path now builds:
+    payload={_fallback_degraded:true, _original_payload_bytes:<int>,
+    _original_payload_b64_truncated:<base64|"(unavailable)">}.
+    DT-5b verifies this with jq+curl both absent, dirname present.
+
+  - >
+    I1 / version constant: readonly _SECONDSIGHT_VERSION="phase-1.2" declared
+    at the top of _lib.sh; both jq-present (--arg version) and jq-absent
+    (variable interpolation in envelope string) reference it.  conftest.py now
+    exports EXPECTED_VERSION = "phase-1.2" as a single constant; all version
+    assertions in test_hook_fallback.py use it.
+
+  - >
+    I2 / fallback filename constant: FALLBACK_FILENAME = "fallback_events.jsonl"
+    declared in conftest.py; all test assertions use it instead of bare strings.
+
+  - >
+    I3 / flock comment rephrased: "On macOS" changed to "Where flock(1) is
+    unavailable from PATH (notably macOS, but also any minimal/Alpine-style
+    container without util-linux)"; PIPE_BUF risk documented as OS-agnostic.
+
+  - >
+    I4 / DT-2 / UT-4 probabilistic comment: both tests now carry a NOTE comment
+    acknowledging the test is non-deterministic on macOS (it tests the
+    application-level envelope construction, not OS-level append atomicity)
+    and reference KS-1 for the architectural fix.
+
+  - >
+    I5 / scar report spec deviation acknowledged: this resolved_items entry.
+    Original iteration-1 UT-1 used a fake-server that missed the C1 mismatch.
+    Iteration-2 UT-1 is the correct spec-compliant integration test.
+
+  - >
+    I6 / curl stderr redirected to log file: curl's 2>/dev/null replaced by
+    2>>"$ss_home/logs/curl-errors.log". The logs directory is auto-created
+    (mkdir -p || true) before the curl call. A proxy/TLS/DNS failure is now
+    distinguishable from "server not running" in operator logs. Exit-code-based
+    fallback logic is unchanged.
+
+deferred_to_feature_iteration_items:
+  - "KS-1: macOS PIPE_BUF / flock cross-platform (P1-13 Python writer)"
+  - "KS-4: _lib_paths.sh module split (defer until >500 lines)"
+  - "KS-5: jq-failure vs jq-absent distinct error logs (diagnostic-only)"
+  - "KS-6: flock disk-full retry (accepted non-issue)"
+  - "SF-1: disk-full write failure silently swallowed (P1-13)"
+  - "SF-2: SECONDSIGHT_AGENT unset (P1-12 CLI scaffold)"
+  - "SF-3: missing .payload key uses entire outer object (P1-9)"
+  - "SF-5: curl-errors.log may not be written if logs dir fails"
+  - "A-1: stdin delivery assumption (P1-9 adapter confirmation)"

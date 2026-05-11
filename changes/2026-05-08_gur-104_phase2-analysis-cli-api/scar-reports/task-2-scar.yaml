@@ -1,0 +1,151 @@
+task_id: task-2
+completion_status: done
+
+known_shortcuts:
+  - description: |
+      Per-request `DirectivesRepository` construction with
+      `create_schema()` defensive call. The schema check is cheap
+      (~1ms in SQLite with checkfirst=True), but it does a metadata
+      round-trip per HTTP request. With 5s polling and ~10 endpoints
+      eventually polled per cycle, that is ~10 round-trips/5s = 2/s
+      schema checks just from this endpoint. Acceptable for v1
+      (single-process, localhost). If profiling later shows it as a
+      hotspot, a per-project boolean cache "schemas_created" on
+      ProjectResources would eliminate it.
+    deferred_to_feature_iteration: false
+
+  - description: |
+      Reading the full directives list and serializing in Python.
+      For projects with hundreds of directives this materializes
+      every row in memory. v1 has no pagination on this endpoint —
+      the dashboard's expected scale (single-project MVP, < 1000
+      directives) makes that acceptable. A follow-up to add
+      limit/offset to GET /api/directives would mirror the
+      sessions endpoint and is mechanically straightforward.
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: |
+      Pydantic v2's `model_validator(mode="after")` raises ValueError
+      from `_reason_matches_status`. FastAPI converts that to a 422
+      with a body shape that names the field. The death tests
+      `DT-2.4` and `DT-2.5` accept either 400 OR 422 to match this
+      behavior. If a future request body has both a status problem
+      AND extra fields (extra="forbid"), the order of error-reporting
+      in FastAPI's response is undefined — the operator might see
+      "extra field" instead of "lifecycle violation" first. Not a
+      correctness bug; a UX nit.
+    deferred_to_feature_iteration: false
+
+  - description: |
+      Read-then-update is NOT inside a single transaction. Two
+      concurrent PATCHes to the same directive could race: both
+      read status=active, both decide it is a no-op or both decide
+      to update. SQLite's per-connection serialization makes this
+      improbable on a single-process server but not impossible
+      under pytest-asyncio. Mitigation deferred: `update_status` is
+      itself atomic; the worst race outcome is one of the two
+      PATCH responses returning the pre-other-write state. The
+      no-op invariant (DC-2) holds for each individual request.
+    deferred_to_feature_iteration: true
+
+  - description: |
+      The `is_noop` check compares `current.disabled_reason ==
+      body.reason` for the disabled→disabled re-PATCH path. If a
+      caller PATCHes status=disabled with a DIFFERENT reason while
+      the directive is already disabled, this is treated as a real
+      update (updated_at advances). That is the right semantics
+      for "I want to record a different reason," but a code reviewer
+      reading the no-op branch quickly might assume "same status =
+      no-op" without that nuance. Documenting here.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: "ProjectResources.db_engine survives across PATCH no-op + subsequent GET in the same TestClient context"
+    verified: true
+    note: |
+      Verified by DT-2.8 (ETag stable across no-op PATCH). The
+      registry caches the DBEngine for the process lifetime; tests
+      use `with _client(home)` which initializes lifespan once.
+
+  - assumption: "Pydantic Literal[\"active\", \"disabled\"] enforces enum-string membership at request validation time"
+    verified: true
+    note: |
+      DT-2.5 confirms PATCHing status='expired' returns 422 (or 400
+      via the lifecycle layer). Pydantic v2 rejects literal values
+      with a 'literal_error' discriminator before the model_validator
+      runs.
+
+  - assumption: "OpenAPI route description string survives Pydantic v2's json schema generation unchanged"
+    verified: true
+    note: |
+      DT-2.7 (originally numbered DG-2.1) reads
+      spec.paths["/api/directives/{directive_id}"].patch.description
+      and asserts both 'GUR-105' or 'Phase 3' AND 'restart' are in
+      the string. Passing means the OpenAPI builder used the
+      `description=` kwarg verbatim.
+
+  - assumption: "ETag changes between (active=true) and (active=false) listings even at zero-disabled steady state"
+    verified: false
+    note: |
+      The seed string includes `active=<bool>` so the hash is
+      different even when MAX(updated_at) and count match across
+      the two scopes. A test that asserts `etag_active != etag_all`
+      under a project with only active directives is not in the
+      task-2 suite; trusting the seed-string composition. If the
+      seed format changes in a refactor, this property becomes
+      unverified silently.
+    deferred_to_feature_iteration: false
+
+  - assumption: "Registering directives_router from server.py at task-2 time (instead of task-5) does not break observation_router or hooks_router"
+    verified: true
+    note: |
+      Verified by `pytest tests/api/ tests/storage/` returning
+      266/266 passing including the full observation router test
+      suite. The deviation from the planned task ordering (router
+      registration in task-5) is documented in this scar so a
+      future reader can audit the early registration if it surfaces
+      as a load-order bug.
+
+  - assumption: "DirectivesRepository.list_for_project addition is task-2 scope, not a separate repo task"
+    verified: true
+    note: |
+      The kickoff/plan put repo additions in task-1 by-name (only
+      count_per_session_for_project), but task-2's GET /api/directives
+      with active=false needs a public list path. Adding the method
+      to DirectivesRepository inside task-2 is a scope-extension
+      decision documented here so the reviewer doesn't flag it as
+      drift. The alternative (private _row_to_directive access from
+      api/directives.py) would be smellier; the alternative-alternative
+      (a separate task-1.5) would fragment the change for one method.
+
+debt_registered: true
+debt_location: "src/secondsight/api/directives.py (full file), src/secondsight/storage/directives_repository.py:138-167 (list_for_project)"
+
+resolved_items: []
+
+narrative: |
+  The biggest scar surface for task-2 is the read-then-write
+  idempotency check. The implementation does it in two SQLite
+  connections (one for `get_by_id`, another for `update_status`)
+  rather than in a single transaction. SQLite serialises writes
+  per-connection so the practical race window is tiny, and the
+  per-request Pydantic validator + the lifecycle re-check inside
+  `DirectivesRepository.update_status` mean the worst-case outcome
+  of a race is "one PATCH response returns the pre-other-write
+  state", not corruption. Recorded as `silent_failure_conditions`
+  with `deferred_to_feature_iteration: true` because closing it
+  properly requires extending the repository's transaction surface
+  (a method like `compare_and_update_status`) — that is a cross-task
+  concern, not local to GUR-104.
+
+  The OpenAPI Phase 3 cache caveat (DG-2.1) is delivered via the
+  `description=` kwarg on `@router.patch(...)` and surfaces in
+  `/openapi.json`. DT-2.6 verifies it. This is the single most
+  operationally important behavior in task-2 because a soft-disable
+  PATCH that "succeeds" but doesn't take runtime effect until
+  GUR-105 ships is exactly the operator-pain shape the API docs
+  must surface. Without it, an operator who PATCHes a misfiring
+  directive and sees 200 OK but sees the directive keep firing
+  thinks PATCH is broken — they don't know the cache layer hasn't
+  been built yet.

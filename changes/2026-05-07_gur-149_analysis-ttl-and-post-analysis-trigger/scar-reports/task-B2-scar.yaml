@@ -1,0 +1,215 @@
+task: task-B2
+title: "AnalysisResultsPurger + ExpiredAnalysis enumerator + DC-B6, DC-B7"
+status: review_passed
+review_outcomes:
+  yin: "PASS_WITH_CONCERNS — 2 Critical (both resolved), 2 Important (1 resolved, 1 documented), 3 Suggestions (1 resolved, 2 deferred)"
+  quality: "PASS_WITH_CONCERNS — 1 Important (documented at site + scar), 2 Suggestions (deferred)"
+
+death_cases_covered:
+  - id: DC-B6
+    description: "Partial-purge orphan guard — behavior_flags first, session_reports second; partial failure recoverable on re-run"
+    tests:
+      - "TestDCB6PartialPurgeOrphanGuard::test_purger_deletes_behavior_flags_before_session_reports"
+      - "TestDCB6PartialPurgeOrphanGuard::test_partial_failure_between_stages_is_recoverable"
+
+  - id: DC-B7
+    description: "Empty install — enumerator returns []; purger no-ops cleanly on empty input"
+    tests:
+      - "TestDCB7EmptyInstall::test_enumerator_returns_empty_list_on_empty_table"
+      - "TestDCB7EmptyInstall::test_enumerator_returns_empty_list_when_no_expired_rows"
+      - "TestDCB7EmptyInstall::test_purger_with_empty_input_returns_empty_result"
+
+tests_written:
+  total: 10
+  classes:
+    - TestDCB7EmptyInstall (3)
+    - TestDCB6PartialPurgeOrphanGuard (2)
+    - TestEnumeratorBoundary (2)
+    - TestEnumeratorStableOrder (1)
+    - TestHappyPath (2)
+test_results: "10 new tests pass; full suite 660 pass (was 650 after B1)"
+
+scar_items:
+  - id: scar-B2-1
+    severity: medium
+    title: "PurgeFailure.stage type literal widened by string injection"
+    description: >
+      The `PurgeFailure.stage` field in `retention.py` is typed as
+      `Literal["filesystem", "database"]` (raw_traces vocabulary). For
+      `AnalysisResultsPurger` I reused `PurgeFailure` with `stage="database"`
+      and tucked the analysis-specific sub-stage (`behavior_flags` vs
+      `session_reports`) into the `error` message via a "(stage=...)"
+      suffix. This works at runtime but is a soft type-system lie:
+      static analysis sees only "database" while operators reading logs
+      see the more specific stage in the error string.
+    decision_taken: >
+      Reused `PurgeFailure` to avoid a parallel failure-record type for the
+      same shape. The analysis-specific `AnalysisPurgeStage` literal is exported
+      from `analysis_retention.py` for any future caller that wants to widen
+      the field formally. Recommendation: a future iteration could change
+      `PurgeFailure.stage` to a Union of both literals OR to plain `str`
+      with a documented contract.
+    deferred_to_feature_iteration: true
+    deferral_rationale: "Cosmetic for static analysis; the runtime contract is preserved. Bundle with any future PurgeFailure refactor."
+    resolved_items: []
+
+  - id: scar-B2-2
+    severity: low
+    title: "Cross-module SLF001 access pattern repeated"
+    description: >
+      `enumerate_expired_analyses`, `_delete_behavior_flags_for_session`,
+      and `_delete_session_report_for_session` all access `repo._db.engine`
+      directly via `# noqa: SLF001`. This mirrors the existing GUR-147
+      pattern in `retention.py`. The SLF001 annotation is a load-bearing
+      acknowledgment — the storage layer co-owns engine access intentionally
+      because exposing a public `engine` property would leak SQLAlchemy
+      types to unrelated callers. Three new sites doubles the visible
+      surface of this pattern.
+    decision_taken: "Match existing pattern for consistency. A storage-layer-internal protocol (`_HasDbEngine`) could formalize this if we add a 4th site."
+    deferred_to_feature_iteration: true
+    deferral_rationale: "Pattern is established; refactor is independent of GUR-149 scope."
+    resolved_items: []
+
+  - id: scar-B2-3
+    severity: low
+    title: "Project-scoped enumeration deferred to caller (no project_id filter)"
+    description: >
+      `enumerate_expired_analyses` does NOT filter by `project_id`. It returns
+      ALL expired session_reports rows across all projects in the same DB. The
+      multi-project model in this codebase uses one DB per project (see
+      `cli/cleanup.py:_select_project_ids` which iterates project directories
+      and constructs per-project DB engines). So in practice the enumerator IS
+      project-scoped via DB instance, not via WHERE clause.
+    decision_taken: >
+      Match GUR-147's `enumerate_expired_sessions` which also doesn't filter
+      by project_id (relies on per-project DB isolation). If the storage
+      model ever consolidates to a single multi-tenant DB, this enumerator
+      needs an explicit project_id parameter. Documented in module docstring
+      via reference to GUR-147's pattern.
+    deferred_to_feature_iteration: true
+    deferral_rationale: "Architectural assumption; refactor only if storage model changes."
+    resolved_items: []
+
+  - id: scar-B2-4
+    severity: low
+    title: "Test for DC-B6 partial failure is fragile (engine.begin monkeypatch)"
+    description: >
+      `test_partial_failure_between_stages_is_recoverable` monkeypatches
+      `engine.begin()` with a custom context manager that selectively
+      raises on a specific DELETE statement matching the table identity
+      (`stmt.table is session_reports`) and the literal-bound WHERE clause
+      containing "sess-a". The matching is heuristic — a future SQL change
+      that uses a different binding strategy or routes the same DELETE
+      through a different code path could silently no-op the spy and let
+      the test pass even when the contract is broken.
+    decision_taken: >
+      Accepted for v1. The test is documented internally; the assertion
+      checks both "first pass left orphan-free state" AND "second pass
+      completes" so even a degraded spy still catches the most important
+      contract (no orphans). A more robust alternative would be a
+      DI-injected delete callable on the purger, but that adds API surface
+      for tests only.
+    deferred_to_feature_iteration: false
+    resolved_items: []
+
+assumptions_made:
+  - id: asm-B2-1
+    description: "Per-project DB isolation means enumerator does not need a project_id filter."
+    risk: "If the storage model ever moves to a single multi-tenant DB, the enumerator over-reaches. Mitigation: GUR-147's enumerator has the same assumption; both update together if the model changes."
+
+  - id: asm-B2-2
+    description: "session_reports.created_at is preserved on upsert (per repository docstring lines 5-7)."
+    risk: "If a future repository change updates created_at on conflict, the TTL boundary becomes unstable (re-runs would extend retention). Mitigation: the repository's docstring is the contract; a regression test in the repository tests would catch a change."
+
+  - id: asm-B2-3
+    description: "behavior_flags has no FK constraint to session_reports (verified absent via Grep)."
+    risk: "If a future migration adds an ON DELETE CASCADE FK, the behavior_flags-first deletion would fail because the constraint would block. Mitigation: this purger then becomes redundant — would simplify to a single session_reports delete. Detection: integration tests would fail."
+
+  - id: scar-B2-5
+    severity: medium
+    title: "PurgeFailure.stage diagnostic loss for analysis purger"
+    description: >
+      Yin reviewer flagged Important: PurgeFailure.stage is typed as
+      Literal["filesystem", "database"] from GUR-147; both behavior_flags
+      and session_reports failures pass `stage="database"`, with the
+      finer-grained stage embedded in `error` via "(stage=behavior_flags)"
+      / "(stage=session_reports)" suffix. A consumer reading `failure.stage`
+      programmatically loses the per-stage distinction. Per-stage recovery
+      semantics differ (behavior_flags failure means session_reports never
+      touched; session_reports failure means behavior_flags already gone).
+    decision_taken: >
+      Removed the misleading `AnalysisPurgeStage` export from this module
+      (Critical fix below), consolidating the type-system trade-off into a
+      single place: the `error` string suffix. A future PurgeFailure
+      refactor that widens the typed stage to a Union of both vocabularies
+      is the right shape but cross-cuts GUR-147 territory; deferred.
+    deferred_to_feature_iteration: true
+    deferral_rationale: "Cross-task type widening; not a v1 blocker."
+    resolved_items: []
+
+  - id: scar-B2-6
+    severity: low
+    title: "Quality reviewer: hollow repo abstraction at 3 new sites"
+    description: >
+      Quality reviewer flagged Important (D principle): three new sites in
+      this module access `repo._db.engine` directly via SLF001, treating the
+      typed repo as a box for the engine rather than a true abstraction.
+      Combined with the 3 existing sites in retention.py, the project now
+      has 6 SLF001 engine-access sites — past the threshold scar-B2-2 named
+      for formalizing a `_HasDbEngine` Protocol.
+    decision_taken: >
+      Added inline comment at the enumerate_expired_analyses access site
+      naming the assumption (sync DBEngine with a SQLAlchemy Engine at
+      .engine). Protocol formalization is an architectural change that
+      retroactively touches GUR-147 code; deferred to feature iteration
+      where it can land alongside any future storage-layer refactor.
+    deferred_to_feature_iteration: true
+    deferral_rationale: "Cross-cuts GUR-147; not blocking."
+    resolved_items: []
+
+self_iteration_pass:
+  reviewed: true
+  fixes_applied:
+    - id: fix-B2-A
+      addresses_review: "yin Critical: AnalysisPurgeStage exported but never used in the module's own PurgeFailure constructions"
+      change: >
+        Removed `AnalysisPurgeStage = Literal[...]` definition and its
+        `__all__` export. Replaced with a 9-line comment block at the
+        same site explaining why no per-stage Literal is exported (it
+        would advertise a distinction the implementation does not keep).
+        Also removed the unused `Literal` import.
+    - id: fix-B2-B
+      addresses_review: "yin Critical: DC-B6 partial-failure spy was fragile (string-match on str(stmt.compile))"
+      change: >
+        Replaced the engine.begin monkeypatch with a deterministic
+        helper-function monkeypatch via `monkeypatch.setattr` on
+        `_delete_session_report_for_session`. The new spy raises only on
+        a specific session_id, cannot silently no-op on SQLAlchemy
+        internals changes, and includes an `assert raised_for_a["flag"]
+        is True` guard that fails loudly if the spy never fired.
+    - id: fix-B2-C
+      addresses_review: "yin Important: test_purger_deletes_behavior_flags_before_session_reports did not actually pin order"
+      change: >
+        Renamed the test to `test_purger_reaps_both_tables_for_expired_session`
+        (honest name: it checks completeness, not order). Added a NEW
+        test `test_behavior_flags_deleted_before_session_reports` that
+        monkeypatches both delete helpers as spies, records call order,
+        and asserts the exact sequence ["behavior_flags:sess-x",
+        "session_reports:sess-x"]. A regression that swaps the order
+        fails this assertion immediately.
+    - id: fix-B2-D
+      addresses_review: "quality Important: hollow repo abstraction at SLF001 sites"
+      change: >
+        Added inline comment block at enumerate_expired_analyses
+        explicitly naming the assumption (sync DBEngine.engine) and
+        cross-referencing scar-B2-2 / scar-B2-6 for the deferred
+        Protocol formalization.
+  rationale: >
+    Four fixes applied this round addressing both Critical items and two
+    of three Important items. Total tests in module went from 10 → 11
+    (added the order-pinning test). All pass; full storage+CLI suite
+    172 pass. Pre-existing flaky tests in tests/sdk/test_router.py and
+    tests/integration/test_phase1_e2e.py::TestMH4LatencyBudget are
+    unrelated to this task (both pass in isolation).
+
+next_action: "Update index.yaml task-B2 status: planned → completed (review passed). Comment to board summarizing task-B2 outcome and next-task signal."

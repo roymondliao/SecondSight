@@ -1,0 +1,178 @@
+feature: gur-102-phase2-analysis-orchestration
+status: planning_complete  # tasks ready for implementation
+parent_issue: GUR-102
+plan_ref_doc: changes/2026-05-06_gur-102_phase2-analysis-orchestration/2-plan.md
+acceptance_ref_doc: changes/2026-05-06_gur-102_phase2-analysis-orchestration/acceptance.yaml
+overview_ref_doc: changes/2026-05-06_gur-102_phase2-analysis-orchestration/overview.md
+design_ref_doc: docs/system_design.md  # §5.5.2, §5.5.3, §5.6, §7.3, §7.4 + new §7 entries
+research_refs:
+  kickoff: changes/2026-05-06_gur-102_phase2-analysis-orchestration/1-kickoff.md
+  problem_autopsy: changes/2026-05-06_gur-102_phase2-analysis-orchestration/problem-autopsy.md
+  pre_thinking: changes/2026-05-06_gur-102_phase2-analysis-orchestration/2-pre-thinking.md
+  peer_reviews:
+    - changes/2026-05-06_gur-102_phase2-analysis-orchestration/peer-review-sebastian.md
+    - changes/2026-05-06_gur-102_phase2-analysis-orchestration/peer-review-followup-sebastian.md
+
+# Step 0 commitments (samsara — recorded for audit):
+#   1. Most-wanted shortcut REJECTED:
+#        "fold session reports into analysis_runs.summary_json"
+#      because pipeline-run identity ≠ artifact identity; folding pushes
+#      an incidental run-filter into every dashboard query forever
+#      (Sebastian round-2 G1 override).
+#   2. This implementation MUST NOT ship when:
+#        - SD §7 patches for analysis_runs + session_reports tables are absent from the PR diff
+#        - The orchestrator's _verify_session_complete is missing or downgraded to "best effort"
+#        - aggregator's identity_key UPSERT is missing or computed from input flags rather than emerged patterns (DC-6)
+#        - Re-run on completed session does not require force=True (DC-4)
+#   3. Silent failure surface this PR closes:
+#        - Pipeline killed mid-stage with no DB audit row (DC-1)
+#        - Behavior detector partial commit (DC-2)
+#        - Aggregator silently truncates ties at top_n boundary (DC-3)
+#        - Silent re-LLM on completed sessions (DC-4)
+#        - Aggregator reads stale flags after retention purge without disclosure (DC-5)
+#        - Identity-key collision across distinct emerged patterns (DC-6)
+#        - Consumer-not-recoverer violation runs vacuously (DC-7)
+#        - Short-circuit elides aggregation when conventions are stale (DC-8)
+#   4. What lives one year from now:
+#        AnalysisAgent Protocol (most load-bearing — every Phase 2/3
+#        agent integration depends on it); the two new tables; the
+#        identity_key UPSERT contract on directives. Orchestrator class
+#        is most replaceable.
+
+tasks:
+  - id: task-1
+    title: "Storage layer: analysis_runs + session_reports tables and repos; directives.identity_key migration"
+    plan_ref: "MH-1 (D2 + D3)"
+    sd_ref: ["7.3", "7.4"]
+    death_tests:
+      - "DT-1.1 partial-write on KILL between stage transitions (analysis_runs row at entry, not exit)"
+      - "Repository _guard rejects empty identity_key on directives upsert"
+      - "session_reports UNIQUE(session_id) UPSERT on second insert"
+    expected_scar_items:
+      - "Hardcoded server_default='' on identity_key transitional only — flag for v2 cleanup once first row written"
+      - "analysis_runs stage validation lives at repository (mirrors GUR-100 D1 enum guard)"
+    status: done
+    scar_count: 12  # initial scar items + fix-pass resolutions
+    resolved_count: 8  # all 3 Critical + 5 Important findings from review pass 1 closed in fix pass
+    unresolved_assumptions: 1  # ALTER TABLE migration path for non-empty existing DBs (genuinely deferred to feature iteration)
+    review_status: "PASS — yin + quality re-review post-fix; both PASS. Two Suggestions remain (fragile test assertion message check; count_recent_partial ghost promise) — both deferred to feature iteration."
+    test_count_delta: "+8 tests (583 → 591)"  # 8 new death + happy tests including 5 from fix pass
+    depends_on: []
+
+  - id: task-2
+    title: "AnalysisAgent Protocol + AnalysisAgentError + FakeAnalysisAgent test double"
+    plan_ref: "MH-2 (D1)"
+    sd_ref: ["5.5.2", "5.5.3", "5.6"]
+    death_tests:
+      - "DT-2.1 Protocol cannot be instantiated"
+      - "DT-2.2 isinstance conformant class True; non-conformant False"
+      - "DT-2.3 analyze_segments len contract"
+      - "DT-2.4 raise_on_*_call flags raise AnalysisAgentError"
+      - "DT-2.5 Pydantic validation at fake-construction"
+      - "DT-2.6 underconfigured analyze_segments raises AnalysisAgentError (added in fix pass; closes silent truncation)"
+      - "DT-2.7 missing summary_output raises AnalysisAgentError (added in fix pass; closes RuntimeError leak)"
+    expected_scar_items:
+      - "Three explicit methods (analyze_segments / aggregate_flag_type / summarize_session) instead of generic dispatch — chosen for type-clarity + GUR-103 ergonomics"
+      - "Async-first (PydanticAI alignment); sync callers wrap at GUR-103 boundary"
+      - "@runtime_checkable signature-blindness — accepted Python limitation, documented at Protocol site + DT-2.2"
+    status: done
+    scar_count: 8  # initial + fix pass items
+    resolved_count: 5  # CRITICAL-1/2/3 + IMPORTANT-1/2 all closed in fix pass
+    unresolved_assumptions: 1  # @runtime_checkable name-only check (Python limitation, not fixable here; documented)
+    review_status: "PASS — yin + quality re-review post-fix; both PASS with zero concerns. One yin Suggestion (test class organization for raise_on_*_call tests) deferred to feature iteration."
+    test_count_delta: "+13 tests (591 → 604)"  # 5 death + 8 happy initially, then +DT-2.6 +DT-2.7 +HP-2.9 in fix pass
+    file_summary: "agent.py 72 lines (Protocol+Exception only); test_agent_protocol.py 465 lines (FakeAnalysisAgent + tests)"
+    depends_on: []
+
+  - id: task-3
+    title: "analysis/behavior.py — segment-level detector with pre-insert _guard validation"
+    plan_ref: "MH-3 (DC-2)"
+    sd_ref: ["5.5.2"]
+    death_tests:
+      - "DT-3.1 batch-validation-before-insert atomicity (DC-2)"
+      - "DT-3.2 agent failure does not partial-write"
+      - "DT-3.3 empty SegmentAnalysis returns zero, no insert"
+      - "DT-3.4 confidence guard at pre-insert"
+      - "DT-3.5 empty event_ids raises before insert"
+    expected_scar_items:
+      - "Pre-insert validation duplicates _guard logic from BehaviorFlagsRepository — accepted (defense in depth; drift narrowed by VALID_CONFIDENCE single-source-of-truth in schemas.py)"
+      - "intent_summary filled from FLAG_DEFINITIONS[flag_type].description (frozen SD §5.5.1 content)"
+    status: done
+    scar_count: 13  # initial scar items + review-pass findings
+    resolved_count: 7  # 3 Critical + 2 Important + 2 Suggestions all closed in fix pass
+    review_status: "PASS — yin + quality re-review post-fix; both PASS. CRITICAL-2 (empty event_ids), CRITICAL-3 (parallel _VALID_CONFIDENCE), IMPORTANT-1 (hash-collision narrowing via full event_ids+reason), IMPORTANT-2 (return-value semantics warning at call site), SUGGESTION-1 (single-element list comment), SUGGESTION-2 (AnalysisAgentError import cleanup) all closed."
+    test_count_delta: "+7 tests (tests/analysis/test_behavior.py: 5 death + 2 happy). Full analysis+storage suite at 241 passed."
+    depends_on: [task-1, task-2]
+
+  - id: task-4
+    title: "analysis/aggregator.py — Step 1/2/3 pipeline with stable identity_key UPSERT"
+    plan_ref: "MH-4 (D5, DC-3, DC-5, DC-6)"
+    sd_ref: ["5.5.3"]
+    death_tests:
+      - "DT-4.1 (= DT-1.3) deterministic tie-break at top_n boundary (DC-3)"
+      - "DT-4.2 (= DT-1.5) two emerged patterns from same flag_type get distinct identity_keys (DC-6)"
+      - "DT-4.3 (= DG-2.1) partial step-2 failure writes nothing"
+      - "DT-4.4 (= DT-1.8) result reports flags_read count for retention-window disclosure (DC-5)"
+      - "DT-4.5 empty project returns zero everything, no LLM calls"
+      - "DT-4.6 compute_identity_key stability (order-independent)"
+      - "DT-4.7 negative top_n raises ValueError; zero is valid no-op (added in fix pass)"
+    expected_scar_items:
+      - "DEFAULT_CONVENTION_TOP_N=15 hard-coded with TODO; AnalysisConfig deferred"
+      - "All-or-nothing applies to Step 2 only; Step 3 is per-row transactional with UPSERT-idempotent retry semantics"
+      - "Step 3 mid-loop failure indistinguishable from Step 2 failure by exception type alone — caller must inspect DB via get_active_conventions to disambiguate"
+      - "TYPE_CHECKING guard for repository imports (mirrors task-3 circular-import resolution)"
+    status: done
+    scar_count: 13  # initial scar items + fix-pass + reviewer findings
+    resolved_count: 7  # 2 Important + 3 Suggestions from initial reviews + 2 self-iter findings (intent_summary mapping, circular import)
+    unresolved_assumptions: 2  # top_n upper-bound asymmetry (Suggestion); Step3WriteError wrapper (Suggestion deferred to feature iteration)
+    review_status: "PASS — yin + quality re-review post-fix; yin PASS with 1 Suggestion; quality PASS_WITH_CONCERNS with 2 Suggestions (top_n upper-bound stated; potential Step3WriteError typed wrapper). Both prior Important findings (alias + soundproof framing) closed. D-principle concern downgraded to Suggestion because defect is now disclosed rather than hidden."
+    test_count_delta: "+15 tests (611 → 630)"  # 6 death + 7 happy initially, +DT-4.7 (2 tests) in fix pass
+    file_summary: "aggregator.py 272 lines; test_aggregator.py 1002 lines (heaviest in this PR — multi-stage pipeline coverage)"
+    depends_on: [task-1, task-2]
+
+  - id: task-5
+    title: "analysis/orchestrator.py — composer with consumer-not-recoverer + short-circuit"
+    plan_ref: "MH-5 (D4, D6, D7, DC-1, DC-4, DC-7, DC-8)"
+    sd_ref: ["5.6"]
+    death_tests:
+      - "DT-1.1 KILL between stage transitions leaves audit row"
+      - "DT-1.4 completed session requires force=True"
+      - "DT-1.6 zero events raises consumer-not-recoverer"
+      - "DT-1.7 summary failure leaves resumable state"
+      - "DT-1.9 short-circuit logs when directives stale"
+      - "HP-3.1 full pipeline evidence chain"
+      - "HP-3.3 zero-flag short-circuits aggregator"
+      - "HP-3.4 force re-run idempotent with audit trail"
+    expected_scar_items:
+      - "_verify_session_complete is verifier-only (does NOT recover GUR-99 backfill failures)"
+      - "Sequential per-segment detector calls (no concurrent batching in v1; GUR-103 may add)"
+      - "Outer try/except Exception at pipeline boundary — ONE place catch-all is acceptable in this PR (records analysis_runs.stage='failed' before re-raise)"
+      - "_persist_segment_flags duplicates orchestration scaffolding around behavior.py public helpers (validate_draft_pre_insert + promote_draft both now public in __all__); divergence risk remains for orchestration-level changes but is documented at module docstring"
+      - "Race condition: two concurrent analyze_session calls on same session can both pass _check_already_analyzed before either inserts run row — bounded by GUR-103 single-trigger assumption, documented at code boundary"
+      - "STALE_DIRECTIVES_THRESHOLD_DAYS=30 hard-coded with TODO referencing same config plumbing pattern as task-4's DEFAULT_CONVENTION_TOP_N"
+    status: done
+    scar_count: 19  # 13 from initial implementation + 6 from review fix-pass
+    resolved_count: 12  # 1 Critical (cross-module private import) + 4 Important + 2 Suggestions + 5 self-iter findings
+    unresolved_assumptions: 2  # _persist_segment_flags parallel evolution risk (Suggestion-level after public-helper promotion); deferred local import (now fixed)
+    review_status: "PASS — yin + quality re-review post-fix. Quality FAIL → PASS in one fix pass after promoting validate_draft_pre_insert + promote_draft to public in behavior.py.__all__. Yin PASS_WITH_CONCERNS → all Important resolved. Final cleanup: deferred AnalysisAgentError import promoted to top-level; stale docstring reference to _validate_draft_pre_insert corrected to public name."
+    test_count_delta: "+10 tests (630 → 640)"  # 6 death + 4 happy
+    file_summary: "orchestrator.py 590 lines (largest module in PR); test_orchestrator.py 938 lines"
+    closes_death_cases: ["DC-1", "DC-4", "DC-7", "DC-8"]  # 4 of 8 — most of any task
+    depends_on: [task-1, task-2, task-3, task-4]
+
+exit_criteria:
+  ref: changes/2026-05-06_gur-102_phase2-analysis-orchestration/acceptance.yaml#exit_criteria
+
+# Sebastian's review items — fold-through audit
+sebastian_review_audit:
+  round_1:
+    - { item: "Chained analyze_and_aggregate", landed_in: "task-5 (D4)" }
+    - { item: "analysis_runs table up front", landed_in: "task-1 (D2)" }
+    - { item: "Protocol body verbatim", landed_in: "task-2 (D1, plan §3.4)" }
+    - { item: "disable-on-arrival ≤30% promoted", landed_in: "D8 (deferred Phase 2 ship gate)" }
+    - { item: "Aggregator stable-identity hash", landed_in: "task-4 (D3, DC-6)" }
+    - { item: "Citation nit summary.py:5 → prompts/behavior.py:5", landed_in: "plan §6" }
+  round_2:
+    - { item: "Dedicated session_reports table (G1 override)", landed_in: "task-1 (D2, plan §3.6)" }
+    - { item: "Consumer-not-recoverer principle (U1)", landed_in: "task-5 (D7, DC-7)" }
+    - { item: "Zero-flag short-circuit guard (U2)", landed_in: "task-5 (D4, HP-3.3, DC-8)" }

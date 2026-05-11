@@ -1,0 +1,51 @@
+{
+  "_meta": {
+    "_source": "documented",
+    "_capture_origin": "Codex CLI hooks source (codex-rs/hooks/src/types.rs), AfterToolUse wire-shape test (snapshot 2026-04-24)",
+    "_codex_hook_event_name": "post_tool_use",
+    "_secondsight_event_type": "tool_use_end",
+    "_privacy_canary_field": "hook_event.output_preview"
+  },
+  "payload": {
+    "session_id": "550e8400-e29b-41d4-a716-446655440000",
+    "cwd": "/Users/example/work/repo",
+    "triggered_at": "2026-05-10T12:00:00Z",
+    "hook_event_name": "post_tool_use",
+    "hook_event": {
+      "event_type": "after_tool_use",
+      "turn_id": "turn-2",
+      "call_id": "call-1",
+      "tool_name": "local_shell",
+      "tool_kind": "local_shell",
+      "tool_input": {
+        "input_type": "local_shell",
+        "params": {
+          "command": ["cargo", "fmt"],
+          "workdir": "codex-rs",
+          "timeout_ms": 60000
+        }
+      },
+      "executed": true,
+      "success": true,
+      "duration_ms": 42,
+      "mutating": true,
+      "sandbox": "none",
+      "sandbox_policy": "danger-full-access",
+      "output_preview": "PRIVACY_CANARY_DO_NOT_STORE"
+    }
+  },
+  "expected_partial_event_data": {
+    "tool_name": "local_shell",
+    "tool_kind": "local_shell",
+    "executed": true,
+    "success": true,
+    "duration_ms": 42,
+    "mutating": true,
+    "turn_id": "turn-2",
+    "call_id": "call-1",
+    "action_metadata": {
+      "cwd": "/Users/example/work/repo"
+    }
+  },
+  "privacy_canary": "PRIVACY_CANARY_DO_NOT_STORE"
+}

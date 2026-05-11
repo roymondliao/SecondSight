@@ -1,0 +1,76 @@
+name: Install Smoke Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fresh-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          python-version: "3.14"
+
+      - name: Build wheel
+        run: |
+          set -euo pipefail
+          uv build --wheel --out-dir dist
+          ls -1 dist/*.whl
+
+      - name: Install wheel + smoke CLI lifecycle in clean python:3.14-slim
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD/dist:/dist:ro" \
+            python:3.14-slim \
+            bash -euo pipefail -c '
+              pip install --no-cache-dir --disable-pip-version-check /dist/*.whl
+              secondsight --version
+              SS_HOME=/tmp/secondsight-home
+              CLAUDE_HOME=/tmp/claude-home
+              mkdir -p "$SS_HOME" "$CLAUDE_HOME"
+              printf "{}" > "$CLAUDE_HOME/settings.json"
+              secondsight init --claude-home "$CLAUDE_HOME" --format json >/tmp/init.json
+              secondsight serve --daemon --home "$SS_HOME"
+              python - <<'"'"'PY'"'"'
+import json, subprocess, time
+cmd = ["secondsight", "status", "--home", "/tmp/secondsight-home", "--format", "json"]
+for _ in range(40):
+    running = json.loads(subprocess.check_output(cmd, text=True))["server"]["running"]
+    if running:
+        break
+    time.sleep(0.25)
+else:
+    raise SystemExit("daemon did not report running=true")
+PY
+              secondsight serve --stop --home "$SS_HOME"
+              python - <<'"'"'PY'"'"'
+import json, subprocess
+status = json.loads(
+    subprocess.check_output(
+        ["secondsight", "status", "--home", "/tmp/secondsight-home", "--format", "json"],
+        text=True,
+    )
+)
+if status["server"]["running"]:
+    raise SystemExit("status still reports running after stop")
+PY
+              if secondsight serve --home relative-home >/tmp/serve-negative.log 2>&1; then
+                echo "expected serve failure for relative home" >&2
+                exit 1
+              fi
+            '

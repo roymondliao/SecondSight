@@ -1,0 +1,151 @@
+task_id: task-1
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: |
+      `# type: ignore[import-untyped]` on the TYPE_CHECKING import of
+      `secondsight.feedback.{Convention, Hint}`. The module does not yet exist;
+      the suppression silences a real signal (mypy correctly notes the import
+      cannot be resolved). When GUR-104 lands `Convention`, the ignore must be
+      removed in the same commit, otherwise the seam will silently allow type
+      drift between the ABC signature and the real model.
+    deferred_to_feature_iteration: false  # actionable inside GUR-104 commit (carried forward to that PR's checklist)
+
+silent_failure_conditions:
+  - description: |
+      `AdapterRegistry.for_()` skips an adapter whose `supports()` returns True
+      but whose `supported_event_types()` omits the event_type — falling through
+      to the next adapter. Intent: a single honest adapter can mask a dishonest
+      one without aborting the request. Cost: the skipped dishonest adapter
+      remains INVISIBLE at runtime — no log line, no metric. DT-6 catches it at
+      test time but production registries that diverge after deployment have no
+      observable signal.
+    deferred_to_feature_iteration: true  # logger child design is a Phase-1-feature-level concern (GUR-96 quality review flagged related namespace question)
+
+  - description: |
+      `inject_convention` / `inject_hint` raise NotImplementedError as ABC
+      defaults, but a subclass that overrides them without calling super() can
+      silently `return ""`. This is the standard ABC-override risk. Not
+      preventable at the base class level. Mitigation: per-adapter death tests
+      in task-4 (ClaudeCodeAdapter) assert that ClaudeCodeAdapter inherits the
+      loud failure. Future adapters (Codex, OpenCode) will each need the same
+      death test.
+    deferred_to_feature_iteration: false  # task-4 owns ClaudeCodeAdapter; this becomes its DT
+
+  - description: |
+      `AdapterRegistry.list_supported_event_types()` calls `adapter.supports(agent, et)`
+      for each `et in adapter.supported_event_types()`. If an adapter's
+      `supports()` is non-deterministic (state, time, randomness) or has
+      side effects (logging, counters), `list_supported_event_types()` becomes
+      observability-tainted. Documented in `AgentAdapter.supports` docstring as
+      "stateless" expectation. Cannot enforce statelessness at Python level.
+    deferred_to_feature_iteration: false
+
+  - description: |
+      `AgentAdapter.normalize()` postcondition (envelope-derived fields MUST
+      be forwarded faithfully into PartialEvent — no synthesized empty strings,
+      no zero sequence_numbers) is enforced ONLY by docstring at this seam.
+      A subclass returning `PartialEvent(id="", session_id="", ...)` corrupts
+      every downstream Event silently — the seam does not validate. Cross-
+      reference now in normalize() docstring (Level-1 fix); per-adapter
+      death-test enforcement is task-4's responsibility (GUR-124). Reviewer
+      flagged as L — Silent Breach (Important).
+    deferred_to_feature_iteration: false  # carried forward to task-4 GUR-124 death-test set
+
+assumptions_made:
+  - assumption: "`PartialEvent` shape in tracker.py:72-87 is stable through Phase 1"
+    verified: true
+    note: "File unchanged since GUR-96 task-2 (commit 553a739). Field set: id, session_id, project_id, event_type, timestamp, sequence_number, data."
+
+  - assumption: "`EventType` enum values are stable through Phase 1"
+    verified: true
+    note: "event.py:29-43 unchanged since GUR-96 task-2. Used in test_base.py via .value accessors, not numeric ordinals."
+
+  - assumption: "`HookEnvelope` shape (schemas.py) is stable"
+    verified: true
+    note: "Used directly in normalize signature; mypy clean against current shape."
+
+  - assumption: "`from __future__ import annotations` makes all annotations lazy strings, so the TYPE_CHECKING-only import does not affect runtime"
+    verified: true
+    note: "Pytest passes without ImportError on `secondsight.feedback`, confirming the import is genuinely TYPE_CHECKING-only."
+
+  - assumption: "mypy's `[import-untyped]` for `secondsight.feedback` is a default-config quirk that disappears when the module exists"
+    verified: false
+    note: "Cannot verify until GUR-104 lands `secondsight.feedback`. Risk: if the future module ships with its own `# type: ignore` markers, type integrity at the seam degrades silently. Mitigation: bind the ignore-removal to the GUR-104 PR checklist."
+    deferred_to_feature_iteration: false  # actionable in GUR-104
+
+  - assumption: "The 1 pre-existing test failure (`tests/scripts/test_hook_fallback.py::TestDeathTests::test_dt2_parallel_writes_no_truncation`) is unrelated to task-1"
+    verified: true
+    note: "Test passes 3/3 in isolation, fails only in full-suite runs. No shared imports or fixtures with `tests/adapters/`. Known test-isolation flakiness from GUR-96 task-4; tracked separately. Full suite minus this test: 409 passed."
+
+  - assumption: "Yin Important #1 (DT-3 method-locality) is closed by mutual-exclusion assertion"
+    verified: true
+    note: "DT-3 now asserts inject_hint message lacks 'Phase 2'/'GUR-104' substrings; DT-4 asserts inject_convention message lacks 'Phase 0'/'SD §4.2'. If a future ABC refactor swaps the bodies, both DTs fail loudly."
+
+  - assumption: "Quality Pattern Suggestion (silent shadowing on duplicate registration) is closed by RuntimeWarning"
+    verified: true
+    note: "register() now emits RuntimeWarning when new adapter publishes event_types overlapping an existing adapter. DT-7 (test_register_warns_on_shadowing_overlap) asserts the warning fires; companion test asserts disjoint registration is silent. Production operators see the shadow at registration time."
+
+debt_registered: true
+debt_location: |
+  src/secondsight/adapters/base.py:53 (mypy ignore on Phase-2 forward ref — bound to GUR-104 PR);
+  base.py:88-103 (normalize postcondition not enforced at seam — carry-forward to task-4 GUR-124);
+  base.py:158-164 (registry.for_() skip-with-no-runtime-log silent path — bound to feature-level logger design);
+  inject_convention/inject_hint subclass-override silent-return risk (Python language limit — per-adapter death tests in task-4)
+
+resolved_items:
+  - original_section: "known_shortcuts"
+    original_description: "_DishonestAdapter.normalize raises AssertionError as 'should not reach' guard — less precise than pytest.fail"
+    resolution: "Changed to pytest.fail() with explicit DT-6-regression message at test_base.py:_DishonestAdapter.normalize. Closes Yin Important #4 self-contradiction."
+  - original_section: "silent_failure_conditions"
+    original_description: "First-match-wins silently shadows duplicate (agent, event_type) registrations — no diagnostic"
+    resolution: "AdapterRegistry.register() now emits RuntimeWarning on event_type overlap with already-registered adapter. Two new tests (DT-7 + disjoint-types negative test) verify the warning fires only on overlap. Closes Quality Pattern Suggestion."
+  - original_section: "silent_failure_conditions"
+    original_description: "DT-3 asserted only 'Phase 0' + 'SD §4.2' in message — no method-locality verification (could pass if inject_convention's body ran by accident)"
+    resolution: "DT-3 + DT-4 now mutually exclude each other's message strings. If method bodies are swapped in a future refactor, both fail loudly. Closes Yin Important #1."
+  - original_section: "known_shortcuts"
+    original_description: "normalize() docstring did not cross-reference SD §4.2 erratum — IDE-driven readers might 'fix' the return type back to Event"
+    resolution: "Added explicit cross-reference + postcondition note to normalize() method docstring at base.py:88-103. Documents both the SD §4.2 drift and the postcondition obligation that task-4's death tests must enforce. Closes Yin Suggestion (and surfaces Quality Important #1 as task-4 carry-forward)."
+
+narrative: |
+  Self-iteration (Level 1) outcomes:
+
+  Resolved at task scope (4 items):
+  - AssertionError → pytest.fail() in _DishonestAdapter.normalize (Yin Important #4)
+  - DT-3/DT-4 mutual exclusion for method-locality (Yin Important #1)
+  - RuntimeWarning in register() for duplicate event_type publication (Quality Pattern Suggestion)
+  - Cross-reference of SD §4.2 erratum + postcondition obligation in normalize() docstring (Yin Suggestion)
+
+  Surfaced as task-4 carry-forward (1 item):
+  - Quality Important #1 (L — Silent Breach on normalize postcondition) — runtime
+    enforcement is properly task-4's responsibility, where each concrete adapter
+    must prove "given malformed envelope → typed error not corrupt PartialEvent".
+    The base.py docstring now declares the obligation; task-4 GUR-124 death tests
+    enforce it. Reviewer's recommendation ("addressed before task-4 ships") is
+    honored by binding the contract here and the test there.
+
+  Surfaced as feature-level deferrals (2 items):
+  - Silent failure on for_() skip-with-no-log (logger child design pending GUR-96
+    quality referral; touched again by task-4 ClaudeCodeAdapter logger)
+  - mypy import-untyped suppression on secondsight.feedback (resolves naturally
+    when GUR-104 lands)
+
+  Quality Suggestion on `list_supported_event_types` cohesion (tenant-not-citizen
+  of AdapterRegistry) is acknowledged but NOT acted on: separating it now would
+  spawn a class with no concrete consumer, raising a stronger Ghost Promises
+  finding. Deferred to Phase-3 dashboard work where the consumer materializes.
+
+  Yin Important #2 (uncalled list_supported_event_types) — same reasoning. The
+  function ships ahead of its caller per plan §6 list ("supported_event_types
+  introspection helper for Phase-3 dashboard"). The contract risk (caller may
+  need a different signature) is real but bounded — the function is small and
+  cheaply rewritten when the dashboard arrives.
+
+  Yin Important #3 (scar schema drift) — the new schema follows the canonical
+  samsara `templates/scar-schema.yaml` (resolved_items + deferred_to_feature_iteration
+  fields are the current standard). Prior phase1-api-server scars used a richer
+  custom schema. Per scar-schema rule 7-8, both formats are valid. Not a true
+  divergence — the canonical schema is the new standard.
+
+  Final pytest: 14/14 in tests/adapters; mypy clean; full suite (excluding
+  known pre-existing flaky test) 409 passed.

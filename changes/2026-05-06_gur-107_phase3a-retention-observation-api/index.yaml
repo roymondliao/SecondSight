@@ -1,0 +1,102 @@
+feature: gur-107a-observation-api-and-raw-traces-retention
+status: planned
+parent_issue: GUR-107
+sub_scope_of: GUR-107
+gating: "Conditional on board confirmation a0a92005 resolving to (A) Split. If (B) Hold, this plan is shelved until Phase 2 / GUR-100 implementation lands."
+plan_ref_doc: changes/2026-05-06_gur-107_phase3a-retention-observation-api/2-plan.md
+acceptance_ref_doc: changes/2026-05-06_gur-107_phase3a-retention-observation-api/acceptance.md
+design_ref_doc: docs/system_design.md §3.10, §10.4, §3.7.5
+
+dependency_situation:
+  blocked_subset:
+    - "P3A-11 analysis_ttl_days wiring"
+    - "Post-analysis cleanup trigger"
+  blocked_on: GUR-100 (Phase 2 analysis tables: analysis_results, behavior_flags)
+  defers_to: GUR-107b (to be filed)
+
+unblocked_subset_in_scope:
+  - "P3A-13 — Observation API endpoints (GET sessions/, sessions/{id}, sessions/{id}/segments, sessions/{id}/segments/{idx})"
+  - "P3A-12 — secondsight cleanup CLI subcommand with --dry-run"
+  - "P3A-11 (raw_traces only) — TTL function for raw_traces + DB events; manual invocation only (no post-analysis trigger)"
+
+tasks:
+  # --- Wave 1: Independent foundations (no inter-task deps) ---
+  - id: task-A1
+    title: "RetentionConfig — TOML loader with per-project override + DC-6"
+    status: planned
+    depends_on: []
+    plan_ref: "2-plan.md §3.1, D4"
+    wave: 1
+    sd_ref: ["3.10.1"]
+    death_cases: ["DC-6", "DC-6b"]
+    notes: "Pure config: global + per-project merge, source attribution. No FS/DB side effects. NOTE (verification C1): RetentionConfig is the FIRST config consumer in the codebase — task defines the file format, not just consumes it. Uses stdlib tomllib (Python 3.14)."
+
+  - id: task-A2
+    title: "enumerate_expired_sessions — pure read-side enumerator + DC-1, DC-2"
+    status: planned
+    depends_on: [task-A1]
+    plan_ref: "2-plan.md §3.1, D1, D3"
+    wave: 1
+    sd_ref: ["3.10.2"]
+    death_cases: ["DC-1", "DC-2"]
+    notes: "Operates on EventsRepository. Boundary on last_event_at, not created_at."
+
+  - id: task-A3
+    title: "Observation API Pydantic schemas (Session/Segment summaries + details)"
+    status: planned
+    depends_on: []
+    plan_ref: "2-plan.md §3.2"
+    wave: 1
+    sd_ref: ["10.4"]
+    death_cases: []
+    notes: "Pure shapes. No I/O. Lives in api/observation.py or api/schemas.py extension."
+
+  # --- Wave 2: side-effecting + routing ---
+  - id: task-A4
+    title: "RawTracesPurger — destructive side wired to RawTraceStore + EventsRepository + DC-5"
+    status: planned
+    depends_on: [task-A2]
+    plan_ref: "2-plan.md §3.1, D3"
+    wave: 2
+    sd_ref: ["3.10.2"]
+    death_cases: ["DC-5"]
+    notes: "FS first, DB second. Partial-failure ERROR log + non-zero exit."
+
+  - id: task-A5
+    title: "Observation API router — 4 endpoints + project_id gate + DC-4, DC-7 (ETag)"
+    status: planned
+    depends_on: [task-A3]
+    plan_ref: "2-plan.md §3.2, D2, D6, D7"
+    wave: 2
+    sd_ref: ["10.4"]
+    death_cases: ["DC-4", "DC-7"]
+    notes: "Mounts onto create_app(); reuses ProjectRegistry pattern from hooks router. NOTE (D8): API uses async ProjectRegistry (in-server); CLI cleanup uses FS walk. Asymmetry must be called out in router module docstring."
+
+  # --- Wave 3: orchestration ---
+  - id: task-A6
+    title: "secondsight cleanup CLI — orchestrates RetentionConfig + enumerator + Purger + DC-3"
+    status: planned
+    depends_on: [task-A1, task-A2, task-A4]
+    plan_ref: "2-plan.md §3.3, D5"
+    wave: 3
+    sd_ref: ["3.10"]
+    death_cases: ["DC-3"]
+    notes: "--dry-run uses identical enumeration path as real run. NOTE (verification C2 + D8): mirrors cli/sync.py:_select_project_ids FS-walk; builds resources synchronously per project (NOT via async ProjectRegistry)."
+
+  - id: task-A7
+    title: "Pagination cursor + ETag wiring on listing endpoints"
+    status: planned
+    depends_on: [task-A5]
+    plan_ref: "2-plan.md §3.2, D6"
+    wave: 3
+    sd_ref: ["10.4"]
+    death_cases: []
+    notes: "limit/offset; ETag derives from per-project max(timestamp). Memory contract: 5s polling with ETag/cursor."
+
+exit_criteria:
+  - "A-F1 through A-F7 (functional)"
+  - "A-T1 through A-T4 (TTL resolution)"
+  - "A-B1 through A-B3 (boundary correctness)"
+  - "A-E1 through A-E3 (ETag / pagination)"
+  - "A-X1 through A-X3 (test coverage gate)"
+  - "A-D1, A-D2 (documentation)"

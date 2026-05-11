@@ -1,0 +1,35 @@
+{
+  "_meta": {
+    "_source": "documented",
+    "_capture_origin": "Claude Code hooks documentation, PostToolUse event (snapshot 2026-05-04). Documented fields: session_id, transcript_path, cwd, hook_event_name, tool_name, tool_input, tool_response. URL: https://docs.claude.com/en/docs/claude-code/hooks",
+    "_claude_code_hook_event_name": "PostToolUse",
+    "_secondsight_event_type": "tool_use_end",
+    "_privacy_canary_field": "tool_response.output"
+  },
+  "payload": {
+    "session_id": "01JBQ8XYZK7P3M5N9R2W4D6E8H",
+    "transcript_path": "/Users/example/.claude/projects/example/transcript.jsonl",
+    "cwd": "/Users/example/work/repo",
+    "hook_event_name": "PostToolUse",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "echo hi"
+    },
+    "tool_response": {
+      "output": "PRIVACY_CANARY_DO_NOT_STORE",
+      "exit_code": 0,
+      "interrupted": false
+    }
+  },
+  "expected_partial_event_data": {
+    "tool_name": "Bash",
+    "success": true,
+    "output_size": 27,
+    "action_metadata": {
+      "command_length": 7,
+      "transcript_path": "/Users/example/.claude/projects/example/transcript.jsonl",
+      "cwd": "/Users/example/work/repo"
+    }
+  },
+  "privacy_canary": "PRIVACY_CANARY_DO_NOT_STORE"
+}

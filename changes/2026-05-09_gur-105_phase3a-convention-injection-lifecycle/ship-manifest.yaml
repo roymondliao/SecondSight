@@ -1,0 +1,127 @@
+delivered_capability: >
+  Convention injection into agent sessions and directive lifecycle management —
+  ConventionSelector with ≤2000 token budget (greedy fill), ClaudeCodeAdapter
+  inject_convention() formatting, POST /hook/session-start endpoint for
+  synchronous convention query, directive lifecycle state machine (active →
+  disabled/obsolete/superseded/expired with re-activation paths), and
+  effectiveness tracking (flag frequency change → effective/ineffective judgment).
+
+tasks_completed: 6
+test_count_added: 33
+test_count_total: 901
+all_tests_pass: true
+
+security_review:
+  round_count: 1
+  findings_total: 5
+  findings_fixed: 5
+  findings_accepted: 0
+  details:
+    - id: H-1
+      severity: high
+      issue: "Convention instructions injected into system prompt without sanitization — prompt injection vector"
+      resolution: "Fixed: sanitize in inject_convention (collapse newlines, strip, truncate to 1000 chars)"
+    - id: H-2
+      severity: high
+      issue: "Agent field reflected in error responses without validation — injection vector"
+      resolution: "Fixed: validate agent field with is_safe_id; use static error messages"
+    - id: M-1
+      severity: medium
+      issue: "Unbounded get_active_conventions query — no LIMIT"
+      resolution: "Fixed: added LIMIT(100) to bound query cost"
+    - id: M-2
+      severity: medium
+      issue: "No defense-in-depth filter for expired conventions in DB query"
+      resolution: "Fixed: filter expired conventions (expires_at > now) in query"
+    - id: M-3
+      severity: medium
+      issue: "RuntimeError detail forwarded in 503 response — internal state leakage"
+      resolution: "Fixed: replaced with generic 'Project resources temporarily unavailable' message"
+
+known_failure_modes:
+  - mode: >
+      If ALL conventions for a project individually exceed the 2000-token
+      budget, none are selected — conventions="" and count=0. This is by
+      design (greedy fill, no mid-text truncation), but an operator might
+      interpret it as "no conventions exist" rather than "conventions too large."
+    severity: degradation
+    detection: "budget_used=0 with budget_total=2000 in session-start response when conventions are known to exist."
+
+  - mode: >
+      Convention with source_flag_type=None (manually created) always reports
+      INSUFFICIENT_DATA for effectiveness — can never be judged effective or
+      ineffective. These conventions persist indefinitely unless manually disabled.
+    severity: degradation
+    detection: "Operator queries effectiveness and sees persistent INSUFFICIENT_DATA for non-auto-generated conventions."
+
+  - mode: >
+      Effectiveness measurement baseline uses all sessions before convention
+      created_at. In a long-running project, early sessions (different team,
+      different practices) dilute the baseline. Frequency change may not
+      reflect the convention's actual impact.
+    severity: degradation
+    detection: "Convention judged EFFECTIVE despite no behavioral change in recent sessions. Requires manual review of per-window frequencies."
+
+  - mode: >
+      superseded is a terminal state. If the replacement convention is later
+      disabled or expires, the original stays superseded — no automatic
+      fallback to the original.
+    severity: degradation
+    detection: "Operator notices a disabled replacement with no active alternative. Must manually re-activate the original via PATCH."
+
+  - mode: >
+      Token budget estimation uses chars/4 heuristic (conservative). For
+      non-English text or code-heavy conventions, actual token count may
+      differ significantly. Over-estimation (fewer conventions) is safe;
+      under-estimation is unlikely given the 4x divisor.
+    severity: degradation
+    detection: "Actual injected text uses fewer Claude tokens than budget_used reports. Observable via Claude's token usage metrics."
+
+accepted_risks: []
+
+silent_failure_surface: medium
+# 5 documented degradation modes, 0 data corruption paths.
+# All silent failure conditions documented in module docstrings.
+# Security review resolved all 5 findings (0 accepted).
+
+failure_budget_review:
+  silent_failure_conditions: 5
+  unverified_assumptions: 1
+  known_shortcuts: 2
+  resolved_during_implementation: 0
+  verdict: >
+    Within budget. The 5 silent failure conditions are all degradation-level
+    with clear detection strategies. The single unverified assumption is the
+    chars/4 token estimation heuristic — bounded by conservatism (over-estimate
+    is safe). The 2 known shortcuts are: (1) no real tokenizer integration,
+    (2) effectiveness baseline spans full project history. Neither creates
+    data corruption paths.
+
+reconciliation:
+  spec_drift: none
+  details: >
+    Implementation matches GUR-105 issue description exactly. All 6 planned
+    tasks (P3A-1 to P3A-6) delivered. P3A-6 (convention deletion/disable)
+    was already implemented in GUR-104's directives PATCH endpoint; P3A-6
+    scope in this phase confirmed it works end-to-end with the lifecycle
+    state machine. Lifecycle state machine is stateless by design (validates
+    transition pairs, does not hold directive references).
+
+monitoring_hooks:
+  - "session-start response count=0: if a project has active conventions but injection returns none, investigate token budget vs convention sizes"
+  - "effectiveness INSUFFICIENT_DATA persistence: if a convention stays INSUFFICIENT_DATA beyond 5 cycles, it may have source_flag_type=None or the project has very low session volume"
+  - "lifecycle transition errors: LifecycleError in logs indicates aggregator or API attempted an invalid state transition — investigate caller logic"
+
+kill_switch: >
+  Remove the session_start_router include in server.py (the app.include_router
+  for session_start.router). Convention injection stops immediately — the
+  hook script's HTTP call returns 404 and Claude Code starts without injected
+  conventions. The lifecycle and effectiveness modules have no external surface
+  of their own; they are called by the aggregation pipeline (not yet wired in
+  Phase 3A). Two lines reverts the injection surface.
+
+commits:
+  - sha: eea144a
+    message: "GUR-105 implement: Phase 3A Convention Injection + Directive Lifecycle (P3A-1 to P3A-6)"
+  - sha: 80a3202
+    message: "GUR-105 security-review: resolve H-1, H-2, M-1, M-2, M-3"

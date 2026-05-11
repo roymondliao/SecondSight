@@ -1,0 +1,359 @@
+task_id: task-1
+title: "API Server Core — /health, lifespan, ProjectRegistry, daemon control"
+plan_ref: GUR-96
+sd_refs: ["3.1", "3.5", "3.7.5"]
+completion_status: done
+iteration: 2
+
+tests:
+  death: 8/8
+  unit: 11/11
+  total: 19/19
+
+step0_prerequisite_questions:
+  - q: "Most-wanted impl path to NOT take?"
+    a: >
+      Monolithic serve.py with PID management baked in, a single module-level
+      asyncio.Lock protecting the entire registry dict for all operations, and
+      the cmdline identity check using only 'secondsight' (no subcommand
+      requirement). Avoided — instead: clean separation of daemon.py /
+      registry.py / server.py; per-project locks with a secondary guard-lock
+      only for the brief 'insert new project_id' window; cmdline identity
+      requires both 'secondsight' AND 'serve' (or 'uvicorn' + 'secondsight')
+      to prevent false matches against the test runner.
+
+  - q: "When should this NOT be implemented?"
+    a: >
+      If uvicorn were run in multi-worker mode (--workers > 1), the
+      asyncio.Lock-based per-project registry would provide no protection
+      across worker processes — each worker would have its own registry with
+      its own locks, and concurrent first-inits could create multiple DBEngine
+      instances against the same SQLite file. Phase 1 is single-process
+      (localhost daemon) and the multi-worker scenario is explicitly out of
+      scope; the assumption is documented.
+
+  - q: "If silent failure occurs, who notices first and when?"
+    a: >
+      Three critical silent-failure paths:
+      (1) daemonize() on macOS: if the double-fork + event-loop interaction
+      causes the child to crash silently, the first person to notice is a user
+      running 'serve status' and finding running=False with no error in the log.
+      Damage: all hook events accumulate in fallback JSONL silently, potentially
+      30+ days before the user checks why there's no analysis. Mitigation: log
+      file is set up before on_child() runs; startup errors print to stderr
+      (redirected to log).
+      (2) Concurrent-init race (DT-2): if two DBEngine instances are created for
+      the same project_id on a slow filesystem, SQLite WAL may produce an
+      IntegrityError visible only on the second write. First discoverer: a user
+      seeing 'UNIQUE constraint failed' in the analysis phase.
+      (3) Stale-PID kill (DT-1): if stop_daemon kills an unrelated process, the
+      first person to notice is that process's user — immediate, catastrophic,
+      and completely unexpected.
+
+known_shortcuts:
+  - id: KS-1
+    description: >
+      ProjectRegistry never evicts entries. Memory grows linearly with unique
+      project_ids seen since server start. For Phase 1 (single-project primary
+      use case) this is acceptable.
+    deferred_to_feature_iteration: true
+    rationale: "Eviction policy requires a Phase 2 LRU/TTL design decision."
+
+  - id: KS-2
+    description: >
+      uptime_seconds in DaemonStatus is always None. We do not write a
+      start-time file alongside the PID file, so uptime cannot be computed
+      from daemon_status() alone.
+    deferred_to_feature_iteration: true
+    rationale: "Phase 2 can add a .start-time file alongside server.pid."
+
+  - id: KS-3
+    description: >
+      Two concurrent 'serve --daemon' calls can race: the second overwrites
+      the first PID file. The old daemon keeps running but stop/status can
+      no longer address it.
+    deferred_to_feature_iteration: true
+    rationale: >
+      Phase 1 use case is a single user on a single machine; PID-file
+      locking (advisory flock) is deferred. A guard checking for running
+      daemon before writing PID is in _do_daemon() but has a TOCTOU window.
+
+silent_failure_conditions:
+  - id: SF-1
+    description: >
+      daemonize() on macOS: os.fork() after an asyncio event loop has been
+      created is undefined behavior on some platforms. If called from within
+      an already-running event loop the child may hang or crash silently.
+    severity: medium
+    mitigation: >
+      daemonize() is called from the Typer CLI command (before uvicorn/asyncio
+      starts). The serve.py CLI explicitly does NOT start an event loop before
+      calling daemonize(). macOS-targeted CI smoke test deferred to Phase 2.
+    deferred_to_feature_iteration: true
+
+  - id: SF-2
+    description: >
+      If secondsight_home is not writable, the error surfaces during
+      ProjectRegistry._build_resources() on the first request, not at
+      server startup. A user sees an HTTP 500 on the first hook call, not
+      a clean startup error.
+    severity: low
+    mitigation: >
+      create_app() validates that secondsight_home is absolute. Directory
+      creation (mkdir) is attempted at ProjectRegistry.__init__() time, which
+      surfaces at startup. Permission errors on subdirectories (projects/)
+      are deferred to first-request.
+
+  - id: SF-3
+    description: >
+      /health returns 200 even if the underlying registry is in a bad state
+      (e.g. secondsight_home directory was deleted after startup). The health
+      endpoint does not probe the registry's health, only the uptime counter.
+    severity: low
+    mitigation: >
+      Phase 1 health endpoint is intentionally lightweight (latency contract
+      for the hook script). /health is now explicitly a liveness probe only
+      (renamed status->liveness, value ok->alive). Deep health checks deferred to Phase 2.
+    deferred_to_feature_iteration: true
+
+  - id: SF-4
+    description: >
+      If the log directory (~/.secondsight/logs/) does not exist at daemonize()
+      time AND mkdir fails (permissions), the daemon child falls back to
+      /dev/null for logging — errors are swallowed silently.
+    severity: medium
+    mitigation: >
+      daemonize() calls log_path.parent.mkdir(parents=True, exist_ok=True)
+      BEFORE the fork. If this raises, the exception surfaces in the parent
+      before any fork happens — fail-fast path is safe. The only gap is a
+      permission error on a sub-path that appears only after the fork (race
+      with another process removing the directory). When the child's log-open
+      fails, it now emits a diagnostic to the original stderr BEFORE falling
+      back to /dev/null (C1 fix, iteration 2).
+
+assumptions_made:
+  - id: A-1
+    description: >
+      Single asyncio event loop / single uvicorn worker. asyncio.Lock is NOT
+      cross-process safe. Multi-worker deployments break the registry.
+    verified: true
+    verification_method: >
+      serve.py calls uvicorn.run() with explicit workers=1 (added in iteration 2
+      per I3). The registry fast path comment now documents both assumptions:
+      (1) single event loop, (2) CPython GIL atomicity for dict.__contains__.
+      Documented in serve.py docstring.
+
+  - id: A-2
+    description: >
+      secondsight_home is supplied as an absolute Path by the CLI layer.
+      Registry validates this at __init__() time.
+    verified: true
+    verification_method: >
+      ProjectRegistry.__init__() raises ValueError on non-absolute path.
+      create_app() also validates. Tests use tmp_path (absolute).
+
+  - id: A-3
+    description: >
+      project_id values arriving at registry.get() are valid path components.
+      The registry uses project_id directly as a directory name under
+      secondsight_home/projects/.
+    verified: false
+    verification_method: >
+      No validation of project_id characters in Phase 1. The adapter layer
+      (Phase 1.3, task-3) is responsible for this validation before calling
+      registry.get(). If a malicious/malformed project_id reaches the registry,
+      _build_resources() could create unexpected directories. Mitigation
+      deferred to task-3.
+    deferred_to_feature_iteration: true
+
+  - id: A-4
+    description: >
+      "secondsight serve" or "uvicorn ... secondsight" appearing in a process
+      cmdline is a sufficient identity signal for cmdline_match. A process
+      running another secondsight command (e.g. 'secondsight sync') would match
+      falsely. This is a fail-safe-direction tradeoff: false negatives (not
+      killing a real daemon) are preferred over false positives (killing
+      unrelated processes).
+    verified: true
+    verification_method: >
+      DT-1 test verifies that 'sleep 60' (no secondsight/serve in cmdline)
+      returns cmdline_match=False. The test was adjusted to use an
+      unambiguous subprocess because the RTK/zsh wrapper in the CI environment
+      embeds the full shell command in the ps output, causing false positives
+      with simpler checks.
+
+debt_registered:
+  - "KS-1: Registry eviction policy (Phase 2 LRU/TTL)"
+  - "KS-2: uptime_seconds tracking (Phase 2 start-time file)"
+  - "KS-3: PID file locking for concurrent --daemon calls (Phase 2)"
+  - "SF-1: macOS fork+asyncio CI smoke test (Phase 2)"
+  - "SF-3: Deep health check probing registry state (Phase 2)"
+  - "A-3: project_id validation in registry.get() (task-3)"
+  - "DEFERRED-1: server.py split into factory+routes (task-3, routes grow there)"
+  - "DEFERRED-2: project_id path traversal validation in registry.py:135 (task-3)"
+  - "DEFERRED-3: flock-based PID lock for concurrent --daemon race (feature-iteration)"
+  - "DEFERRED-4: on_child() exception swallowed if log redirect already failed (feature-iteration)"
+
+debt_location:
+  - "src/secondsight/api/registry.py: no project_id character validation"
+  - "src/secondsight/daemon.py: no PID file locking"
+  - "src/secondsight/api/server.py: /health does not probe registry health"
+  - "src/secondsight/cli/serve.py: TOCTOU window in concurrent --daemon guard"
+
+deferred_items:
+  - id: DEFERRED-1
+    description: >
+      Quality reviewer I-2 (Cohesion): split server.py into factory module and
+      routes module. Routes grow in task-3 (hook router); the split makes more
+      sense once we have at least 2 routers.
+    deferred_to_feature_iteration: true
+    rationale: "Premature split — task-3 is the right seam."
+
+  - id: DEFERRED-2
+    description: >
+      registry.py:135 project_id path traversal validation. Adapter layer
+      (task-3 hook router) owns input validation before calling registry.get().
+    deferred_to_feature_iteration: true
+    rationale: "Task-3 owns this; adding it here creates duplicate validation with unclear ownership."
+
+  - id: DEFERRED-3
+    description: >
+      cli/serve.py:19-21 two-concurrent-'--daemon' race. Needs a flock-based
+      PID lock; cross-cutting design affecting daemon.py + serve.py.
+    deferred_to_feature_iteration: true
+    rationale: "Phase 1 single-user use case; flock design is cross-cutting."
+
+  - id: DEFERRED-4
+    description: >
+      daemon.py:392-400 on_child() exception path: if the log redirect already
+      failed (fell back to /dev/null), the on_child() exception print at line 399
+      also goes to /dev/null. Partially addressed by C1 fix (diagnostic emitted
+      to original stderr BEFORE redirect). Remainder requires a separate pre-fork
+      error channel (e.g. pipe back to parent).
+    deferred_to_feature_iteration: true
+    rationale: "Requires architectural decision about parent-child error pipe."
+
+  - id: DEFERRED-5
+    description: >
+      Yin suggestion: _pid_path()/_log_path() DRY via a single path-layout
+      authority. Revisit in P1-12 CLI scaffold.
+    deferred_to_feature_iteration: true
+    rationale: "Cosmetic; deferred to CLI scaffold phase."
+
+narrative: >
+  The core risk in this task was the interaction between three independent
+  concerns: (1) asyncio.Lock correctness under concurrent first-requests,
+  (2) POSIX fork safety in the daemon, and (3) PID-file stale-kill protection.
+
+  Iteration 2 (fix-pass) addressed six Critical and Important findings from
+  yin and quality reviewers:
+
+  C1: The log-open fallback in daemonize() now emits a stderr diagnostic before
+  falling back to /dev/null. This surfaces the failure to the terminal that
+  ran `serve --daemon` rather than silently swallowing it. DT-7 verifies this.
+
+  C2: stop_daemon() now returns StopOutcome (enum) instead of bool. This
+  eliminates the TOCTOU window in _do_stop (no re-query of daemon_status needed)
+  and produces honest messages for all four distinct outcomes. DT-8 verifies
+  the SIGKILL path returns STOPPED_SIGKILL specifically.
+
+  I1: /health renamed status->liveness, ok->alive to declare the contract
+  (liveness probe, not readiness probe).
+
+  I2: assert pid is not None replaced with explicit RuntimeError raise.
+
+  I3: workers=1 explicit in uvicorn.run() — prevents WEB_CONCURRENCY env var
+  from silently setting workers>1 and breaking the single-process registry.
+
+  I4/I5: Dead code deleted (unused asyncio.Event, unused registry fixture).
+
+  I6: Fast-path comment in registry.py now co-locates both GIL+event-loop
+  assumptions with the code they justify.
+
+  I7: AppState frozen dataclass declares the typed contract for app.state,
+  replacing four separate attribute assignments.
+
+  I8: uvicorn/create_app imports lifted to module top in cli/serve.py.
+
+  Additionally: pre-existing mypy error in storage/raw_trace_store.py
+  (same tmp_path=None ownership idiom) was fixed to make mypy clean.
+
+resolved_items:
+  - >
+    Self-iteration A-3 (project_id validation): considered adding a
+    _SAFE_PROJECT_ID regex check in registry.get() mirroring the session_id
+    check in RawTraceStore. Deferred because: (a) the task spec says adapter
+    layer (task-3) owns this validation, (b) adding it here would create a
+    duplicate validation with unclear ownership. Marked deferred_to_feature_iteration
+    on A-3.
+
+  - >
+    Self-iteration SF-4 (log directory creation): verified that log_path.parent.mkdir()
+    is called in daemonize() BEFORE the first fork, so permission errors surface
+    in the parent process. This was already in the implementation; confirmed no
+    gap.
+
+  - >
+    Self-iteration ruff issues: removed unused imports and variables from both
+    production files (daemon.py: unused `exc` in except clause; cli/serve.py:
+    unused `sys` import) and test files (test_server_lifespan.py, test_registry.py,
+    test_serve_daemon.py).
+
+  - >
+    Self-iteration cmdline identity: tightened _is_secondsight_cmdline() from
+    'secondsight in cmdline' to requiring both 'secondsight' AND 'serve'
+    (or 'uvicorn' + 'secondsight'), preventing false positives when the test
+    runner process's full shell invocation appears in ps output on macOS.
+
+  - >
+    Fix-pass C1 (log-open fallback diagnostic): daemonize() now prints a
+    WARNING to stderr (original terminal stderr, before fd-redirection) when
+    the log file cannot be opened and the daemon falls back to /dev/null.
+    DT-7 (test_death_log_open_fallback_emits_stderr_diagnostic) verifies this
+    via a forked child that captures the stderr output to a file.
+
+  - >
+    Fix-pass C2 (StopOutcome enum): stop_daemon() return type changed from
+    bool to StopOutcome (str Enum with NOT_RUNNING, STOPPED_GRACEFUL,
+    STOPPED_SIGKILL, REFUSED_STALE). _do_stop() in cli/serve.py now switches
+    on the enum for honest messages. assert pid is not None replaced with
+    explicit RuntimeError raise (I2). DT-8
+    (test_death_sigkill_path_returns_stopped_sigkill) verifies the SIGKILL
+    path returns STOPPED_SIGKILL using a SIGTERM-ignoring subprocess + mock.
+
+  - >
+    Fix-pass I1 (/health liveness rename): /health response changed from
+    {status: ok} to {liveness: alive}. All tests in test_server_lifespan.py
+    updated. Contract is now explicit: liveness probe only.
+
+  - >
+    Fix-pass I3 (workers=1 explicit): uvicorn.run() in _run_server() now
+    passes workers=1 explicitly. Deferred imports lifted to module top (I8).
+    Import failure now surfaces at CLI startup, not first invocation.
+
+  - >
+    Fix-pass I4 (dead asyncio.Event): unused _event = asyncio.Event() in
+    test_server_lifespan.py:98-99 deleted. Also removed the asyncio import
+    since it was only used for the dead code.
+
+  - >
+    Fix-pass I5 (unused registry fixture): deleted @pytest_asyncio.fixture
+    async def registry() from tests/api/conftest.py. No callers in the diff.
+    Unused pytest_asyncio and ProjectRegistry imports also removed.
+
+  - >
+    Fix-pass I6 (fast-path comment): registry.py fast-path now has a co-located
+    comment explaining both safety assumptions: (1) single event loop, (2) CPython
+    GIL atomicity for dict.__contains__. Future multi-worker migration is called out.
+
+  - >
+    Fix-pass I7 (AppState dataclass): server.py now defines a frozen dataclass
+    AppState(registry, startup_time, secondsight_home, config). Lifespan assigns
+    app.state.server_state = AppState(...) once. /health reads
+    app.state.server_state.startup_time. Contract is explicit and type-checked.
+
+  - >
+    Fix-pass mypy cleanup: pre-existing error in storage/raw_trace_store.py
+    (tmp_path = None incompatible type) fixed using _needs_cleanup bool flag
+    pattern (same pattern applied to daemon.py write_pidfile_atomic). mypy
+    now reports clean on all 19 source files.

@@ -1,0 +1,135 @@
+change: phase1-adapters
+issue: GUR-97
+parent_issue: GUR-92
+predecessor: GUR-96
+status: implementation_complete
+death_test_first: true
+commit_cadence: bundle  # one commit after Wave 3 passes
+waves:
+  - wave: 1
+    parallel: true
+    tasks:
+      - task-1  # P1-9-base — AgentAdapter ABC + AdapterRegistry
+      - task-2  # P1-9-fixtures — Claude Code hook payload fixtures
+  - wave: 2
+    parallel: true
+    tasks:
+      - task-3  # P1-9-mig — Migration (deletes api/normalizer.py)
+      - task-4  # P1-10 — ClaudeCodeAdapter
+  - wave: 3
+    parallel: false
+    tasks:
+      - task-5  # P1-9-int — End-to-end integration
+
+tasks:
+  - id: task-5
+    title: "End-to-end integration + fidelity (P1-9-int)"
+    status: done
+    paperclip_issue: GUR-125
+    scar_count: 4  # 2 known_shortcuts + 2 silent_failure_conditions remaining after Level 1
+    resolved_count: 8  # 3 self-iteration + 5 review-driven (yin + quality)
+    unresolved_assumptions: 1  # fixture payload byte-equivalence to live bash hook (verified: false; cross-task)
+    deferred_items: 2  # bash-hook stub coverage (task-4 carry-forward); _wait_for_event_row promotion (feature-level iteration)
+    depends_on: ["task-3", "task-4"]
+    plan_ref: "P1-9-int"
+    wave: 3
+    sd_ref: ["3.7.4", "3.7.5", "4.2", "4.3"]
+    tests: "2/2 in tests/adapters/test_integration_claude_code.py (test_p1_floor_coverage + test_fidelity_against_fixtures × 5 fixtures); full suite 490 passed (+2 vs task-4 baseline 488); mypy clean across adapters package; death-case verified red→green by injected canary-leak regression"
+    review:
+      yin: "PASS_WITH_CONCERNS — 0 Critical; 2 Important (matched-arithmetic latent bug + redundant bundle-level fidelity assert) BOTH resolved in review-driven self-iteration; 3 Suggestions (1 closed by raise_server_exceptions comment, 1 closed by timeout state distinction, 1 deferred = _load_fixture cosmetic)"
+      quality: "PASS_WITH_CONCERNS — 0 Critical; 2 Important (O Marked Bet on EXPECTED_FIXTURE_FILENAMES naming + DRY isomorphism gap with P1_HOOK_EVENT_NAMES) BOTH resolved by expanded comment block; 4 Suggestions (1 deferred = _wait_for_event_row promotion to shared helper; 3 closed inline)"
+      open_carryforward:
+        - "feature-level iteration: promote _wait_for_event_row to tests/_common/db_helpers.py and migrate test_hooks_endpoint.py:283,342 + test_hook_fallback.py:611 callsites away from time.sleep + inline sqlite3"
+        - "task-4 GUR-124 carry-forward: integration test does NOT cover the bash hook script (secondsight-hook.sh) → real adapter path; coverage gap closes when _ClaudeCodeAdapterStub is retired"
+        - "Phase-2 fixture refresh: re-validate documented fixtures against live Claude Code v1.x capture (assumption 'payload byte-equivalence' verified=false until then)"
+
+  - id: task-2
+    title: "Claude Code hook payload fixtures (P1-9-fixtures)"
+    status: done
+    paperclip_issue: GUR-122
+    scar_count: 6  # 2 known_shortcuts + 4 silent_failure_conditions
+    resolved_count: 0  # no Level 1 self-iteration: fixture-only task, no production code seam to refine
+    unresolved_assumptions: 1  # documented schema accuracy at 2026-05-04 (verified: false; bound to task-5 integration re-run)
+    deferred_items: 2  # documented-fixture drift detection (task-5); session-event canary semantics enforcement (task-4)
+    depends_on: []
+    plan_ref: "P1-9-fixtures"
+    wave: 1
+    sd_ref: ["3.7.4", "3.7.5", "4.2"]
+    tests: "22/22 (1 fixture-discovery + 4 DTs × 5 fixtures + 1 P1-floor coverage); full suite 449 passed (excl. 1 pre-existing flaky test_hook_fallback.py)"
+    review:
+      yin: "pending"
+      quality: "pending"
+      open_carryforward:
+        - "task-4 GUR-124: adapter death tests must enforce 'canary value never appears in Event.data JSON' for every fixture"
+        - "task-4 GUR-124: adapter must implement 'drop-from-data, route-to-column' for session_id in session events"
+        - "task-5 P1-9-int: optional live-capture mode to re-validate documented fixtures against real Claude Code v1.x session"
+
+  - id: task-4
+    title: "ClaudeCodeAdapter (P1-10)"
+    status: done
+    paperclip_issue: GUR-124
+    scar_count: 7  # 2 known_shortcuts + 5 silent_failure_conditions
+    resolved_count: 2  # Level 1: success-bit semantics + _tool_input_metadata extraction
+    unresolved_assumptions: 1  # tool_response.error sufficiency for success=False (verified: false; plan-bound)
+    deferred_items: 2  # kebab stub retirement (task-3 carry-forward); _DATA_BUILDERS startup-assert
+    depends_on: ["task-1", "task-2"]
+    plan_ref: "P1-10"
+    wave: 2
+    sd_ref: ["3.7.4", "4.2", "4.3"]
+    tests: "30/30 in tests/adapters/test_claude_code.py (9 death + 11 unit + 5 fixture round-trip × 2 parametrized passes); full suite 488 passed (+31 vs baseline 457)"
+    review:
+      yin: "pending"
+      quality: "pending"
+      open_carryforward:
+        - "task-5 P1-9-int: integration hook → ClaudeCodeAdapter (canonical agent='claude_code' + hook_event_name payload) end-to-end through live FastAPI"
+        - "follow-up: retire tests/scripts/conftest.py:_ClaudeCodeAdapterStub by migrating bash hook tests to canonical snake_case + hook_event_name shape"
+        - "follow-up: add startup-time `_HOOK_TO_EVENT_TYPE.values() == _DATA_BUILDERS.keys()` consistency assert in claude_code.py"
+
+  - id: task-3
+    title: "Migrate Normalizer→AgentAdapter, delete api/normalizer.py (P1-9-mig)"
+    status: done
+    paperclip_issue: GUR-123
+    scar_count: 7  # 2 known_shortcuts + 5 silent_failure_conditions
+    resolved_count: 0  # no Level 1 self-iteration: every scar item is documented-defer (see narrative)
+    unresolved_assumptions: 0  # all 5 assumptions verified before close
+    deferred_items: 4  # 2 known_shortcuts (stub duck-cast, warning suppression) + 2 silent_failure (register isinstance guard, stub) → all retired by task-4
+    depends_on: ["task-1"]
+    plan_ref: "P1-9-mig"
+    wave: 2
+    sd_ref: ["4.2"]
+    tests: "13/13 in tests/adapters/test_identity.py + collect-time MIG-DT-1 in tests/adapters/test_base.py; full suite 457 passed (excl. 1 pre-existing flaky test_hook_fallback.py::TestDeathTests::test_dt2_parallel_writes_no_truncation)"
+    review:
+      yin: "pending"
+      quality: "pending"
+      open_carryforward:
+        - "task-4 GUR-124: replace tests/scripts/conftest.py:_ClaudeCodeAdapterStub with real ClaudeCodeAdapter, narrow supported_event_types to P1 floor, remove RuntimeWarning suppression in fixture"
+        - "Phase-2 hardening: AdapterRegistry.register(adapter) gain runtime isinstance(adapter, AgentAdapter) guard once duck-typed test stubs are retired (task-4 closes the only remaining duck cast)"
+
+  - id: task-1
+    title: "AgentAdapter ABC + AdapterRegistry + NoAdapterError (P1-9-base)"
+    status: done
+    paperclip_issue: GUR-121
+    scar_count: 5  # 1 known_shortcut + 4 silent_failure_conditions remaining after Level 1
+    resolved_count: 4  # 4 items resolved in Level 1 self-iteration
+    unresolved_assumptions: 1  # mypy ignore on secondsight.feedback (verified: false, blocks on GUR-104)
+    deferred_items: 2  # for_() skip-no-log (feature-level logger); secondsight.feedback mypy ignore (GUR-104)
+    depends_on: []
+    plan_ref: "P1-9-base"
+    wave: 1
+    sd_ref: ["4.2"]
+    tests: "14/14 (6 death + 8 unit); full suite 409 passed (excl. 1 pre-existing flaky)"
+    review:
+      yin: "PASS_WITH_CONCERNS — 0 Critical; 4 Important all resolved or carried-forward to task-4 (1 closed by docstring cross-ref, 1 by mutual-exclusion DT-3/DT-4, 1 by pytest.fail sentinel, 1 = scar schema drift discussion)"
+      quality: "PASS_WITH_CONCERNS — 0 Critical; 1 Important (L — Silent Breach on normalize postcondition) carried forward to task-4 death tests; 3 Suggestions (1 closed by RuntimeWarning, 2 deferred with rationale)"
+      open_carryforward:
+        - "task-4 GUR-124: death tests must enforce normalize() postcondition (no synthesized empty fields)"
+        - "GUR-104 PR: remove `# type: ignore[import-untyped]` on secondsight.feedback import"
+        - "feature-level iteration: logger child for AdapterRegistry skip-with-no-log silent path"
+
+artifacts:
+  kickoff: 1-kickoff.md
+  problem_autopsy: problem-autopsy.md
+  plan: 2-plan.md
+  acceptance: acceptance.md
+  tasks_dir: tasks/
+  scar_reports_dir: scar-reports/

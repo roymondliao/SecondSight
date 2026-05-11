@@ -1,0 +1,91 @@
+# Ship Manifest — GUR-97 Phase 1.3 Agent Adapters
+# Bundle commits:
+#   aa41a18 — Phase 1.3 implementation (38 files, +4664 / -315)
+#   a170aea — Security & privacy review record
+#   c55b0bb — docs: rename "normalizer"→"adapter" in 4 production-source comments
+#             (closes validate-and-ship code-reviewer Important #2)
+# Skipped: Level-2 iteration (board accepted path B via interaction af65a34d)
+
+delivered_capability: "AgentAdapter ABC + AdapterRegistry + ClaudeCodeAdapter with declarative DROP_LIST per SD §3.7.4 — first concrete agent observation source for SecondSight; all hook payloads now flow through a single adapter contract that owns both observation (normalize) and feedback (inject_convention reserved, inject_hint reserved). Replaces and deletes the GUR-96 Normalizer Protocol with no shim."
+
+known_failure_modes:
+  - mode: "ClaudeCodeAdapter.normalize() reaches `_DATA_BUILDERS.get(event_type)` returning None for an event_type that exists in `_HOOK_TO_EVENT_TYPE` but not in `_DATA_BUILDERS`"
+    severity: degradation  # surfaces as ValueError → 422 at first hook of the new type, not silent
+    detection: "ValueError raised by adapters/claude_code.py at normalize() call — converted to 422 by route handler. Operator-visible. Tracked: GUR-127 will add a startup-time consistency assert to surface at import time instead."
+
+  - mode: "AdapterRegistry.for_() silently skips an adapter whose supports()=True but event_type not in supported_event_types() — no log line"
+    severity: degradation  # documented as DT-6 design intent; only matters in mixed-honest/dishonest registries
+    detection: "Test-time only via DT-6 in tests/adapters/test_base.py. Production runtime emits no signal. Bound to feature-level logger child design (carry-forward in index.yaml)."
+
+  - mode: "Subclass overrides `inject_convention` or `inject_hint` returning empty string instead of raising"
+    severity: silent_corruption
+    detection: "Per-adapter death tests required (task-4 ClaudeCodeAdapter does this; future Codex/OpenCode adapters carry the same obligation). At base ABC level, Python language limit prevents enforcement of 'must raise'."
+
+  - mode: "Documented-only fixtures in tests/fixtures/claude_code/*.json (4 of 5) drift from real Claude Code v1.x hook payload format"
+    severity: degradation  # adapter starts producing wrong-shape Event.data for affected event_type
+    detection: "_meta._source field on each fixture distinguishes 'verified' (1: pre_tool_use_bash, captured from rtk-rewrite.sh) from 'documented' (4: based on Claude Code documented schemas). Fixture refresh tracked as Phase-2 carry-forward; integration test would surface drift via fidelity ratio < 1.0."
+
+  - mode: "HookEnvelope.payload contains a field with PII content not in DROP_LIST, adapter passes it through into Event.data"
+    severity: silent_corruption  # privacy violation
+    detection: "Privacy canary 'PRIVACY_CANARY_DO_NOT_STORE' in fixture drop-listed fields + test_privacy_canary asserts the string never appears in Event.data. Catches direct regressions of currently-listed fields. New PII fields require manual audit + DROP_LIST extension."
+
+  - mode: "tests/scripts/conftest.py:_ClaudeCodeAdapterStub diverges from real ClaudeCodeAdapter contract"
+    severity: degradation  # bash hook fallback tests pass against a stale stub
+    detection: "Stub composes IdentityAdapter for normalize() body. If IdentityAdapter contract changes, stub silently breaks. Documented in task-3 + task-4 scars; retirement bound to bash hook task carry-forward."
+
+  - mode: "secondsight.feedback module created in GUR-104 with broken types after the `# type: ignore[import-untyped]` is removed"
+    severity: degradation  # type integrity at the seam degrades silently
+    detection: "GUR-104 PR checklist must remove the ignore in src/secondsight/adapters/base.py:53 in the same commit that lands `Convention`. Tracked in task-1 scar + index.yaml open_carryforward + commit aa41a18 message."
+
+  - mode: "Pre-existing test-isolation flakiness inherited from GUR-96 task-4 (test_dt2_parallel_writes_no_truncation)"
+    severity: degradation  # CI noise; passes in isolation 3/3
+    detection: "Already-known; tracked separately. Not regressed by GUR-97. Documented in commit aa41a18 message."
+
+accepted_risks:
+  - risk: "silent_failure_surface = HIGH per ship-manifest threshold (21 silent_failure_conditions + 4 unverified assumptions across 5 task scars). Reflects honest scar discipline ('no clean scars'), not actual rot. Predecessor GUR-96 had similar density."
+    accepted_by: "human (board, via interaction af65a34d 'skip iteration → security review')"
+    expires: "2026-08-04"  # Re-evaluate at 90 days; if any silent path materialized, raise priority on iteration
+
+  - risk: "AdapterRegistry.list_supported_event_types(agent: str) ships ahead of any consumer (Phase-3 dashboard). Method signature is a pre-committed assumption about how the consumer will call it; if the dashboard needs a different shape, this method is silently amended or a sibling appears."
+    accepted_by: "human (validate-and-ship code-reviewer Important #1; bundle shippable)"
+    expires: "2026-11-04"  # Re-evaluate when GUR-106 dashboard work begins
+
+  - risk: "tests/scripts/conftest.py:_ClaudeCodeAdapterStub still in place — task-3 scar deferred retirement to task-4; task-4 re-deferred to bash hook follow-up. Deferral chain is 2 hops; documented in scars but cross-reference to current owner is not back-linked from task-3 scar."
+    accepted_by: "human (validate-and-ship code-reviewer Suggestion; not blocking)"
+    expires: "2026-08-04"  # Same review window as silent-failure-surface
+
+silent_failure_surface: high  # 21 silent_failure_conditions + 4 unverified assumptions across 5 task scars (>7 threshold per ship-manifest.md). Honest scar discipline; predecessor GUR-96 had comparable density.
+
+monitoring_hooks:
+  - "AC-1 import guard: `python -c 'from secondsight.api.normalizer import Normalizer'` MUST raise ModuleNotFoundError (test_base.py MIG-DT-1 enforces at collect time)"
+  - "AC-10 grep guard: `grep -r 'from secondsight.api.normalizer' src/` MUST return zero hits (test_base.py MIG-DT-1 walks src/ at collect time, fails session if any found)"
+  - "Privacy canary: tests/adapters/test_claude_code.py::test_privacy_canary asserts PRIVACY_CANARY_DO_NOT_STORE never appears in Event.data — runs every CI invocation"
+  - "Integration fidelity: tests/adapters/test_integration_claude_code.py::test_fidelity_against_fixtures asserts north-star ratio = 1.0 across all fixtures — runs every CI invocation"
+  - "Register-shadow warning: AdapterRegistry.register() emits RuntimeWarning when new adapter overlaps existing supported_event_types — visible in test logs and any production registry boot trace"
+  - "DT-6 consistency: tests/adapters/test_base.py asserts supports()/supported_event_types() agreement at registry dispatch time"
+  - "Pytest collect-time MIG-DT-1: tests/adapters/test_base.py walks src/ rejecting any 'from secondsight.api.normalizer' line — full pytest session aborts on regression"
+
+kill_switch: |
+  To disable the new adapter layer immediately:
+
+  1. **Revert kill (clean rollback):** revert all 3 GUR-97 commits in branch order:
+       git revert c55b0bb a170aea aa41a18
+     This restores src/secondsight/api/normalizer.py and removes
+     src/secondsight/adapters/. The hook endpoints will need their imports
+     restored — server.py and hooks.py will fail to start until reverted.
+     Recommend reverting the entire feature branch range, not cherry-picking.
+
+  2. **Drop ClaudeCodeAdapter without removing the layer:** edit
+     src/secondsight/api/server.py registry initialization to NOT
+     register ClaudeCodeAdapter. Hook payloads with agent='claude_code'
+     will then 422 with NoAdapterError. IdentityAdapter remains for
+     agent='test'. Less destructive than revert; useful if the issue is
+     specific to Claude Code payload shape.
+
+  3. **Bypass adapter normalization at the route layer:** server-side
+     feature flag (not implemented; would require a flag added in a
+     follow-up). Documented as kill-switch design space, not currently
+     wired.
+
+  Default kill: option 2 (drop ClaudeCodeAdapter registration). Most
+  surgical, preserves the migrated test scaffolding.

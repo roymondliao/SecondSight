@@ -1,0 +1,173 @@
+# Acceptance criteria for GUR-103 Phase 2 Analysis Agent Integration
+# Death-first BDD: silent-failure scenarios first, then degradation,
+# then happy paths with evidence chains.
+
+feature: gur-103-phase2-analysis-agent-integration
+coverage_type: death_first
+
+# ---------------------------------------------------------------------
+# A. Silent failure scenarios — load-bearing tests.
+#    Each maps to a death case (DC-N) in 2-plan.md §3.
+# ---------------------------------------------------------------------
+
+silent_failure_scenarios:
+
+  - id: DT-1.1
+    death_case: DC-1  # sandbox bypass via symlink
+    given: "A project root at /tmp/proj with a symlink /tmp/proj/leak → /etc/passwd"
+    when: "AnalysisTools.read_project_file(project_id, 'leak') is called"
+    then_naive_lie: "resolve() follows the symlink; pre-resolve string starts with /tmp/proj so naive prefix-check passes; /etc/passwd is read into LLM context"
+    then_truth: "Path.resolve(strict=True) returns /etc/passwd; is_relative_to(project_root) is False; ProjectFileToolError raised; WARN log records the resolved path; no file content returned"
+    test: "tests/analysis/test_tools.py::test_DT_1_1_sandbox_rejects_symlink_escape"
+
+  - id: DT-1.2
+    death_case: DC-2  # denylist bypass via path-component case
+    given: "A project containing both .env and .ENV (same content; literal pattern '*.env' matches lowercase only)"
+    when: "AnalysisTools.read_project_file(project_id, '.ENV') is called"
+    then_naive_lie: "Pattern '*.env' compiled with fnmatch.fnmatchcase fails; .ENV passes denylist; secret content sent to LLM"
+    then_truth: "Match is case-insensitive on the filename component (str.lower() before fnmatch); .ENV matches; ProjectFileToolError raised; WARN log preserves original casing"
+    test: "tests/analysis/test_tools.py::test_DT_1_2_denylist_case_insensitive"
+
+  - id: DT-1.3
+    death_case: DC-2  # denylist match on ancestor directory
+    given: "A project with /tmp/proj/.ssh/id_rsa (the .ssh dir is denylisted as ancestor pattern)"
+    when: "AnalysisTools.read_project_file(project_id, '.ssh/id_rsa') is called"
+    then_naive_lie: "Filename id_rsa matches denylist 'id_rsa*'; but if pattern matched only on ultimate filename, a path like .ssh/secrets.txt would slip through"
+    then_truth: "Each ancestor directory component is matched against the denylist independently; .ssh/* pattern blocks ANY child of .ssh; ProjectFileToolError raised on .ssh ancestor match"
+    test: "tests/analysis/test_tools.py::test_DT_1_3_denylist_ancestor_match"
+
+  - id: DT-2.1
+    death_case: DC-3  # ValidationError masquerading as transport error
+    given: "An LLMRouter with primary=A, fallbacks=[B, C]; primary call raises pydantic_ai.UnexpectedModelBehavior whose __cause__ is pydantic.ValidationError"
+    when: "router.call(...) is invoked"
+    then_naive_lie: "Outer exception class name matches the allowlist (UnexpectedModelBehavior); router triggers fallback to B; B and C return the same malformed JSON; chain pays 3× for one broken prompt; user sees AnalysisAgentError after 3 attempts"
+    then_truth: "Router unwraps __cause__/.__context__ chain; finds ValidationError; classifies as non-transient; raises AnalysisAgentError immediately after 1 attempt; logs the validation failure verbatim; never calls B or C"
+    test: "tests/sdk/test_router.py::test_DT_2_1_validation_error_in_cause_chain_no_fallback"
+
+  - id: DT-5.1
+    death_case: DC-4  # trigger race produces duplicate dispatches
+    given: "An empty analysis_runs table; two dispatch() calls for the same session_id arrive within 5ms (one from event-driven, one from sweeper)"
+    when: "Both dispatch() calls execute"
+    then_naive_lie: "Both pass get_latest_for_session (no row exists); both create_task(analyze_and_aggregate); orchestrator's start_run inserts two analysis_runs rows; per-segment LLM calls execute twice (cost doubled); behavior_flags table has 2N rows where INSERT OR IGNORE happens to allow duplicates if event_ids differ slightly"
+    then_truth: "First call acquires lock_registry.session_lock(session_id); second call's try-acquire returns False; second call returns DispatchResult(dispatched=False, reason='lock-held'); only one analyze_and_aggregate task scheduled; cost paid once"
+    test: "tests/sdk/test_trigger.py::test_DT_5_1_concurrent_dispatch_lock_dedup"
+
+  - id: DT-5.2
+    death_case: DC-5  # event loop blocked by sync I/O in tool
+    given: "An async pipeline.ingest dispatches analyze on session_end; one segment LLM call invokes read_project_file on a 256KiB file; concurrent N=10 hook handlers POSTing other event types"
+    when: "Stress test runs all 10 hooks during the analysis dispatch"
+    then_naive_lie: "Hook latency p95 doubles because read_bytes() blocks the event loop; observation pipeline appears slow"
+    then_truth: "AnalysisTools.read_project_file uses await asyncio.to_thread(path.read_bytes); event loop is unblocked during FS read; hook p95 unchanged within 10% noise floor"
+    test: "tests/sdk/test_trigger.py::test_DT_5_2_blocking_io_wrapped_in_to_thread"
+
+  - id: DT-5.3
+    death_case: DC-6  # sweeper triggers on backfill-pending session
+    given: "A session whose last event was 35 minutes ago (timeout=30min); the events_repo's backfill queue has the session_end event waiting to be written"
+    when: "Sweeper.sweep_stale_sessions() runs"
+    then_naive_lie: "Sweeper's check is 'no session_end event in events table AND last_event_ts < now() - 30min'; both conditions match; sweeper synthesizes session_end and dispatches analysis on partial data"
+    then_truth: "Sweeper's primary filter is last_event_ts < now() - 30min; the 'no session_end' check is secondary AND only used for log-message context, never as a primary trigger; if events_repo reports any event newer than the cutoff (including a backfill-completed session_end), sweeper skips that session"
+    test: "tests/sdk/test_trigger.py::test_DT_5_3_sweeper_uses_last_event_ts_not_session_end_presence"
+
+  - id: DT-5.4
+    death_case: DC-7  # manual CLI silent success on completed session
+    given: "A session with analysis_runs.stage='summary_written' (already analyzed yesterday); user runs `secondsight analyze --session OLD_ID` without --force"
+    when: "CLI executes"
+    then_naive_lie: "dispatch() returns dispatched=False reason='already-analyzed'; CLI exits 0 with no output; user thinks fresh data was produced"
+    then_truth: "CLI prints 'Skipped: session OLD_ID already analyzed at <ISO timestamp>; pass --force to re-run' to stderr; exits with code 2 (distinct from 0=success and 1=failure)"
+    test: "tests/cli/test_analyze.py::test_DT_5_4_already_analyzed_exit_code_2_with_message"
+
+  - id: DT-2.2
+    death_case: DC-8  # empty fallback chain raises with confusing error
+    given: "A user explicitly sets fallback_models = []; LLMRouter constructed with empty fallbacks; primary call raises httpx.TimeoutException"
+    when: "router.call(...) is invoked"
+    then_naive_lie: "Router catches the timeout, sees no fallbacks, re-raises the original httpx.TimeoutException; user sees a network error and thinks SecondSight is broken"
+    then_truth: "Router constructor logs WARN at construction when fallbacks is empty; on chain exhaustion (which is immediate when fallbacks=[]), raises AnalysisAgentError('primary timed out; fallback_models is empty by config — no retry attempted', chain=[(primary, TimeoutException)])"
+    test: "tests/sdk/test_router.py::test_DT_2_2_empty_chain_includes_config_in_error"
+
+# ---------------------------------------------------------------------
+# B. Degradation scenarios — fallback fires, must mark degraded.
+# ---------------------------------------------------------------------
+
+degradation_scenarios:
+
+  - id: DG-1.1
+    given: "Primary model rate-limited (429); fallback model gpt-4o-mini available"
+    when: "router.call(...) is invoked"
+    then:
+      - "Primary call raises RateLimitError"
+      - "Router logs INFO 'fallback_triggered' with primary model name and reason"
+      - "Fallback model B is invoked"
+      - "B returns valid output; router returns it"
+      - "Result is functionally identical to primary success, but logs preserve degradation evidence"
+    test: "tests/sdk/test_router.py::test_DG_1_1_fallback_logs_degradation"
+
+  - id: DG-1.2
+    given: "API server is not running; user invokes secondsight analyze --session S1"
+    when: "CLI executes"
+    then:
+      - "CLI tries http://127.0.0.1:<port> → ConnectionError"
+      - "CLI logs INFO 'API server not reachable; running analysis in-process'"
+      - "CLI invokes Orchestrator directly with locally-constructed dependencies"
+      - "Output identical to server-mode; STDERR includes the in-process notice (not silent)"
+    test: "tests/cli/test_analyze.py::test_DG_1_2_in_process_fallback_logged"
+
+# ---------------------------------------------------------------------
+# C. Happy paths with evidence chains.
+# ---------------------------------------------------------------------
+
+happy_path_scenarios:
+
+  - id: HP-1.1
+    given: "A project with a complete session containing 3 user prompts (3 segments); primary model claude-haiku-4-5 reachable"
+    when: "Trigger.dispatch() fires from session_end event"
+    then:
+      - "lock_registry.session_lock(session_id) is acquired"
+      - "asyncio.create_task(orchestrator.analyze_and_aggregate) is scheduled"
+      - "After ~30s, analysis_runs.stage='aggregated', completed_at IS NOT NULL"
+      - "behavior_flags rows exist for that session_id"
+      - "directives rows exist for that project_id (post-aggregation)"
+      - "Router log lines show provider='anthropic' model='claude-haiku-4-5' for each LLM call; no fallback events"
+      - "Audit reconstructs: session_end event timestamp → trigger.dispatched timestamp → orchestrator stage transitions → terminal completed_at"
+    test: "tests/sdk/test_trigger.py::test_HP_1_1_event_driven_full_evidence_chain"
+
+  - id: HP-1.2
+    given: "PydanticAIAnalysisAgent constructed with FakeRouter; analyze_segments called with 2 prompts"
+    when: "agent.analyze_segments(prompts) is awaited"
+    then:
+      - "len(result) == 2"
+      - "Each result is a SegmentAnalysis instance (Pydantic-validated)"
+      - "FakeRouter.call invoked exactly 2 times (sequential)"
+      - "FakeRouter.call output_type was SegmentAnalysis on both calls"
+      - "Tools available to the underlying PydanticAI Agent: read_traces, read_project_file (no read_historical_flags)"
+    test: "tests/sdk/test_agent.py::test_HP_1_2_analyze_segments_batch_contract"
+
+  - id: HP-1.3
+    given: "select_model called with project_config.model='claude-sonnet-4-6' (override)"
+    when: "function returns"
+    then:
+      - "primary == ModelSpec(name='claude-sonnet-4-6', provider='anthropic')"
+      - "fallbacks == [ModelSpec('gpt-4o-mini', 'openai'), ModelSpec('gemini-2.0-flash', 'google')]"
+      - "Pure function: no log calls, no DB reads, no network"
+    test: "tests/sdk/test_model_selection.py::test_HP_1_3_project_override_beats_global"
+
+  - id: HP-1.4
+    given: "AnalysisTools.read_project_file called with valid in-project path 'src/utils.py'"
+    when: "tool returns"
+    then:
+      - "File contents returned as str (UTF-8 decoded)"
+      - "No WARN log emitted"
+      - "Resolution path uses Path.resolve(strict=True); resolved path is_relative_to project_root"
+    test: "tests/analysis/test_tools.py::test_HP_1_4_read_project_file_happy_path"
+
+# ---------------------------------------------------------------------
+# Exit criteria
+# ---------------------------------------------------------------------
+
+exit_criteria:
+  - "All silent_failure_scenarios pass deterministically (3 retries, 0 flakes)"
+  - "All degradation_scenarios pass with evidence in logs"
+  - "All happy_path_scenarios pass with full evidence chain reconstruction"
+  - "End-to-end smoke: a recorded session feeds through trigger → orchestrator → terminal stage='aggregated' with directives written"
+  - "pytest tests/sdk/ tests/analysis/test_tools.py tests/cli/test_analyze.py -v: 100% green"
+  - "Hook handler latency p95 unchanged within 10% noise floor (pre/post GUR-103) under stress test"
+  - "read_project_file_path_escape_attempts == 0 across the test suite (deferred dogfooding gate; not blocking ship)"

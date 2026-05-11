@@ -1,0 +1,126 @@
+feature: gur-99-phase1-e2e-integration-test
+coverage_type: verified
+
+# Death-first ordering enforced: silent failure -> degradation ->
+# unknown outcome -> happy path with evidence chain.
+
+scenarios:
+  # =====================================================================
+  # SILENT FAILURE PATHS — most dangerous; tested first
+  # =====================================================================
+
+  - name: "Silent failure - hook URL drift causes events to fall back without signal"
+    type: death_path
+    given: "Live secondsight server bound to a tmp SECONDSIGHT_HOME, accepting /hook/pre-tool-use"
+    when: "pre-tool-use.sh is invoked with a valid claude-code payload while the server is up"
+    then:
+      - "hook exits 0 AND no fallback_events.jsonl line is written"
+      - "if any fallback line exists post-fire, the test must fail with a message naming the URL mismatch as the likely cause"
+      - "intent: catch a future regression where the bash POST URL drifts (e.g. /hook/pre_tool_use) silently"
+
+  - name: "Silent failure - segment_index frozen at 0 for entire session"
+    type: death_path
+    given: "Live server, single session_id, sequence: session-start -> user-prompt -> pre-tool-use -> post-tool-use -> user-prompt -> pre-tool-use -> post-tool-use -> session-end"
+    when: "all 8 events fire via subprocess hook against the live server"
+    then:
+      - "DB rows for session must show segment_index transitions: events 1-3 have segment_index=0, events 4-5 have segment_index=1, events 6-7 have segment_index=2, event 8 has segment_index=2"
+      - "If all rows share segment_index=0, the test fails with 'tracker.bind() did not increment segment_index on USER_PROMPT'"
+      - "intent: catch a regression where USER_PROMPT increment is removed or cached"
+
+  - name: "Silent failure - sub_agent_end on empty stack silently advances depth"
+    type: death_path
+    given: "Live server, single session, no prior sub_agent_start fired"
+    when: "sub-agent-end hook fires with data.sub_agent_id='ghost'"
+    then:
+      - "Server returns HTTP 4xx (not 200)"
+      - "DB has zero events for this session_id (no row was inserted before tracker rejected the bind)"
+      - "Subsequent regular hooks for the same session continue to work with depth=0"
+      - "intent: SubAgentStackMismatch must surface, never silently corrupt state"
+
+  - name: "Silent failure - sync archives fallback file before INSERTs durable"
+    type: death_path
+    given: "5 lines in fallback_events.jsonl, secondsight server running"
+    when: "secondsight sync is invoked"
+    then:
+      - "fallback_events.jsonl is renamed to fallback_events.<timestamp>.bak with all 5 lines preserved"
+      - "Original fallback_events.jsonl is gone or empty"
+      - "Re-running sync immediately produces zero new .bak files (idempotent on empty)"
+      - "If sync writes a SECOND .bak from an empty original, the test fails with 'sync double-archived'"
+      - "Phase 1 contract: events from fallback are NOT re-inserted into DB (G1-alpha)"
+
+  - name: "Silent failure - serve --daemon PID file present but port not bound"
+    type: death_path
+    given: "secondsight serve --daemon was started but uvicorn failed to bind"
+    when: "secondsight status --format json is invoked"
+    then:
+      - "Status reports 'not_running' OR 'stale_pid', NEVER 'running'"
+      - "stale_pid case must clean up the PID file or instruct the operator to do so"
+      - "intent: status must not lie about service availability"
+
+  # =====================================================================
+  # DEGRADATION PATHS — fallback active but must be marked degraded
+  # =====================================================================
+
+  - name: "Degradation - server down, hook activates fallback path"
+    type: degradation
+    given: "secondsight server is not running (dead port)"
+    when: "5 hook scripts fire sequentially with valid payloads"
+    then:
+      - "Each hook exits 0"
+      - "fallback_events.jsonl exists with exactly 5 valid JSON lines"
+      - "Each fallback line includes hook_script_version='phase-1.2' (degradation marker)"
+      - "Server starting later AND running secondsight sync moves the file to .bak"
+      - "Path C (replay into DB) is documented as carry-forward; sync does NOT silently re-INSERT"
+
+  # =====================================================================
+  # UNKNOWN OUTCOME PATHS — boundary measurement
+  # =====================================================================
+
+  - name: "Unknown outcome - hook latency p95 must remain bounded under measurement"
+    type: death_path
+    given: "Live server, idle test machine"
+    when: "50 sequential hooks fire and each invocation's wall-clock is recorded"
+    then:
+      - "All 50 measurements must complete (no timeout)"
+      - "p50, p95, p99 are printed to stderr as a one-line histogram"
+      - "p95 <= 50ms (CI-stable proxy for SD 3.9.1's 7ms theoretical)"
+      - "If <50 measurements collected, test fails with 'subprocess timeout — measurement compromised', NEVER pass on partial data"
+      - "Test docstring records death condition: remove when production latency metric exists"
+
+  # =====================================================================
+  # HAPPY PATHS WITH EVIDENCE CHAIN
+  # =====================================================================
+
+  - name: "Success - single event traverses full pipeline with verifiable evidence"
+    type: happy_path
+    given: "Fresh tmp SECONDSIGHT_HOME, live server, one event_id 'evt-mh1-live'"
+    when: "pre-tool-use.sh fires once with valid claude-code payload"
+    then:
+      - "Hook exits 0"
+      - "DB row in projects/proj-test/intelligence.db has id='evt-mh1-live', session_id matches, segment_index=0, sub_agent_id=null, depth=0"
+      - "Raw trace JSON file exists at projects/proj-test/sessions/<sid>/events/<event_id>.json"
+      - "No fallback_events.jsonl line"
+      - "Evidence chain: a future audit can reconstruct the event from DB + raw trace alone"
+
+  - name: "Success - sub-agent nesting depth toggles correctly"
+    type: happy_path
+    given: "Live server, fresh session"
+    when: "Sequence: user-prompt -> sub_agent_start(id='child-1') -> pre-tool-use -> sub_agent_end(id='child-1')"
+    then:
+      - "DB has 4 rows in sequence_number order"
+      - "Row 1 (user-prompt): depth=0, sub_agent_id=null"
+      - "Row 2 (sub_agent_start): depth=1, sub_agent_id='child-1'"
+      - "Row 3 (pre-tool-use): depth=1, sub_agent_id='child-1'"
+      - "Row 4 (sub_agent_end): depth=0, sub_agent_id=null"
+
+  - name: "Success - CLI lifecycle composes from install to teardown"
+    type: happy_path
+    given: "Empty tmp HOME with no prior secondsight install"
+    when: "Sequence: secondsight init -> serve --daemon -> 1 hook fires -> serve --stop -> status --format json"
+    then:
+      - "After init: ~/.claude/hooks/pre-tool-use.sh exists, ~/.claude/settings.json contains the SecondSight hook entry"
+      - "After serve --daemon: PID file written, port listening within 5s"
+      - "After hook fires: 1 DB row exists"
+      - "After serve --stop: PID file removed, port no longer bound"
+      - "status --format json reports {running: false, event_count: 1} (or equivalent shape)"
+      - "Evidence chain: every step's observable state is verifiable from the filesystem and DB without re-running the previous step"
