@@ -42,7 +42,13 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from secondsight._common.lazy_cache import LazyCacheWithLocking
-from secondsight.adapters import AdapterRegistry, ClaudeCodeAdapter, IdentityAdapter
+from secondsight.adapters import (
+    AdapterRegistry,
+    ClaudeCodeAdapter,
+    CodexAdapter,
+    IdentityAdapter,
+    OpenCodeAdapter,
+)
 from secondsight.api.registry import ProjectRegistry
 from secondsight.observation.tracker import SessionTracker
 
@@ -375,6 +381,8 @@ def create_app(
             # agent="claude_code". Different agent gates prevent any dispatch
             # collision — see AdapterRegistry.register() docstring.
             warnings.simplefilter("ignore", RuntimeWarning)
+            adapter_registry.register(CodexAdapter())
+            adapter_registry.register(OpenCodeAdapter())
             adapter_registry.register(IdentityAdapter())
 
         # Assign the typed state contract once; inflight_tasks is initialized

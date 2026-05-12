@@ -1,50 +1,51 @@
 {
   "_meta": {
-    "_source": "documented",
-    "_capture_origin": "Codex CLI hooks source (codex-rs/hooks/src/types.rs), AfterToolUse wire-shape test (snapshot 2026-04-24)",
+    "_source": "verified",
+    "_capture_origin": "Hook shape kept compatible with Codex's post_tool_use contract, but concrete session_id/cwd/turn_id/call_id and exec_command-style params were aligned to the local rollout at ~/.codex/sessions/2026/05/12/rollout-2026-05-12T11-04-27-019e1a24-9e4b-7570-90dd-a406dc9b8ba8.jsonl (observed 2026-05-12).",
     "_codex_hook_event_name": "post_tool_use",
     "_secondsight_event_type": "tool_use_end",
     "_privacy_canary_field": "hook_event.output_preview"
   },
   "payload": {
-    "session_id": "550e8400-e29b-41d4-a716-446655440000",
-    "cwd": "/Users/example/work/repo",
-    "triggered_at": "2026-05-10T12:00:00Z",
+    "session_id": "019e1a24-9e4b-7570-90dd-a406dc9b8ba8",
+    "cwd": "/Users/yuyu_liao/vicone/SecondSight",
+    "triggered_at": "2026-05-12T04:05:19Z",
     "hook_event_name": "post_tool_use",
     "hook_event": {
       "event_type": "after_tool_use",
-      "turn_id": "turn-2",
-      "call_id": "call-1",
-      "tool_name": "local_shell",
-      "tool_kind": "local_shell",
+      "turn_id": "019e1a5a-c044-7b12-b04b-bd8ab6fb90d6",
+      "call_id": "call_0bxmpPTUYSI5dmbyAkDbshlA",
+      "tool_name": "exec_command",
+      "tool_kind": "function",
       "tool_input": {
-        "input_type": "local_shell",
+        "input_type": "exec_command",
         "params": {
-          "command": ["cargo", "fmt"],
-          "workdir": "codex-rs",
-          "timeout_ms": 60000
+          "cmd": "nl -ba src/secondsight/api/schemas.py | sed -n '30,60p'",
+          "workdir": "/Users/yuyu_liao/vicone/SecondSight",
+          "yield_time_ms": 1000,
+          "max_output_tokens": 4000
         }
       },
       "executed": true,
       "success": true,
       "duration_ms": 42,
-      "mutating": true,
-      "sandbox": "none",
-      "sandbox_policy": "danger-full-access",
+      "mutating": false,
+      "sandbox": "workspace-write",
+      "sandbox_policy": "restricted",
       "output_preview": "PRIVACY_CANARY_DO_NOT_STORE"
     }
   },
   "expected_partial_event_data": {
-    "tool_name": "local_shell",
-    "tool_kind": "local_shell",
+    "tool_name": "exec_command",
+    "tool_kind": "function",
     "executed": true,
     "success": true,
     "duration_ms": 42,
-    "mutating": true,
-    "turn_id": "turn-2",
-    "call_id": "call-1",
+    "mutating": false,
+    "turn_id": "019e1a5a-c044-7b12-b04b-bd8ab6fb90d6",
+    "call_id": "call_0bxmpPTUYSI5dmbyAkDbshlA",
     "action_metadata": {
-      "cwd": "/Users/example/work/repo"
+      "cwd": "/Users/yuyu_liao/vicone/SecondSight"
     }
   },
   "privacy_canary": "PRIVACY_CANARY_DO_NOT_STORE"

@@ -4,7 +4,7 @@ This test is the integration **death case** for phase1-adapters: every prior
 task passes in isolation (unit + fixture round-trip), but only this test
 proves the full pipeline is wired:
 
-    POST /hook/{event_type}
+    POST /hook/{event_type}  (legacy compatibility route)
         → FastAPI route handler (api/hooks.py)
         → AdapterRegistry.for_("claude_code", event_type)  (registered in lifespan)
         → ClaudeCodeAdapter.normalize(envelope, event_type)  → PartialEvent

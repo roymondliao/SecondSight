@@ -36,6 +36,8 @@ from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 
 from secondsight.event import Event
 from secondsight.storage.events_repository import EventsRepository
+from secondsight.storage.ingress_record import IngressRecord
+from secondsight.storage.raw_ingress_store import RawIngressStore
 from secondsight.storage.raw_trace_store import RawTraceStore
 from secondsight.storage.sync_log import SyncLog
 
@@ -59,10 +61,12 @@ class ObservationPipeline:
         raw_trace_store: RawTraceStore,
         events_repository: EventsRepository,
         sync_log: SyncLog,
+        raw_ingress_store: RawIngressStore | None = None,
     ) -> None:
         self._rts = raw_trace_store
         self._repo = events_repository
         self._sync_log = sync_log
+        self._ris = raw_ingress_store
         # Per-instance callback list. Not class-level to avoid cross-instance
         # contamination in tests. Type: list of async callables.
         self._post_ingest_callbacks: list[Callable[[Event], Awaitable[None]]] = []
@@ -85,8 +89,15 @@ class ObservationPipeline:
         """
         self._post_ingest_callbacks.append(cb)
 
-    async def ingest(self, event: Event) -> None:
+    async def ingest(
+        self,
+        event: Event,
+        *,
+        ingress_record: IngressRecord | None = None,
+    ) -> None:
         """See module docstring for the durability contract."""
+        if ingress_record is not None and self._ris is not None:
+            await self._ris.write(ingress_record)
         # Step 1: filesystem write — raises propagate to caller.
         raw_path = await self._rts.write(event)
 

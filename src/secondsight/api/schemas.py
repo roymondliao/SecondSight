@@ -26,8 +26,29 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class HookEnvelope(BaseModel):
-    """Minimum required envelope for any hook payload.
+class IngressEnvelope(BaseModel):
+    """Minimum ingress envelope for agent-native hook payloads.
+
+    The thin ingress contract preserves the raw payload and only requires the
+    transport-owned metadata needed before adapter normalization.
+
+    `session_id` / `project_id` remain optional here for compatibility with
+    legacy callers and test adapters; the new `/hook/{agent}/{event_type}`
+    path does not require them.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    event_id: str = Field(min_length=1, max_length=128)
+    timestamp: datetime
+    sequence_number: int = Field(ge=0)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    session_id: str | None = Field(default=None, min_length=1, max_length=128)
+    project_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class HookEnvelope(IngressEnvelope):
+    """Legacy fully-formed envelope for backward compatibility.
 
     Adapter-specific fields are allowed (extra="allow") and flow into the
     adapter's `normalize()` call. Core fields are strictly validated.
@@ -38,10 +59,6 @@ class HookEnvelope(BaseModel):
     project_id: str = Field(min_length=1, max_length=128)
     session_id: str = Field(min_length=1, max_length=128)
     agent: str = Field(min_length=1, max_length=64)
-    event_id: str = Field(min_length=1, max_length=128)
-    timestamp: datetime
-    sequence_number: int = Field(ge=0)
-    payload: dict[str, Any] = Field(default_factory=dict)
 
 
-__all__ = ["HookEnvelope"]
+__all__ = ["IngressEnvelope", "HookEnvelope"]

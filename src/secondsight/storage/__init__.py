@@ -21,6 +21,8 @@ from secondsight.storage.db_engine import (
 )
 from secondsight.storage.directives_repository import DirectivesRepository
 from secondsight.storage.events_repository import EventsRepository
+from secondsight.storage.ingress_record import IngressRecord
+from secondsight.storage.raw_ingress_store import RawIngressStore
 from secondsight.storage.raw_trace_store import (
     RawTraceCorruptionError,
     RawTraceStore,
@@ -32,7 +34,9 @@ __all__ = [
     "DBEngine",
     "DirectivesRepository",
     "EventsRepository",
+    "IngressRecord",
     "RawTraceCorruptionError",
+    "RawIngressStore",
     "RawTraceStore",
     "StoragePragmaMismatchError",
     "StorageSettings",

@@ -1,0 +1,34 @@
+feature: hook-ingress-redesign
+status: proposed
+parent_issue: GUR-109
+plan_ref_doc: docs/plan_v2.md (follow-up to P1-6, P1-8, P1-9..P1-11)
+design_ref_doc: docs/system_design.md §3.1, §3.7.5, §3.9, §4.2
+
+tasks:
+  - id: task-1
+    title: "Ingress contract redesign — raw payload preserved, agent from source"
+    status: proposed
+    depends_on: []
+
+  - id: task-2
+    title: "Hook transport rewrite — source-side metadata generation and fallback replay shape"
+    status: proposed
+    depends_on: [task-1]
+
+  - id: task-3
+    title: "Adapter + server refactor — derive project/session from raw payload, bind canonical events"
+    status: proposed
+    depends_on: [task-1, task-2]
+
+  - id: task-4
+    title: "Raw ingress durability + migration of tests/docs"
+    status: proposed
+    depends_on: [task-1, task-2, task-3]
+
+exit_criteria:
+  - "Hook API accepts agent-native raw payload without requiring project_id/session_id in the request body"
+  - "Agent identity is determined by hook source / ingress source, not by parsing raw payload shape"
+  - "project_id, session_id, event semantics are derived by adapters from raw payload plus ingress metadata"
+  - "event_id, timestamp, sequence_number are generated at the hook transport boundary and survive fallback replay"
+  - "SecondSight persists raw ingress records separately from normalized Event records"
+  - "422 schema failures caused by posting bare Claude Code payloads to /hook/* are eliminated by the new contract"

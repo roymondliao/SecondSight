@@ -40,7 +40,7 @@ from collections.abc import Mapping
 from typing import Any, Callable
 
 from secondsight.adapters.base import AgentAdapter
-from secondsight.api.schemas import HookEnvelope
+from secondsight.api.schemas import IngressEnvelope
 from secondsight.event import EventType
 from secondsight.feedback.convention import Convention
 from secondsight.feedback.hint import Hint
@@ -181,6 +181,21 @@ def _normalize_chat_message(payload: Mapping[str, Any]) -> dict[str, Any]:
     return data
 
 
+def _session_id_from_payload(payload: Mapping[str, Any]) -> str | None:
+    for candidate in (
+        payload.get("session_id"),
+        (payload.get("properties") or {}).get("sessionID")
+        if isinstance(payload.get("properties"), Mapping)
+        else None,
+        (payload.get("input") or {}).get("sessionID")
+        if isinstance(payload.get("input"), Mapping)
+        else None,
+    ):
+        if candidate:
+            return str(candidate)
+    return None
+
+
 _DATA_BUILDERS: dict[EventType, Callable[[Mapping[str, Any]], dict[str, Any]]] = {
     EventType.TOOL_USE_START: _normalize_tool_execute_before,
     EventType.TOOL_USE_END: _normalize_tool_execute_after,
@@ -229,11 +244,7 @@ class OpenCodeAdapter(AgentAdapter):
             sanitized = sanitized[: self._MAX_INSTRUCTION_CHARS] + "…"
         return f"- {sanitized}"
 
-    def normalize(self, envelope: HookEnvelope, event_type: str) -> PartialEvent:
-        if not envelope.session_id:
-            raise ValueError(
-                "OpenCodeAdapter: envelope missing required field 'session_id'"
-            )
+    def normalize(self, envelope: IngressEnvelope, event_type: str) -> PartialEvent:
         if not envelope.event_id:
             raise ValueError(
                 "OpenCodeAdapter: envelope missing required field 'event_id'"
@@ -268,9 +279,18 @@ class OpenCodeAdapter(AgentAdapter):
             )
 
         data = builder(payload)
+        session_id = envelope.session_id or _session_id_from_payload(payload)
+        if not session_id:
+            raise ValueError(
+                "OpenCodeAdapter: payload missing required field 'session_id'"
+            )
+        if not envelope.project_id:
+            raise ValueError(
+                "OpenCodeAdapter: envelope missing required field 'project_id'"
+            )
         return PartialEvent(
             id=envelope.event_id,
-            session_id=envelope.session_id,
+            session_id=session_id,
             project_id=envelope.project_id,
             event_type=et,
             timestamp=envelope.timestamp,

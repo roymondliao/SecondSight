@@ -1,4 +1,4 @@
-"""POST /hook/{event_type} route handler (P1-5, Task-3).
+"""Hook ingestion routes.
 
 The handler performs exactly four steps in order:
   1. Validate the envelope (Pydantic; done by FastAPI before the handler runs).
@@ -50,8 +50,9 @@ from loguru import logger
 
 from secondsight.adapters import NoAdapterError
 from secondsight.api._id_safety import is_safe_id as _is_safe_id
-from secondsight.api.schemas import HookEnvelope
+from secondsight.api.schemas import HookEnvelope, IngressEnvelope
 from secondsight.event import EventType
+from secondsight.storage.ingress_record import IngressRecord
 
 if TYPE_CHECKING:
     from secondsight.api.server import AppState
@@ -108,10 +109,11 @@ def _task_done_callback(
         )
 
 
-@router.post("/hook/{event_type}")
-async def handle_hook(
+async def _handle_ingest(
+    *,
+    agent: str,
     event_type: str,
-    envelope: HookEnvelope,
+    envelope: IngressEnvelope,
     request: Request,
 ) -> dict[str, str]:
     """Accept a hook event and schedule fire-and-forget ingestion.
@@ -135,37 +137,11 @@ async def handle_hook(
             f"Valid values: {[e.value for e in EventType]}",
         )
 
-    # --- Step 2: Validate project_id and session_id for path safety ---
-    if not _is_safe_id(envelope.project_id):
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"project_id {envelope.project_id!r} contains unsafe characters. "
-                f"Use alphanumeric, hyphen, underscore, or dot."
-            ),
-        )
-    if not _is_safe_id(envelope.session_id):
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"session_id {envelope.session_id!r} contains unsafe characters. "
-                f"Use alphanumeric, hyphen, underscore, or dot."
-            ),
-        )
-
-    # --- Resolve project resources ---
-    # cast() makes the four-field dependency (registry, adapter_registry,
-    # get_or_create_tracker, inflight_tasks) visible to mypy and readers without
-    # a runtime circular import (TYPE_CHECKING guard in the import block above).
     state = cast("AppState", request.app.state.server_state)
-    try:
-        resources = await state.registry.get(envelope.project_id)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     # --- Step 3a: Resolve adapter and produce PartialEvent ---
     try:
-        adapter = state.adapter_registry.for_(envelope.agent, validated_event_type.value)
+        adapter = state.adapter_registry.for_(agent, validated_event_type.value)
     except NoAdapterError as exc:
         raise HTTPException(
             status_code=422,
@@ -184,8 +160,32 @@ async def handle_hook(
             detail=f"Adapter rejected envelope: {exc}",
         ) from exc
 
+    # --- Step 3a.5: Validate adapter-derived IDs for path safety ---
+    if not _is_safe_id(partial.project_id):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"project_id {partial.project_id!r} contains unsafe characters. "
+                f"Use alphanumeric, hyphen, underscore, or dot."
+            ),
+        )
+    if not _is_safe_id(partial.session_id):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"session_id {partial.session_id!r} contains unsafe characters. "
+                f"Use alphanumeric, hyphen, underscore, or dot."
+            ),
+        )
+
+    # --- Resolve project resources ---
+    try:
+        resources = await state.registry.get(partial.project_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     # --- Step 3b: SessionTracker.bind → fully-formed Event ---
-    tracker = await state.get_or_create_tracker(envelope.project_id)
+    tracker = await state.get_or_create_tracker(partial.project_id)
     try:
         event = await tracker.bind(partial)
     except Exception as exc:
@@ -199,7 +199,19 @@ async def handle_hook(
     # --- Step 4: Schedule ingest as a fire-and-forget task ---
     # CRITICAL: do NOT add `await` here. This is the latency contract.
     # The handler returns immediately; ingest runs in the background.
-    task = asyncio.create_task(resources.pipeline.ingest(event))
+    ingress_record = IngressRecord(
+        agent=agent,
+        event_type=validated_event_type.value,
+        event_id=envelope.event_id,
+        timestamp=envelope.timestamp,
+        sequence_number=envelope.sequence_number,
+        session_id=partial.session_id,
+        project_id=partial.project_id,
+        payload=dict(envelope.payload),
+    )
+    task = asyncio.create_task(
+        resources.pipeline.ingest(event, ingress_record=ingress_record)
+    )
 
     # Attach done_callback for structured error logging.
     # Without this, asyncio swallows exceptions when the task is GC'd.
@@ -215,6 +227,39 @@ async def handle_hook(
     task.add_done_callback(state.inflight_tasks.discard)
 
     return {"status": "ok"}
+
+
+@router.post("/hook/{agent}/{event_type}")
+async def handle_ingress_hook(
+    agent: str,
+    event_type: str,
+    envelope: IngressEnvelope,
+    request: Request,
+) -> dict[str, str]:
+    """Thin ingress route for agent-native payloads."""
+    if not _is_safe_id(agent):
+        raise HTTPException(status_code=422, detail="agent contains unsafe characters.")
+    return await _handle_ingest(
+        agent=agent,
+        event_type=event_type,
+        envelope=envelope,
+        request=request,
+    )
+
+
+@router.post("/hook/{event_type}")
+async def handle_hook(
+    event_type: str,
+    envelope: HookEnvelope,
+    request: Request,
+) -> dict[str, str]:
+    """Legacy fully-formed envelope route retained for compatibility."""
+    return await _handle_ingest(
+        agent=envelope.agent,
+        event_type=event_type,
+        envelope=envelope,
+        request=request,
+    )
 
 
 __all__ = ["router"]

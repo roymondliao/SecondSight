@@ -23,6 +23,31 @@ Out of P1 scope (deliberate non-goal — no verified source yet):
 `Stop`, `SubagentStop`, `Notification`, `PreCompact`, `thinking`,
 `sub_agent_*`, `task_*`. See plan §8.
 
+## Current provenance status
+
+As of 2026-05-12, these fixtures were refreshed against the local Claude Code
+state under `~/.claude-personal`, using the real SecondSight session transcript
+at:
+
+- `~/.claude-personal/projects/-Users-yuyu-liao-vicone-SecondSight/3756b281-8769-424f-bb1a-aa3fe1aeecc9.jsonl`
+
+What is locally aligned today:
+
+- `session_id`
+- `cwd`
+- `transcript_path`
+- `permission_mode` on session hooks
+- `prompt` style and shape for `UserPromptSubmit`
+- `tool_input` / `tool_response` style and shape for Bash tool events
+
+What is still not a raw local hook capture:
+
+- `session_end.json` remains docs-aligned for the `reason` field because no
+  local raw `SessionEnd` stdin payload was available.
+- `documented` fixtures may still contain wrapper fields whose exact stdin
+  shape is sourced from Claude Code hook docs, even when the concrete values
+  were copied from the local transcript.
+
 ## File schema
 
 Every fixture is a JSON object with exactly four top-level keys:
@@ -50,20 +75,21 @@ contract.
 
 ## `_source: verified` vs `documented`
 
-- **`verified`** means the field shape was empirically observed on this
-  machine. For `pre_tool_use_bash.json`, the `tool_input.command` path is
-  verified by `~/.claude/hooks/rtk-rewrite.sh`, which parses Claude Code
-  PreToolUse stdin as `jq -r '.tool_input.command'`. The wrapping fields
-  (`session_id`, `transcript_path`, `cwd`, `hook_event_name`, `tool_name`)
-  are documented-within-verified-envelope — keep them in this fixture but
-  do not extrapolate "verified" to fields whose shape is only documented.
+- **`verified`** means the relevant field shape was empirically observed on
+  this machine from the local `~/.claude-personal` transcript. Today that is
+  only `pre_tool_use_bash.json`, where the `tool_input.command` path and Bash
+  invocation style are backed by a real tool-use entry from the local session.
+  Do not extrapolate that label to every sibling field in the same fixture;
+  wrapper fields can still be docs-shaped.
 
-- **`documented`** means the schema is sourced from the public Claude Code
-  hooks documentation (snapshot 2026-05-04). When Claude Code v2 hook
-  protocol ships, every `documented` fixture must be regenerated from a
-  real capture; do **not** silently edit `expected_partial_event_data` to
-  match a new format without updating `_source` to `verified` and adding a
-  fresh `_capture_origin`.
+- **`documented`** means the fixture still depends on the public Claude Code
+  hooks contract for part of its shape, even if the concrete values were
+  aligned to the local `~/.claude-personal` session. `session_start.json`,
+  `user_prompt_submit.json`, and `post_tool_use.json` are in this bucket:
+  they use real local values, but the top-level hook envelope shape is still
+  treated as documentation-backed rather than raw stdin-captured. When a real
+  raw hook capture becomes available, promote the fixture to `verified` only
+  after updating `_capture_origin`.
 
 ## Privacy canary contract
 
@@ -81,26 +107,26 @@ surfaces and the test fails.
 | `pre_tool_use_bash.json` | `tool_input.command` | Plan §5: raw command DROPPED, only `len(...)` kept as `action_metadata.command_length`. |
 | `post_tool_use.json` | `tool_response.output` | Plan §5: raw output DROPPED, only `len(str(...))` kept as `output_size`. |
 | `user_prompt_submit.json` | `prompt` | Plan §5: raw prompt DROPPED, only `len(...)` kept as `action_metadata.prompt_length`. |
-| `session_start.json` | `session_id` | See "Session-event canary rationale" below. |
-| `session_end.json` | `session_id` | See "Session-event canary rationale" below. |
+| `session_start.json` | `permission_mode` | See "Session-event canary rationale" below. |
+| `session_end.json` | `permission_mode` | See "Session-event canary rationale" below. |
 
 ### Session-event canary rationale
 
 `session_start` and `session_end` payloads have **no** `§5`-explicit
-drop-listed fields — `transcript_path` and `cwd` are *stored* as
-`action_metadata`, not dropped. To keep the canary semantically meaningful
-the canary lives in `payload.session_id`, which is "drop-from-data,
-route-to-column":
+drop-listed content fields — `transcript_path` and `cwd` are *stored* as
+`action_metadata`, and `session_id` is intentionally routed to the top-level
+`PartialEvent.session_id` column. To keep the fixtures close to a real local
+session while still having a meaningful canary, the canary lives in
+`payload.permission_mode`, which is currently ignored by the adapter:
 
-- `session_id` MUST appear on `PartialEvent.session_id` (a top-level
-  `Event` column per SD §3.7.5, used as a foreign key on `events.session_id`).
-- `session_id` MUST NOT appear inside `data`. If it does, the adapter has
-  introduced a denormalisation that breaks SD §3.7.5's column shape and
-  duplicates PII attribution.
+- `permission_mode` is present on real Claude Code session hooks.
+- `permission_mode` MUST NOT appear inside `data` under the current contract.
+- A future regression that starts persisting raw permission state into
+  `data` therefore trips the canary without forcing the fixture to fake an
+  entire session_id.
 
-A regression that copies `session_id` into `data` therefore trips the
-canary check exactly the same way a `prompt`-leak would on
-`user_prompt_submit.json`.
+A regression that copies `permission_mode` into `data` trips the canary the
+same way a `prompt` leak would on `user_prompt_submit.json`.
 
 The `_meta._privacy_canary_field_rationale` field on each session-event
 fixture restates this so a future maintainer who deletes this README still

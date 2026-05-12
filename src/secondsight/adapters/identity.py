@@ -36,7 +36,7 @@ adapter that overrides inject_convention.
 from __future__ import annotations
 
 from secondsight.adapters.base import AgentAdapter
-from secondsight.api.schemas import HookEnvelope
+from secondsight.api.schemas import IngressEnvelope
 from secondsight.event import EventType
 from secondsight.observation.tracker import PartialEvent
 
@@ -64,7 +64,7 @@ class IdentityAdapter(AgentAdapter):
         except ValueError:
             return False
 
-    def normalize(self, envelope: HookEnvelope, event_type: str) -> PartialEvent:
+    def normalize(self, envelope: IngressEnvelope, event_type: str) -> PartialEvent:
         """Forward envelope fields verbatim into a PartialEvent.
 
         `envelope.payload` is copied (not aliased) into `data` so downstream
@@ -77,6 +77,10 @@ class IdentityAdapter(AgentAdapter):
                 safe to use outside the route-handler context (defence-in-depth
                 against future callers that bypass the FastAPI validation).
         """
+        if not envelope.session_id:
+            raise ValueError("IdentityAdapter: envelope missing required field 'session_id'")
+        if not envelope.project_id:
+            raise ValueError("IdentityAdapter: envelope missing required field 'project_id'")
         return PartialEvent(
             id=envelope.event_id,
             session_id=envelope.session_id,

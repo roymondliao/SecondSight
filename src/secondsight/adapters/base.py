@@ -46,7 +46,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
-from secondsight.api.schemas import HookEnvelope
+from secondsight.api.schemas import IngressEnvelope
 from secondsight.observation.tracker import PartialEvent
 
 if TYPE_CHECKING:
@@ -79,7 +79,7 @@ class AgentAdapter(ABC):
         """
 
     @abstractmethod
-    def normalize(self, envelope: HookEnvelope, event_type: str) -> PartialEvent:
+    def normalize(self, envelope: IngressEnvelope, event_type: str) -> PartialEvent:
         """Convert a hook envelope into a PartialEvent for SessionTracker.bind().
 
         The returned PartialEvent must have id, session_id, project_id,
@@ -93,13 +93,12 @@ class AgentAdapter(ABC):
 
         Postcondition (NOT enforced at this seam — concrete adapters must
         verify in their own death tests; carried forward to task-4 GUR-124):
-            envelope-derived fields (id, session_id, project_id, timestamp,
-            sequence_number) MUST be forwarded faithfully from `envelope`,
-            not synthesized as empty strings or zeros. A subclass returning
+            ingress-derived fields (id, timestamp, sequence_number) MUST be
+            forwarded faithfully from `envelope`; adapter-derived fields
+            (session_id, project_id) must be extracted from the raw payload or
+            from explicitly provided compatibility fields. A subclass returning
             PartialEvent with empty required fields silently corrupts every
-            downstream Event. Each ClaudeCodeAdapter / future-adapter death
-            test set MUST include a "given malformed envelope → typed error
-            not corrupt PartialEvent" case (see scar carry-forward).
+            downstream Event.
 
         Raises:
             ValueError: envelope is missing required fields for this adapter.

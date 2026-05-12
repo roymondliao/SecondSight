@@ -78,10 +78,6 @@ Phase 0 的重點是技術可行性驗證和 project 基礎建設。
 - [ ] API Server thin client latency < 10ms 已驗證
 - [ ] Project scaffold 可 build，config / schemas module 已實作
 
-### 預估時間
-
-2-3 週
-
 ---
 
 ## Phase 1：Observation Layer
@@ -136,10 +132,6 @@ Phase 0 的重點是技術可行性驗證和 project 基礎建設。
 - [ ] Session tracker 正確維護 segment_index 和 sub-agent nesting
 - [ ] `secondsight init` 可安裝 hook scripts
 - [ ] `secondsight serve --daemon` / `--stop` / `status` 可運作
-
-### 預估時間
-
-2-3 週
 
 ---
 
@@ -205,10 +197,6 @@ Phase 0 的重點是技術可行性驗證和 project 基礎建設。
 - [ ] Session report 可透過 API 查詢（dashboard 用）
 - [ ] SDK 模式 agent loop 可運作（PydanticAI + LLM Router）
 
-### 預估時間
-
-3-4 週
-
 ---
 
 ## Phase 3A：Feedback & Dashboard MVP
@@ -263,10 +251,6 @@ Phase 0 的重點是技術可行性驗證和 project 基礎建設。
 - [ ] Data retention TTL cleanup 可運作
 - [ ] Agent 行為出現可觀察的改變（convention 生效）
 
-### 預估時間
-
-3-4 週
-
 ---
 
 ## Phase 3B：Lifecycle & Governance
@@ -317,10 +301,6 @@ Phase 0 的重點是技術可行性驗證和 project 基礎建設。
 - [ ] Analysis failure graceful handling 可運作
 - [ ] DB 可從 filesystem 全量重建
 - [ ] 至少一個額外 agent adapter 可運作（Codex 或 OpenCode）
-
-### 預估時間
-
-2-3 週
 
 ---
 

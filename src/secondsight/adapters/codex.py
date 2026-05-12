@@ -31,7 +31,8 @@ from collections.abc import Mapping
 from typing import Any, Callable
 
 from secondsight.adapters.base import AgentAdapter
-from secondsight.api.schemas import HookEnvelope
+from secondsight.api.ingress import project_id_from_cwd
+from secondsight.api.schemas import IngressEnvelope
 from secondsight.event import EventType
 from secondsight.feedback.convention import Convention
 from secondsight.feedback.hint import Hint
@@ -178,9 +179,7 @@ class CodexAdapter(AgentAdapter):
             sanitized = sanitized[: self._MAX_INSTRUCTION_CHARS] + "…"
         return f"- {sanitized}"
 
-    def normalize(self, envelope: HookEnvelope, event_type: str) -> PartialEvent:
-        if not envelope.session_id:
-            raise ValueError("CodexAdapter: envelope missing required field 'session_id'")
+    def normalize(self, envelope: IngressEnvelope, event_type: str) -> PartialEvent:
         if not envelope.event_id:
             raise ValueError("CodexAdapter: envelope missing required field 'event_id'")
 
@@ -213,10 +212,19 @@ class CodexAdapter(AgentAdapter):
             )
 
         data = builder(payload)
+        session_id = envelope.session_id or payload.get("session_id")
+        if not session_id:
+            raise ValueError("CodexAdapter: payload missing required field 'session_id'")
+        project_id = envelope.project_id
+        if not project_id:
+            cwd = payload.get("cwd")
+            if not cwd:
+                raise ValueError("CodexAdapter: payload missing required field 'cwd'")
+            project_id = project_id_from_cwd(str(cwd))
         return PartialEvent(
             id=envelope.event_id,
-            session_id=envelope.session_id,
-            project_id=envelope.project_id,
+            session_id=str(session_id),
+            project_id=project_id,
             event_type=et,
             timestamp=envelope.timestamp,
             sequence_number=envelope.sequence_number,

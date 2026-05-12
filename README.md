@@ -16,7 +16,7 @@ Today the repository contains two main surfaces:
 
 At a high level, the system looks like this:
 
-1. Agent hook events are sent to `POST /hook/{event_type}`.
+1. Agent hook events are sent to `POST /hook/{agent}/{event_type}`.
 2. SecondSight normalizes them through an adapter and binds tracker-derived
    fields such as segment index and nesting depth.
 3. Events are written filesystem-first into
@@ -157,17 +157,16 @@ uv run secondsight init --format json
 
 ### 4. Ingest events
 
-The hook API expects a `HookEnvelope` JSON body with these required fields:
+The thin ingress API expects a JSON body with transport-owned metadata plus the raw agent payload:
 
 ```json
 {
-  "project_id": "example-project",
-  "session_id": "session-001",
-  "agent": "claude_code",
   "event_id": "evt-0001",
   "timestamp": "2026-05-11T10:00:00Z",
   "sequence_number": 0,
   "payload": {
+    "session_id": "session-001",
+    "cwd": "/Users/example/work/example-project",
     "hook_event_name": "SessionStart"
   }
 }
@@ -176,16 +175,17 @@ The hook API expects a `HookEnvelope` JSON body with these required fields:
 You can smoke-test ingestion manually:
 
 ```bash
-curl -X POST http://127.0.0.1:8420/hook/session_start \
+curl -X POST http://127.0.0.1:8420/hook/claude_code/session_start \
   -H 'Content-Type: application/json' \
   -d '{
-    "project_id": "example-project",
-    "session_id": "session-001",
-    "agent": "claude_code",
     "event_id": "evt-0001",
     "timestamp": "2026-05-11T10:00:00Z",
     "sequence_number": 0,
-    "payload": {"hook_event_name": "SessionStart"}
+    "payload": {
+      "session_id": "session-001",
+      "cwd": "/Users/example/work/example-project",
+      "hook_event_name": "SessionStart"
+    }
   }'
 ```
 
@@ -327,7 +327,7 @@ Important files:
 - `intelligence.db`: canonical query store for the API and dashboard
 - `sessions/*/events/*.json`: source-of-truth raw event archive
 - `sync.log`: events that hit the filesystem but failed DB insertion
-- `fallback_events.jsonl`: hook-side fallback spool when the server is down
+- `fallback_events.jsonl`: hook-side fallback spool containing raw ingress replay records when the server is down
 
 ## Configuration
 
@@ -377,7 +377,7 @@ config does not define an API proxy. In practice that means:
 
 Main endpoints:
 
-- `POST /hook/{event_type}`
+- `POST /hook/{agent}/{event_type}`
 - `POST /hook/session-start`
 - `GET /health`
 - `GET /api/sessions`

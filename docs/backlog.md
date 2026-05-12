@@ -38,3 +38,22 @@
 **Constraint on current design（不要把路堵死）:**
 - 不要在 system_design.md / plan_v2.md 把現有 feedback 路徑寫死成「無法插入驗證閘」的結構
 - Directive contract schema 保留 `target_metric` 與 `measurement_protocol` 欄位的擴充空間（Phase 3A 可以先不填，但 schema 不能拒絕這些欄位）
+
+---
+
+## Config Auto-generation
+
+**Date logged:** 2026-05-04
+
+**What:**
+在執行 `secondsight init` 時，自動產生一個帶有預設值與詳細註解的 `config.toml` 模板檔案到 `~/.secondsight` 或專案目錄下。
+
+**Why deferred:**
+目前系統依賴 Pydantic 設定的預設值，支援 Zero-config 無縫執行。為了保持 MVP 開發進度與核心回饋迴圈（Feedback Loop）的測試速度，暫時將產生實體設定檔的功能延後。
+
+**When to revisit:**
+- 當專案準備正式開源或推出，需要提升 onboarding 體驗時。
+- 當新增較複雜、非直覺的設定參數，且發現使用者容易混淆時。
+
+**Context:**
+- 起源討論：開發過程中發現雖然 `init` 時不產生檔案能保持乾淨，但對於想客製化模型或 Token Budget 的使用者來說，缺乏可直接修改的模板。

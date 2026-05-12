@@ -53,33 +53,32 @@ from tests.scripts.conftest import (
 # ---------------------------------------------------------------------------
 
 def minimal_payload(*, tool_name: str = "Bash", extra: str = "") -> str:
-    """Return a minimal JSON payload resembling a Claude Code PreToolUse hook.
-
-    Uses agent='claude-code' to match the registered ClaudeCodeNormalizer in
-    the real-server tests, and also passes through fake-server tests unchanged.
-    """
+    """Return a minimal raw Claude Code-style PreToolUse payload."""
     obj = {
-        "project_id": "proj-test",
         "session_id": "sess-test",
-        "agent": "claude-code",
-        "event_id": "evt-0001",
-        "timestamp": "2026-05-04T12:00:00Z",
-        "sequence_number": 1,
-        "payload": {"tool_name": tool_name, "extra": extra},
+        "cwd": "/tmp/proj-test",
+        "transcript_path": "/tmp/transcript.jsonl",
+        "hook_event_name": "PreToolUse",
+        "tool_name": tool_name,
+        "tool_input": {"command": "echo hi", "extra": extra},
     }
     return json.dumps(obj)
 
 
 def unique_payload(*, seq: int = 0) -> str:
-    """Return a payload with a unique event_id to avoid DB conflict on concurrent tests."""
+    """Return a thin ingress payload with a unique top-level event_id."""
     obj = {
-        "project_id": "proj-concurrent",
-        "session_id": "sess-concurrent",
-        "agent": "claude-code",
         "event_id": f"evt-{uuid.uuid4().hex}",
         "timestamp": "2026-05-04T12:00:00Z",
         "sequence_number": seq,
-        "payload": {"tool_name": "Bash"},
+        "payload": {
+            "session_id": "sess-concurrent",
+            "cwd": "/tmp/proj-concurrent",
+            "transcript_path": "/tmp/transcript.jsonl",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "echo hi"},
+        },
     }
     return json.dumps(obj)
 
@@ -142,6 +141,7 @@ class TestDeathTests:
                         hook_script("pre-tool-use.sh"),
                         payload,
                         env=env,
+                        timeout=20.0,
                     )
                 )
         results = [f.result() for f in futures]
@@ -214,9 +214,6 @@ class TestDeathTests:
 
         Build a PATH that has bash, jq, date, mkdir, cat, printf but NOT curl.
         The hook must write to the fallback JSONL and exit 0.
-
-        The degraded stub envelope must include _original_payload_bytes and
-        _original_payload_b64_truncated (C4 fix) so operators can triage.
         """
         home = tmp_path / ".secondsight"
         home.mkdir()
@@ -269,14 +266,12 @@ class TestDeathTests:
                 f"Fallback line missing hook_script_version: {parsed}"
             )
 
-    def test_dt5b_jq_absent_degraded_envelope_has_metadata(self, tmp_path: Path) -> None:
-        """DT-5b: When jq is absent, the degraded stub envelope must contain
-        _original_payload_bytes and _original_payload_b64_truncated (C4 fix).
+    def test_dt5b_jq_absent_emits_warning_and_skips_write(self, tmp_path: Path) -> None:
+        """DT-5b: When jq is absent, the hook must fail loudly but non-destructively.
 
-        Build a PATH with curl excluded AND jq excluded, but WITH dirname
-        (so _lib.sh can be sourced via `dirname "$0"`).
-        The hook must still exit 0 and write a degraded envelope that
-        preserves enough metadata for operator triage.
+        Build a PATH with curl excluded AND jq excluded, but WITH dirname.
+        The hook must still exit 0, emit a warning, and avoid fabricating a
+        fallback record without a trustworthy session_key / sequence_number.
         """
         home = tmp_path / ".secondsight"
         home.mkdir()
@@ -310,36 +305,8 @@ class TestDeathTests:
             f"stderr={result.stderr!r}"
         )
         fallback = home / FALLBACK_FILENAME
-        if not fallback.exists():
-            # Both curl and jq absent: warning emitted, no file written is acceptable
-            assert result.stderr.strip(), "Must emit stderr warning when both curl and jq absent"
-        else:
-            lines = [ln for ln in fallback.read_text().splitlines() if ln.strip()]
-            assert len(lines) >= 1
-            parsed = json.loads(lines[0])
-            # C4: degraded envelope has a 'payload' field containing metadata.
-            # The envelope shape is:
-            #   {agent, event_type, timestamp, hook_script_version,
-            #    payload: {_fallback_degraded: true, _original_payload_bytes: N,
-            #              _original_payload_b64_truncated: "..."}}
-            payload_field = parsed.get("payload", {})
-            assert payload_field.get("_fallback_degraded") is True, (
-                f"Degraded envelope's payload must have _fallback_degraded=true: {parsed}"
-            )
-            assert "_original_payload_bytes" in payload_field, (
-                f"Degraded envelope's payload missing _original_payload_bytes: {parsed}"
-            )
-            assert "_original_payload_b64_truncated" in payload_field, (
-                f"Degraded envelope's payload missing _original_payload_b64_truncated: {parsed}"
-            )
-            # bytes must be a positive integer
-            bytes_val = payload_field["_original_payload_bytes"]
-            assert isinstance(bytes_val, int), (
-                f"_original_payload_bytes must be int: {bytes_val!r}"
-            )
-            assert bytes_val > 0, (
-                f"_original_payload_bytes must be > 0: {bytes_val}"
-            )
+        assert not fallback.exists(), "jq-absent path must not fabricate a fallback record"
+        assert result.stderr.strip(), "Must emit stderr warning when jq is absent"
 
     # -----------------------------------------------------------------------
     # DT-6: Payload with shell metacharacters round-trips intact
@@ -366,13 +333,10 @@ class TestDeathTests:
             "double_quote": 'say "hello"',
         }
         evil_payload: dict[str, Any] = {
-            "project_id": "proj-test",
             "session_id": "sess-test",
-            "agent": "claude-code",
-            "event_id": "evt-meta",
-            "timestamp": "2026-05-04T12:00:00Z",
-            "sequence_number": 1,
-            "payload": evil_inner,
+            "cwd": "/tmp/proj-test",
+            "hook_event_name": "PreToolUse",
+            **evil_inner,
         }
         payload_str = json.dumps(evil_payload)
 
@@ -412,10 +376,8 @@ class TestDeathTests:
             f"export SECONDSIGHT_HOME={home!s}\n"
             f"export SECONDSIGHT_AGENT=test-agent\n"
             f"export PATH=$PATH\n"
-            f"echo '{{\"project_id\":\"proj-test\",\"session_id\":\"sess\","
-            f"\"agent\":\"claude-code\",\"event_id\":\"e1\","
-            f"\"timestamp\":\"2026-05-04T12:00:00Z\",\"sequence_number\":1,"
-            f"\"payload\":{{}}}}' | bash {script!s}\n"
+            f"echo '{{\"session_id\":\"sess\",\"cwd\":\"/tmp/proj-test\","
+            f"\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\"}}' | bash {script!s}\n"
             "echo 'PARENT_CONTINUED'\n"
         )
         result = subprocess.run(
@@ -579,17 +541,21 @@ class TestUnitTests:
         # Use a unique event_id to make assertions unambiguous
         event_id = "evt-ut1-live"
         payload_obj = {
-            "project_id": "proj-test",
-            "session_id": "sess-ut1",
-            "agent": "claude-code",
             "event_id": event_id,
             "timestamp": "2026-05-04T12:00:00Z",
             "sequence_number": 1,
-            "payload": {"tool_name": "Read"},
+            "payload": {
+                "session_id": "sess-ut1",
+                "cwd": "/tmp/proj-test",
+                "transcript_path": "/tmp/transcript.jsonl",
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Read",
+                "tool_input": {"file_path": "/tmp/proj-test/README.md"},
+            },
         }
         payload_str = json.dumps(payload_obj)
 
-        env = build_env(port=port, home=home, agent="claude-code")
+        env = build_env(port=port, home=home, agent="claude_code")
         result = run_hook(hook_script("pre-tool-use.sh"), payload_str, env=env)
 
         assert result.returncode == 0, (
@@ -663,7 +629,7 @@ class TestUnitTests:
         payloads = [unique_payload(seq=i) for i in range(n)]
         event_ids = [json.loads(p)["event_id"] for p in payloads]
 
-        env = build_env(port=port, home=home, agent="claude-code")
+        env = build_env(port=port, home=home, agent="claude_code")
 
         futures = []
         with ThreadPoolExecutor(max_workers=20) as pool:
@@ -761,7 +727,13 @@ class TestUnitTests:
         with ThreadPoolExecutor(max_workers=50) as pool:
             for _ in range(100):
                 futures.append(
-                    pool.submit(run_hook, hook_script("pre-tool-use.sh"), payload, env=env)
+                    pool.submit(
+                        run_hook,
+                        hook_script("pre-tool-use.sh"),
+                        payload,
+                        env=env,
+                        timeout=20.0,
+                    )
                 )
         for f in futures:
             assert f.result().returncode == 0
@@ -824,8 +796,9 @@ class TestUnitTests:
     def test_ut7_fallback_envelope_shape(self, tmp_path: Path) -> None:
         """UT-7: Fallback line must match documented envelope shape.
 
-        Expected: {"agent":"...", "event_type":"...", "timestamp":"...",
-                   "payload":{...}, "hook_script_version":"phase-1.2"}
+        Expected: {"agent":"...", "event_type":"...", "event_id":"...",
+                   "timestamp":"...", "sequence_number":N, "payload":{...},
+                   "hook_script_version":"phase-2.0"}
         """
         home = tmp_path / ".secondsight"
         home.mkdir()
@@ -839,7 +812,9 @@ class TestUnitTests:
         envelope = json.loads(lines[0])
         assert "agent" in envelope, f"Missing 'agent' field: {envelope}"
         assert "event_type" in envelope, f"Missing 'event_type' field: {envelope}"
+        assert "event_id" in envelope, f"Missing 'event_id' field: {envelope}"
         assert "timestamp" in envelope, f"Missing 'timestamp' field: {envelope}"
+        assert "sequence_number" in envelope, f"Missing 'sequence_number' field: {envelope}"
         assert "payload" in envelope, f"Missing 'payload' field: {envelope}"
         assert "hook_script_version" in envelope, f"Missing 'hook_script_version': {envelope}"
         assert envelope["hook_script_version"] == EXPECTED_VERSION, (
@@ -849,6 +824,24 @@ class TestUnitTests:
             f"Agent mismatch: {envelope['agent']!r}"
         )
         assert isinstance(envelope["payload"], dict), "payload must be a dict"
+        assert envelope["sequence_number"] == 0, envelope
+
+    # -----------------------------------------------------------------------
+    # UT-7b: sequence_number increases per session on fallback path
+    # -----------------------------------------------------------------------
+    def test_ut7b_sequence_numbers_increase_per_session(self, tmp_path: Path) -> None:
+        home = tmp_path / ".secondsight"
+        home.mkdir()
+        env = build_env(port=1, home=home, agent="claude_code")
+
+        r1 = run_hook(hook_script("pre-tool-use.sh"), minimal_payload(), env=env)
+        r2 = run_hook(hook_script("pre-tool-use.sh"), minimal_payload(), env=env)
+        assert r1.returncode == 0
+        assert r2.returncode == 0
+
+        fallback = home / FALLBACK_FILENAME
+        lines = [json.loads(ln) for ln in fallback.read_text().splitlines() if ln.strip()]
+        assert [line["sequence_number"] for line in lines] == [0, 1], lines
 
     # -----------------------------------------------------------------------
     # UT-8: All per-event scripts share the same exit-0 guarantee

@@ -1,24 +1,25 @@
 {
   "_meta": {
     "_source": "documented",
-    "_capture_origin": "Claude Code hooks documentation, SessionStart event (snapshot 2026-05-04). Documented fields: session_id, transcript_path, cwd, hook_event_name, source ∈ {startup, resume, clear}. URL: https://docs.claude.com/en/docs/claude-code/hooks",
+    "_capture_origin": "Claude Code SessionStart hook contract from public docs; concrete session_id/cwd/transcript_path values aligned to the local transcript at ~/.claude-personal/projects/-Users-yuyu-liao-vicone-SecondSight/3756b281-8769-424f-bb1a-aa3fe1aeecc9.jsonl and permission mode from the same session (observed 2026-05-12). Startup source inferred from SessionStart:startup hook attachments in that transcript.",
     "_claude_code_hook_event_name": "SessionStart",
     "_secondsight_event_type": "session_start",
-    "_privacy_canary_field": "session_id",
-    "_privacy_canary_field_rationale": "session_id routes to PartialEvent.session_id (top-level Event column per SD §3.7.5), NOT to data. The canary fires if the adapter regresses and copies session_id into the data dict. SessionStart payloads have no §5-explicit drop-listed fields, so this 'drop-from-data, route-to-column' rule is the relevant invariant."
+    "_privacy_canary_field": "permission_mode",
+    "_privacy_canary_field_rationale": "Claude Code session hooks carry permission_mode, but SecondSight currently does not persist it into Event.data. The canary lives there so a future regression that copies raw permission state into data fails loudly while keeping session_id/transcript_path close to a real session."
   },
   "payload": {
-    "session_id": "PRIVACY_CANARY_DO_NOT_STORE",
-    "transcript_path": "/Users/example/.claude/projects/example/transcript.jsonl",
-    "cwd": "/Users/example/work/repo",
+    "session_id": "3756b281-8769-424f-bb1a-aa3fe1aeecc9",
+    "transcript_path": "/Users/yuyu_liao/.claude-personal/projects/-Users-yuyu-liao-vicone-SecondSight/3756b281-8769-424f-bb1a-aa3fe1aeecc9.jsonl",
+    "cwd": "/Users/yuyu_liao/vicone/SecondSight",
+    "permission_mode": "PRIVACY_CANARY_DO_NOT_STORE",
     "hook_event_name": "SessionStart",
     "source": "startup"
   },
   "expected_partial_event_data": {
     "action_metadata": {
       "source": "startup",
-      "transcript_path": "/Users/example/.claude/projects/example/transcript.jsonl",
-      "cwd": "/Users/example/work/repo"
+      "transcript_path": "/Users/yuyu_liao/.claude-personal/projects/-Users-yuyu-liao-vicone-SecondSight/3756b281-8769-424f-bb1a-aa3fe1aeecc9.jsonl",
+      "cwd": "/Users/yuyu_liao/vicone/SecondSight"
     }
   },
   "privacy_canary": "PRIVACY_CANARY_DO_NOT_STORE"

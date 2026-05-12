@@ -19,7 +19,7 @@ import pytest
 
 # I1: version string from _lib.sh — referenced by every assertion so
 #     a version bump only requires changing one place.
-EXPECTED_VERSION: str = "phase-1.2"
+EXPECTED_VERSION: str = "phase-2.0"
 
 # I2: fallback file name — referenced by every test instead of bare string.
 FALLBACK_FILENAME: str = "fallback_events.jsonl"
@@ -118,7 +118,7 @@ def fake_server_500() -> Iterator[int]:
 # ---------------------------------------------------------------------------
 
 # Test stub: a standalone AgentAdapter subclass that DELEGATES to
-# IdentityAdapter for the normalize() body and adds an agent="claude-code"
+# IdentityAdapter for the normalize() body and adds an agent="claude_code"
 # gate in supports(). Composition (not inheritance from IdentityAdapter) keeps
 # the AgentAdapter ABC contract — and only the ABC contract — as the structural
 # surface. Two coupling risks remain and must be checked when either changes:
@@ -136,7 +136,7 @@ def fake_server_500() -> Iterator[int]:
 # phase1-adapters (GUR-124). Keep the supports()/supported_event_types()
 # scope identical to ease the swap.
 class _ClaudeCodeAdapterStub:
-    """Test-only AgentAdapter stub for agent='claude-code' pass-through.
+    """Test-only AgentAdapter stub for agent='claude_code' pass-through.
 
     Subclasses AgentAdapter at registration time via duck-cast. The real
     ClaudeCode adapter (P1-10 / GUR-124) will replace this with semantic
@@ -144,7 +144,7 @@ class _ClaudeCodeAdapterStub:
     """
 
     def supports(self, agent: str, event_type: str) -> bool:
-        if agent != "claude-code":
+        if agent != "claude_code":
             return False
         from secondsight.event import EventType
         try:
@@ -158,7 +158,7 @@ class _ClaudeCodeAdapterStub:
         return IdentityAdapter().normalize(envelope, event_type)
 
     def supported_event_types(self) -> set[str]:
-        # DT-6 alignment: every event_type that supports("claude-code", *)
+        # DT-6 alignment: every event_type that supports("claude_code", *)
         # answers True for must appear here, otherwise AdapterRegistry.for_()
         # rejects this stub via the consistency guard. The full EventType set
         # is the universal-test floor — task-4 narrows this for the real adapter.
@@ -193,7 +193,7 @@ def real_secondsight_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
     validation, IdentityAdapter dispatch, SessionTracker.bind(), and
     pipeline.ingest() — not a fake HTTP handler that accepts any URL.
 
-    The _ClaudeCodeAdapterStub (registered here) handles agent="claude-code".
+    The _ClaudeCodeAdapterStub (registered here) handles agent="claude_code".
     Yields a dict with:
       - port: int  (kernel-assigned; read back from the bound socket)
       - home: Path (secondsight_home)
@@ -250,7 +250,7 @@ def real_secondsight_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
     # Suppress the RuntimeWarning emitted by AdapterRegistry.register() on
     # overlapping supported_event_types(). The IdentityAdapter (registered by
     # the lifespan) publishes the full EventType set scoped to agent="test";
-    # this stub publishes the full set scoped to agent="claude-code". The
+    # this stub publishes the full set scoped to agent="claude_code". The
     # event_type overlap is real but the agent gating prevents any dispatch
     # collision — the documented benign case the warning's docstring calls
     # out. Future readers: if you remove the agent gate on either side, the
@@ -281,7 +281,7 @@ def build_env(
     *,
     port: int | str,
     home: Path,
-    agent: str = "test-agent",
+    agent: str = "claude_code",
     extra: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Build a minimal environment dict for running hook scripts.

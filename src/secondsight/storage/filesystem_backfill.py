@@ -13,10 +13,10 @@ SD §3.9.2 splits backfill into two recovery paths:
         nor pipeline saw the failure (e.g. the filesystem was rsync'd
         in from another machine).
 
-Path C — fallback_events.jsonl replay (server-down) is deferred to a
-follow-up. The fallback envelope shape currently lacks event_id /
-sequence_number, so replaying it would require reconstructing those
-from the adapter pipeline. Phase 1 sync ARCHIVES the fallback file
+Path C — fallback_events.jsonl replay (server-down) is still deferred to a
+follow-up. The fallback record shape now includes event_id /
+sequence_number, but the sync path still only archives the file rather
+than replaying it. Phase 1 sync ARCHIVES the fallback file
 (atomic move to a timestamped .bak) so operators can see it accumulated
 work without us silently dropping data. See P1-13 scar carry-forward.
 

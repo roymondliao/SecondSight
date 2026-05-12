@@ -1,27 +1,29 @@
 {
   "_meta": {
     "_source": "verified",
-    "_capture_origin": "Field path `tool_input.command` empirically verified against `~/.claude/hooks/rtk-rewrite.sh` (2026-05-04), which parses Claude Code PreToolUse stdin via `jq -r '.tool_input.command'` and writes `hookSpecificOutput.updatedInput` back. Wrapping fields (session_id, transcript_path, cwd, hook_event_name, tool_name) sourced from the documented Claude Code hooks schema; treated as documented-within-verified envelope.",
+    "_capture_origin": "tool_input.command path verified from real Claude Code tool-use transcript data in ~/.claude-personal/projects/-Users-yuyu-liao-vicone-SecondSight/3756b281-8769-424f-bb1a-aa3fe1aeecc9.jsonl (observed 2026-05-12); concrete command/description style mirrors the Bash calls captured in that session. Hook wrapper fields remain aligned to the documented Claude Code hook schema.",
     "_claude_code_hook_event_name": "PreToolUse",
     "_secondsight_event_type": "tool_use_start",
     "_privacy_canary_field": "tool_input.command"
   },
   "payload": {
-    "session_id": "01JBQ8XYZK7P3M5N9R2W4D6E8H",
-    "transcript_path": "/Users/example/.claude/projects/example/transcript.jsonl",
-    "cwd": "/Users/example/work/repo",
+    "session_id": "3756b281-8769-424f-bb1a-aa3fe1aeecc9",
+    "transcript_path": "/Users/yuyu_liao/.claude-personal/projects/-Users-yuyu-liao-vicone-SecondSight/3756b281-8769-424f-bb1a-aa3fe1aeecc9.jsonl",
+    "cwd": "/Users/yuyu_liao/vicone/SecondSight",
+    "permission_mode": "default",
     "hook_event_name": "PreToolUse",
     "tool_name": "Bash",
     "tool_input": {
-      "command": "PRIVACY_CANARY_DO_NOT_STORE && echo hi"
+      "command": "grep -rn \"PRIVACY_CANARY_DO_NOT_STORE\" /Users/yuyu_liao/vicone/SecondSight/src/secondsight/ --include=\"*.py\" -l",
+      "description": "Find files referencing fallback_events.jsonl"
     }
   },
   "expected_partial_event_data": {
     "tool_name": "Bash",
     "action_metadata": {
-      "command_length": 38,
-      "transcript_path": "/Users/example/.claude/projects/example/transcript.jsonl",
-      "cwd": "/Users/example/work/repo"
+      "command_length": 111,
+      "transcript_path": "/Users/yuyu_liao/.claude-personal/projects/-Users-yuyu-liao-vicone-SecondSight/3756b281-8769-424f-bb1a-aa3fe1aeecc9.jsonl",
+      "cwd": "/Users/yuyu_liao/vicone/SecondSight"
     }
   },
   "privacy_canary": "PRIVACY_CANARY_DO_NOT_STORE"

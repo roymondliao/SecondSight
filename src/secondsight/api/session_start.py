@@ -5,7 +5,7 @@ returns formatted conventions for system prompt injection. The response
 is synchronous: the hook script blocks on it because Claude Code reads
 stdout from the hook process as system prompt content.
 
-Distinct from ``POST /hook/{event_type}`` (hooks.py):
+Distinct from ``POST /hook/{agent}/{event_type}`` (hooks.py):
     That route handles event INGESTION (fire-and-forget, async background).
     This route handles convention INJECTION (synchronous, must return fast).
     They coexist on different URL paths without conflict.

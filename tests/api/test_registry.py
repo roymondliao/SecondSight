@@ -126,6 +126,7 @@ async def test_registry_get_returns_project_resources(
 ) -> None:
     """Unit: get() returns a ProjectResources with all required attributes."""
     from secondsight.storage.events_repository import EventsRepository
+    from secondsight.storage.raw_ingress_store import RawIngressStore
     from secondsight.storage.raw_trace_store import RawTraceStore
     from secondsight.storage.sync_log import SyncLog
     from secondsight.observation.pipeline import ObservationPipeline
@@ -137,6 +138,7 @@ async def test_registry_get_returns_project_resources(
         assert res.project_id == "full-resource-proj"
         assert isinstance(res.db_engine, DBEngine)
         assert isinstance(res.events_repository, EventsRepository)
+        assert isinstance(res.raw_ingress_store, RawIngressStore)
         assert isinstance(res.raw_trace_store, RawTraceStore)
         assert isinstance(res.sync_log, SyncLog)
         assert isinstance(res.pipeline, ObservationPipeline)

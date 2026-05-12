@@ -57,7 +57,7 @@ def _envelope(
     event_id: str,
     sequence_number: int,
     payload: dict[str, Any] | None = None,
-    agent: str = "claude-code",
+    agent: str = "claude_code",
 ) -> str:
     """Build a JSON envelope matching HookEnvelope (api/schemas.py).
 
@@ -191,11 +191,11 @@ def _fire_script(
     port: int,
     home: Path,
     *,
-    agent: str = "claude-code",
+    agent: str = "claude_code",
 ) -> subprocess.CompletedProcess[str]:
     """Run a named hook script via the existing run_hook helper.
 
-    The default agent is "claude-code" because every existing call site
+    The default agent is "claude_code" because every existing call site
     drives the _ClaudeCodeAdapterStub registered by real_secondsight_server.
     Pass ``agent="..."`` to test other adapter routes when they exist.
     """
@@ -224,7 +224,7 @@ def _stage_fallback_lines(
     bottleneck, swap to direct file writes — the hook fallback path is
     already covered by tests/scripts/test_hook_fallback.py.
     """
-    env = build_env(port=1, home=home, agent="claude-code")
+    env = build_env(port=1, home=home, agent="claude_code")
     event_ids: list[str] = []
     for seq in range(1, count + 1):
         event_id = f"{event_id_prefix}-{seq}"
@@ -906,7 +906,7 @@ class TestMH4LatencyBudget:
                 sequence_number=i + 1,
                 payload={"tool_name": "Read"},
             )
-            env = build_env(port=port, home=home, agent="claude-code")
+            env = build_env(port=port, home=home, agent="claude_code")
 
             start = time.perf_counter()
             try:
@@ -1163,11 +1163,10 @@ class TestMH5CliLifecycle:
             # invisible to MH-1/MH-2):
             #   1. Real ClaudeCodeAdapter._AGENT_NAME = "claude_code"
             #      (snake_case) — `src/secondsight/adapters/claude_code.py:54`.
-            #      Test stub registers as "claude-code" (kebab) —
+            #      Test stub registers as "claude_code" too —
             #      `tests/scripts/conftest.py:138-167`. MH-1/MH-2 use the
-            #      stub via real_secondsight_server, so they pass with
-            #      either string. MH-5 hits the production adapter and
-            #      requires the snake_case form.
+            #      stub via real_secondsight_server. MH-5 hits the
+            #      production adapter directly.
             #   2. Real ClaudeCodeAdapter requires payload.hook_event_name
             #      matching the dispatched event_type
             #      (`src/secondsight/adapters/claude_code.py:301-311`).

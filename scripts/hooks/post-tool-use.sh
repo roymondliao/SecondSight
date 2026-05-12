@@ -10,7 +10,7 @@
 #   SECONDSIGHT_HOME   — home directory (default: ~/.secondsight)
 #   SECONDSIGHT_AGENT  — agent identifier written into the fallback envelope
 #
-# hook_script_version: phase-1.2
+# hook_script_version: phase-2.0
 #
 # FILENAME vs URL NOTE (C1 fix):
 #   The script filename follows Claude Code's hook naming convention

@@ -32,6 +32,7 @@ from secondsight._common.lazy_cache import LazyCacheWithLocking
 from secondsight.observation.pipeline import ObservationPipeline
 from secondsight.storage.db_engine import DBEngine
 from secondsight.storage.events_repository import EventsRepository
+from secondsight.storage.raw_ingress_store import RawIngressStore
 from secondsight.storage.raw_trace_store import RawTraceStore
 from secondsight.storage.sync_log import SyncLog
 
@@ -43,6 +44,7 @@ class ProjectResources:
     project_id: str
     db_engine: DBEngine
     events_repository: EventsRepository
+    raw_ingress_store: RawIngressStore
     raw_trace_store: RawTraceStore
     sync_log: SyncLog
     pipeline: ObservationPipeline
@@ -123,6 +125,7 @@ class ProjectRegistry:
         repo = EventsRepository(db_engine=db_engine)
         repo.create_schema()  # idempotent
 
+        ris = RawIngressStore(project_root=project_dir)
         rts = RawTraceStore(project_root=project_dir)
 
         sync_log_path = project_dir / "sync.log"
@@ -132,12 +135,14 @@ class ProjectRegistry:
             raw_trace_store=rts,
             events_repository=repo,
             sync_log=sync_log,
+            raw_ingress_store=ris,
         )
 
         return ProjectResources(
             project_id=project_id,
             db_engine=db_engine,
             events_repository=repo,
+            raw_ingress_store=ris,
             raw_trace_store=rts,
             sync_log=sync_log,
             pipeline=pipeline,

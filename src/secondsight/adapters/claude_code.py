@@ -45,7 +45,8 @@ from collections.abc import Mapping
 from typing import Any, Callable
 
 from secondsight.adapters.base import AgentAdapter
-from secondsight.api.schemas import HookEnvelope
+from secondsight.api.ingress import project_id_from_cwd
+from secondsight.api.schemas import IngressEnvelope
 from secondsight.event import EventType
 from secondsight.feedback.convention import Convention
 from secondsight.feedback.hint import Hint
@@ -290,7 +291,7 @@ class ClaudeCodeAdapter(AgentAdapter):
             sanitized = sanitized[: self._MAX_INSTRUCTION_CHARS] + "…"
         return f"- {sanitized}"
 
-    def normalize(self, envelope: HookEnvelope, event_type: str) -> PartialEvent:
+    def normalize(self, envelope: IngressEnvelope, event_type: str) -> PartialEvent:
         # Envelope-level invariants. Pydantic enforces session_id/event_id
         # min_length=1 at the API boundary, but we re-check here so the
         # adapter is safe for callers that bypass FastAPI validation
@@ -298,8 +299,6 @@ class ClaudeCodeAdapter(AgentAdapter):
         # internal callers). Defence-in-depth — see task-1 scar carry-forward
         # SF-3 (envelope schema relaxation must not silently produce empty
         # required fields).
-        if not envelope.session_id:
-            raise ValueError("ClaudeCodeAdapter: envelope missing required field 'session_id'")
         if not envelope.event_id:
             raise ValueError("ClaudeCodeAdapter: envelope missing required field 'event_id'")
 
@@ -336,10 +335,24 @@ class ClaudeCodeAdapter(AgentAdapter):
             )
 
         data = builder(payload)
+        session_id = envelope.session_id or payload.get("session_id")
+        if not session_id:
+            raise ValueError(
+                "ClaudeCodeAdapter: payload missing required field 'session_id'"
+            )
+
+        project_id = envelope.project_id
+        if not project_id:
+            cwd = payload.get("cwd")
+            if not cwd:
+                raise ValueError(
+                    "ClaudeCodeAdapter: payload missing required field 'cwd'"
+                )
+            project_id = project_id_from_cwd(str(cwd))
         return PartialEvent(
             id=envelope.event_id,
-            session_id=envelope.session_id,
-            project_id=envelope.project_id,
+            session_id=str(session_id),
+            project_id=project_id,
             event_type=et,
             timestamp=envelope.timestamp,
             sequence_number=envelope.sequence_number,
