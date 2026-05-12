@@ -263,7 +263,12 @@ def test_dt7b_inject_convention_formats_correctly() -> None:
     from secondsight.feedback.convention import Convention
 
     adapter = ClaudeCodeAdapter()
-    conv = Convention(id="c1", instruction="Read AGENTS.md first", frequency=0.9, source_flag_type="unnecessary_read")
+    conv = Convention(
+        id="c1",
+        instruction="Read AGENTS.md first",
+        frequency=0.9,
+        source_flag_type="unnecessary_read",
+    )
     result = adapter.inject_convention(conv)
     assert result == "- Read AGENTS.md first", f"Expected bullet format, got {result!r}"
 
@@ -393,9 +398,29 @@ def test_supports_iff_supported_event_types_for_p1_floor() -> None:
         )
 
 
+def test_dt_prompt_text_stored_per_sd374() -> None:
+    """Death test: UserPromptSubmit MUST store prompt_text in action_metadata.
+
+    SD §3.7.4 and ADR-005 mandate complete prompt storage. This test is RED
+    while DROP_LIST still contains 'prompt' and _normalize_user_prompt_submit
+    discards the text, storing only prompt_length.
+    """
+    fixture = _load_fixture(FIXTURE_DIR / "user_prompt_submit.json")
+    envelope = _envelope_from_fixture(fixture)
+    adapter = ClaudeCodeAdapter()
+    partial = adapter.normalize(envelope, EventType.USER_PROMPT.value)
+    assert "action_metadata" in partial.data
+    metadata = partial.data["action_metadata"]
+    assert "prompt_text" in metadata, (
+        "prompt_text missing from action_metadata — SD §3.7.4 requires complete "
+        "prompt storage: 'User prompt 是判斷 agent 行為對齊度的核心依據'"
+    )
+    assert metadata["prompt_text"] == str(fixture["payload"]["prompt"])
+
+
 def test_user_prompt_submit_data_shape() -> None:
     """Per-event happy path: user_prompt fixture produces action_metadata
-    with prompt_length, transcript_path, cwd — and nothing else."""
+    with prompt_text, transcript_path, cwd — and nothing else."""
     fixture = _load_fixture(FIXTURE_DIR / "user_prompt_submit.json")
     envelope = _envelope_from_fixture(fixture)
     adapter = ClaudeCodeAdapter()
@@ -403,7 +428,7 @@ def test_user_prompt_submit_data_shape() -> None:
     assert partial.event_type == EventType.USER_PROMPT
     assert "action_metadata" in partial.data
     metadata = partial.data["action_metadata"]
-    assert metadata["prompt_length"] == len(str(fixture["payload"]["prompt"]))
+    assert metadata["prompt_text"] == str(fixture["payload"]["prompt"])
     assert "transcript_path" in metadata
     assert "cwd" in metadata
 
@@ -457,6 +482,5 @@ def test_drop_list_is_frozenset_and_nonempty() -> None:
     assert isinstance(DROP_LIST, frozenset)
     assert len(DROP_LIST) >= 5, (
         f"DROP_LIST appears too small ({len(DROP_LIST)} entries) — plan §5 "
-        f"lists at least: command, content, old_string, new_string, output, "
-        f"error, prompt"
+        f"lists at least: command, content, old_string, new_string, output, error"
     )

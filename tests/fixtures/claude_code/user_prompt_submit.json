@@ -4,19 +4,20 @@
     "_capture_origin": "Claude Code UserPromptSubmit hook contract from public docs; concrete session_id/cwd/transcript_path values and prompt style aligned to the local transcript at ~/.claude-personal/projects/-Users-yuyu-liao-vicone-SecondSight/3756b281-8769-424f-bb1a-aa3fe1aeecc9.jsonl (observed 2026-05-12).",
     "_claude_code_hook_event_name": "UserPromptSubmit",
     "_secondsight_event_type": "user_prompt",
-    "_privacy_canary_field": "prompt"
+    "_privacy_canary_field": "permission_mode",
+    "_privacy_canary_field_rationale": "UserPromptSubmit payloads carry permission_mode but the adapter does not store it in data — only prompt_text, transcript_path, and cwd are persisted. Placing the canary here ensures a regression that starts copying permission_mode into data is caught, while keeping the prompt field clean so DT-3 does not conflict with the SD §3.7.4 requirement to store prompt_text completely."
   },
   "payload": {
     "session_id": "3756b281-8769-424f-bb1a-aa3fe1aeecc9",
     "transcript_path": "/Users/yuyu_liao/.claude-personal/projects/-Users-yuyu-liao-vicone-SecondSight/3756b281-8769-424f-bb1a-aa3fe1aeecc9.jsonl",
     "cwd": "/Users/yuyu_liao/vicone/SecondSight",
-    "permission_mode": "default",
+    "permission_mode": "PRIVACY_CANARY_DO_NOT_STORE",
     "hook_event_name": "UserPromptSubmit",
-    "prompt": "Question:\n1. What does PRIVACY_CANARY_DO_NOT_STORE do?\n2. What does curl-errors.log do?"
+    "prompt": "Question:\n1. What does fallback_events.jsonl do?\n2. What does curl-errors.log do?"
   },
   "expected_partial_event_data": {
     "action_metadata": {
-      "prompt_length": 87,
+      "prompt_text": "Question:\n1. What does fallback_events.jsonl do?\n2. What does curl-errors.log do?",
       "transcript_path": "/Users/yuyu_liao/.claude-personal/projects/-Users-yuyu-liao-vicone-SecondSight/3756b281-8769-424f-bb1a-aa3fe1aeecc9.jsonl",
       "cwd": "/Users/yuyu_liao/vicone/SecondSight"
     }

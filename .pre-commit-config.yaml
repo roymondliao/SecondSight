@@ -3,6 +3,7 @@ default_language_version:
 
 exclude: |
   (?x)(
+    ^\.worktree/ |
     .*uv.lock |
     .*_static |
     .*ipynb |
@@ -19,6 +20,7 @@ repos:
     - id: detect-aws-credentials
     - id: detect-private-key
     - id: name-tests-test
+      args: ['--pytest-test-first']
     - id: check-merge-conflict
     - id: check-added-large-files
       args: ['--maxkb=50000']
@@ -39,5 +41,5 @@ repos:
       language: python
       entry: ty check
       pass_filenames: false
-      args: [--python=.venv/]
-      additional_dependencies: [ty]    
+      args: [--python=.venv/, src, tests]
+      additional_dependencies: [ty==0.0.34]

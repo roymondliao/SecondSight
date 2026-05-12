@@ -1,0 +1,28 @@
+type: fast_track
+description: "Restore complete prompt text storage in ClaudeCodeAdapter per SD §3.7.4 + ADR-005"
+death_clause: "If DT-3 passes but prompt_text is absent from action_metadata in user_prompt events, this change is considered failed"
+acceptance:
+  - "Event.data['action_metadata']['prompt_text'] equals str(payload['prompt']) for UserPromptSubmit events"
+  - "DT-3 privacy canary passes with canary in permission_mode, not prompt"
+  - "DROP_LIST no longer contains 'prompt'; retains 6 entries (still >= 5)"
+  - "All 54 adapter + fixture tests pass"
+scar_tag: none
+scar_items: []
+files_changed:
+  - "src/secondsight/adapters/claude_code.py"
+  - "tests/fixtures/claude_code/user_prompt_submit.json"
+  - "tests/adapters/test_claude_code.py"
+  - "tests/fixtures/claude_code/_README.md"
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: "_action_metadata() helper reused unchanged; _normalize_user_prompt_submit only swaps prompt_length for prompt_text — no duplicate helper introduced."
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: "Change is local to _normalize_user_prompt_submit and DROP_LIST constant. No boundary shift; the fixture canary moves to permission_mode following the existing session_start/session_end pattern."
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: "str(payload['prompt']) is the same idiom used for prompt_length before; no new abstraction added."
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: "SD §3.7.4 is now the single source of truth. The old comment '# UserPromptSubmit: length only' in DROP_LIST was a second source that contradicted the spec — removed entirely."

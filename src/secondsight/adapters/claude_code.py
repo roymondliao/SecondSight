@@ -90,7 +90,8 @@ DROP_LIST: frozenset[str] = frozenset(
         "tool_input.new_string",  # Edit: length only
         "tool_response.output",  # PostToolUse: len(str(...)) only
         "tool_response.error",  # PostToolUse: type only, no message
-        "prompt",  # UserPromptSubmit: length only
+        # "prompt" intentionally NOT here — SD §3.7.4 + ADR-005 mandate
+        # complete prompt storage for agent alignment analysis.
     }
 )
 
@@ -194,10 +195,10 @@ def _normalize_post_tool_use(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_user_prompt_submit(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """UserPromptSubmit → user_prompt. Raw prompt text dropped; length only."""
+    """UserPromptSubmit → user_prompt. Per SD §3.7.4 + ADR-005: prompt stored completely."""
     metadata = _action_metadata(payload)
     if "prompt" in payload:
-        metadata["prompt_length"] = len(str(payload["prompt"]))
+        metadata["prompt_text"] = str(payload["prompt"])
     return {"action_metadata": metadata} if metadata else {}
 
 
@@ -337,17 +338,13 @@ class ClaudeCodeAdapter(AgentAdapter):
         data = builder(payload)
         session_id = envelope.session_id or payload.get("session_id")
         if not session_id:
-            raise ValueError(
-                "ClaudeCodeAdapter: payload missing required field 'session_id'"
-            )
+            raise ValueError("ClaudeCodeAdapter: payload missing required field 'session_id'")
 
         project_id = envelope.project_id
         if not project_id:
             cwd = payload.get("cwd")
             if not cwd:
-                raise ValueError(
-                    "ClaudeCodeAdapter: payload missing required field 'cwd'"
-                )
+                raise ValueError("ClaudeCodeAdapter: payload missing required field 'cwd'")
             project_id = project_id_from_cwd(str(cwd))
         return PartialEvent(
             id=envelope.event_id,

@@ -106,7 +106,7 @@ surfaces and the test fails.
 |---|---|---|
 | `pre_tool_use_bash.json` | `tool_input.command` | Plan §5: raw command DROPPED, only `len(...)` kept as `action_metadata.command_length`. |
 | `post_tool_use.json` | `tool_response.output` | Plan §5: raw output DROPPED, only `len(str(...))` kept as `output_size`. |
-| `user_prompt_submit.json` | `prompt` | Plan §5: raw prompt DROPPED, only `len(...)` kept as `action_metadata.prompt_length`. |
+| `user_prompt_submit.json` | `permission_mode` | SD §3.7.4 + ADR-005: prompt_text is STORED completely; permission_mode is ignored by the adapter and MUST NOT reach `data`. |
 | `session_start.json` | `permission_mode` | See "Session-event canary rationale" below. |
 | `session_end.json` | `permission_mode` | See "Session-event canary rationale" below. |
 
@@ -125,8 +125,8 @@ session while still having a meaningful canary, the canary lives in
   `data` therefore trips the canary without forcing the fixture to fake an
   entire session_id.
 
-A regression that copies `permission_mode` into `data` trips the canary the
-same way a `prompt` leak would on `user_prompt_submit.json`.
+A regression that copies `permission_mode` into `data` trips the canary
+the same way a `permission_mode` leak would on `user_prompt_submit.json`.
 
 The `_meta._privacy_canary_field_rationale` field on each session-event
 fixture restates this so a future maintainer who deletes this README still
