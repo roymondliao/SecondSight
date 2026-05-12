@@ -159,9 +159,7 @@ def enumerate_expired_analyses(
 # ---------------------------------------------------------------------------
 
 
-def _delete_behavior_flags_for_session(
-    repo: BehaviorFlagsRepository, session_id: str
-) -> int:
+def _delete_behavior_flags_for_session(repo: BehaviorFlagsRepository, session_id: str) -> int:
     """``DELETE FROM behavior_flags WHERE session_id = ?``. Returns rowcount.
 
     Per-session rather than batched IN(...) so a single corrupt session
@@ -175,20 +173,14 @@ def _delete_behavior_flags_for_session(
     session and re-attempts both stages — the behavior_flags re-attempt
     must be a no-op, not a raise.
     """
-    stmt = sa.delete(behavior_flags).where(
-        behavior_flags.c.session_id == session_id
-    )
+    stmt = sa.delete(behavior_flags).where(behavior_flags.c.session_id == session_id)
     with repo._db.engine.begin() as conn:  # noqa: SLF001 — see retention module note
         return int(conn.execute(stmt).rowcount or 0)
 
 
-def _delete_session_report_for_session(
-    repo: SessionReportsRepository, session_id: str
-) -> int:
+def _delete_session_report_for_session(repo: SessionReportsRepository, session_id: str) -> int:
     """``DELETE FROM session_reports WHERE session_id = ?``. Returns rowcount."""
-    stmt = sa.delete(session_reports).where(
-        session_reports.c.session_id == session_id
-    )
+    stmt = sa.delete(session_reports).where(session_reports.c.session_id == session_id)
     with repo._db.engine.begin() as conn:  # noqa: SLF001 — see retention module note
         return int(conn.execute(stmt).rowcount or 0)
 
@@ -256,10 +248,7 @@ class AnalysisResultsPurger:
                     PurgeFailure(
                         session_id=sid,
                         stage="database",
-                        error=(
-                            "ValueError: unsafe session_id "
-                            "(stage=validation)"
-                        ),
+                        error=("ValueError: unsafe session_id (stage=validation)"),
                     )
                 )
                 continue

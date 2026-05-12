@@ -10,6 +10,7 @@ gives the appearance of e2e coverage while exercising nothing. The
 named-skip contract makes the failure mode loud and operator-actionable
 ("install <tool>") instead of mysterious.
 """
+
 from __future__ import annotations
 
 # COUPLING CONTRACT: tests/integration/test_prereqs.py patches

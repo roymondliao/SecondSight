@@ -24,8 +24,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
@@ -33,7 +31,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from secondsight.analysis.schemas import AnalysisRun, AnalysisRunStage
+from secondsight.analysis.schemas import AnalysisRunStage
 from secondsight.event import Event, EventType
 from secondsight.storage.analysis_runs_repository import AnalysisRunsRepository
 from secondsight.storage.db_engine import DBEngine
@@ -133,9 +131,7 @@ class _CountingOrchestrator:
     def set_delay(self, delay_s: float) -> None:
         self._delay_s = delay_s
 
-    async def analyze_and_aggregate(
-        self, session_id: str, *, force: bool = False
-    ) -> None:
+    async def analyze_and_aggregate(self, session_id: str, *, force: bool = False) -> None:
         self.call_count += 1
         if self._delay_s > 0:
             await asyncio.sleep(self._delay_s)
@@ -176,12 +172,8 @@ async def test_dt_5_1_concurrent_dispatch_exactly_one_invocation(
 
     # Fire two concurrent dispatches for the same session
     result1, result2 = await asyncio.gather(
-        trigger.dispatch(
-            _PROJECT_ID, _SESSION_ID, source="event"
-        ),
-        trigger.dispatch(
-            _PROJECT_ID, _SESSION_ID, source="event"
-        ),
+        trigger.dispatch(_PROJECT_ID, _SESSION_ID, source="event"),
+        trigger.dispatch(_PROJECT_ID, _SESSION_ID, source="event"),
     )
 
     # Wait for any dispatched tasks to complete
@@ -190,8 +182,7 @@ async def test_dt_5_1_concurrent_dispatch_exactly_one_invocation(
     # Exactly one should have dispatched
     dispatched_count = sum(1 for r in [result1, result2] if r.dispatched)
     assert dispatched_count == 1, (
-        f"Expected exactly 1 dispatch, got {dispatched_count}. "
-        f"results: {result1!r}, {result2!r}"
+        f"Expected exactly 1 dispatch, got {dispatched_count}. results: {result1!r}, {result2!r}"
     )
 
     # The non-dispatched one must report a lock or in-flight reason
@@ -530,9 +521,7 @@ async def test_dg_1_2_force_bypasses_already_analyzed(
         lock_registry=lock_registry,
     )
 
-    result = await trigger.dispatch(
-        _PROJECT_ID, _SESSION_ID, source="manual", force=True
-    )
+    result = await trigger.dispatch(_PROJECT_ID, _SESSION_ID, source="manual", force=True)
     assert result.dispatched is True, f"force=True must bypass already-analyzed gate: {result!r}"
 
     await asyncio.sleep(0.05)
@@ -635,9 +624,7 @@ async def test_lock_registry_non_blocking_acquire_on_contention() -> None:
 
     # Now try to acquire the same session — should get contention signal
     async with registry.acquire("sess-lock-test") as held:
-        assert held is False, (
-            "Expected contention sentinel (False) when lock is already held"
-        )
+        assert held is False, "Expected contention sentinel (False) when lock is already held"
 
     release_event.set()
     await task
@@ -672,8 +659,6 @@ async def test_pipeline_callback_fires_on_session_end(
 ) -> None:
     """SESSION_END callback fires dispatch via pipeline callback mechanism."""
     from secondsight.observation.pipeline import ObservationPipeline
-    from secondsight.storage.raw_trace_store import RawTraceStore
-    from secondsight.storage.sync_log import SyncLog
 
     fake_orchestrator = _CountingOrchestrator()
     trigger = Trigger(
@@ -878,6 +863,7 @@ async def test_sweeper_per_session_exception_does_not_stop_loop(
 
 # --- DT-FL-1: EventsRepository.find_stale_session_candidates public API ---
 
+
 def test_dt_fl_1_find_stale_session_candidates_public_api(
     events_repo: EventsRepository,
     db_engine: DBEngine,
@@ -930,12 +916,8 @@ def test_dt_fl_1_find_stale_session_candidates_public_api(
     )
 
     session_ids = [c[1] for c in candidates]
-    assert "sess-stale-fl1" in session_ids, (
-        "Stale session must appear in candidates"
-    )
-    assert "sess-recent-fl1" not in session_ids, (
-        "Recent session must NOT appear in candidates"
-    )
+    assert "sess-stale-fl1" in session_ids, "Stale session must appear in candidates"
+    assert "sess-recent-fl1" not in session_ids, "Recent session must NOT appear in candidates"
 
     # Verify the tuple structure
     for proj_id, sess_id, last_event_ts in candidates:
@@ -1007,7 +989,7 @@ def test_dt_fl_4_non_terminal_stages_derived_from_terminal() -> None:
     Silent failure this closes: a hardcoded set of non-terminal stages would
     drift if a new AnalysisRunStage is added. Derived set is always consistent.
     """
-    from secondsight.analysis.schemas import AnalysisRunStage, TERMINAL_STAGES
+    from secondsight.analysis.schemas import TERMINAL_STAGES
     from secondsight.sdk.trigger import NON_TERMINAL_STAGES
 
     all_stage_values = frozenset(s.value for s in AnalysisRunStage)
@@ -1072,8 +1054,7 @@ def test_dt_fl_9_sweeper_no_set_task_method(
     )
 
     assert not hasattr(sweeper, "set_task"), (
-        "Sweeper.set_task() must be removed. "
-        "run() self-registers via asyncio.current_task()."
+        "Sweeper.set_task() must be removed. run() self-registers via asyncio.current_task()."
     )
 
 
@@ -1101,6 +1082,7 @@ async def test_dt_fl_6_in_memory_record_before_create_task_failure(
 
     class _FailOnceOrchestrator:
         """First create_task call succeeds, verify dispatch recovers from failure."""
+
         async def analyze_and_aggregate(self, session_id: str, *, force: bool = False) -> None:
             nonlocal call_count
             call_count += 1

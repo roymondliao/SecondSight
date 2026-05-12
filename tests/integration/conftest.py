@@ -11,4 +11,5 @@ pattern for cross-subtree fixture sharing — narrower blast radius than
 lifting to ``tests/conftest.py`` and avoids the
 ``pytest_plugins``-in-non-rootdir deprecation warning.
 """
+
 from tests.scripts.conftest import real_secondsight_server  # noqa: F401

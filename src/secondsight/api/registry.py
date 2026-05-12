@@ -63,9 +63,7 @@ class ProjectRegistry:
         self._home = Path(secondsight_home)
         # Validate at construction time, not at first use.
         if not self._home.is_absolute():
-            raise ValueError(
-                f"secondsight_home must be absolute, got: {self._home!r}"
-            )
+            raise ValueError(f"secondsight_home must be absolute, got: {self._home!r}")
 
         # Ensure the home directory exists.  Fail fast here so the server
         # doesn't start and then blow up on the first request.
@@ -93,9 +91,7 @@ class ProjectRegistry:
             RuntimeError: if the registry has been closed via aclose().
         """
         if self._closed:
-            raise RuntimeError(
-                "ProjectRegistry has been closed; cannot serve requests."
-            )
+            raise RuntimeError("ProjectRegistry has been closed; cannot serve requests.")
         return await self._cache.get(project_id)
 
     async def _materialise(self, project_id: str) -> ProjectResources:
@@ -104,9 +100,7 @@ class ProjectRegistry:
         Logging lives here so the per-project context (project_id) is
         captured at the point the resources are actually being built.
         """
-        logger.info(
-            "Materializing resources for new project: {pid}", pid=project_id
-        )
+        logger.info("Materializing resources for new project: {pid}", pid=project_id)
         return await asyncio.to_thread(self._build_resources, project_id)
 
     def _build_resources(self, project_id: str) -> ProjectResources:

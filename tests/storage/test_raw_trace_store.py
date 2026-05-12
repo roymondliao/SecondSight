@@ -80,8 +80,7 @@ async def test_death_partial_write_leaves_no_corrupt_file(project_root: Path) ->
             await store.write(event)
 
     assert not target.exists(), (
-        "destination path holds a file even though write failed — "
-        "atomic-write contract violated"
+        "destination path holds a file even though write failed — atomic-write contract violated"
     )
 
 

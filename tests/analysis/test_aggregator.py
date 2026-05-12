@@ -34,19 +34,20 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
-from unittest.mock import MagicMock
 
 import pytest
 import sqlalchemy as sa
 
 from secondsight.analysis.agent import AnalysisAgentError
-from secondsight.analysis.prompts.aggregate import AggregateOutput, AggregatePattern, FlagSummary, build_aggregate_prompt
+from secondsight.analysis.prompts.aggregate import (
+    AggregateOutput,
+    AggregatePattern,
+    FlagSummary,
+    build_aggregate_prompt,
+)
 from secondsight.analysis.schemas import (
     BehaviorFlag,
     BehaviorFlagType,
-    Directive,
-    DirectiveStatus,
-    DirectiveType,
 )
 from secondsight.storage.behavior_flags_repository import BehaviorFlagsRepository
 from secondsight.storage.db_engine import DBEngine
@@ -57,7 +58,6 @@ from tests.analysis._fake_agent import FakeAnalysisAgent
 # These will FAIL until aggregator.py is implemented. Expected red phase.
 from secondsight.analysis.aggregator import (
     DEFAULT_CONVENTION_TOP_N,
-    AggregateProjectResult,
     aggregate_project_flags,
     compute_identity_key,
 )
@@ -141,6 +141,7 @@ def _make_pattern(
 def _count_directives(engine: DBEngine) -> int:
     """Count all rows in directives table."""
     from secondsight.storage.directives_table import directives
+
     stmt = sa.select(sa.func.count()).select_from(directives)
     with engine.engine.connect() as conn:
         return conn.execute(stmt).scalar() or 0
@@ -149,6 +150,7 @@ def _count_directives(engine: DBEngine) -> int:
 def _get_directive_instructions(engine: DBEngine) -> list[str]:
     """Return instructions of all directives ordered by identity_key."""
     from secondsight.storage.directives_table import directives
+
     stmt = sa.select(directives.c.instruction).order_by(directives.c.identity_key)
     with engine.engine.connect() as conn:
         return [row[0] for row in conn.execute(stmt)]
@@ -157,6 +159,7 @@ def _get_directive_instructions(engine: DBEngine) -> list[str]:
 def _get_directive_identity_keys(engine: DBEngine) -> list[str]:
     """Return identity_keys of all directives."""
     from secondsight.storage.directives_table import directives
+
     stmt = sa.select(directives.c.identity_key).order_by(directives.c.identity_key)
     with engine.engine.connect() as conn:
         return [row[0] for row in conn.execute(stmt)]
@@ -186,9 +189,7 @@ class _PartialFailureAgent:
         self._call_count += 1
         if self._call_count == 1:
             return self._first_output
-        raise AnalysisAgentError(
-            "_PartialFailureAgent: configured to fail on second call"
-        )
+        raise AnalysisAgentError("_PartialFailureAgent: configured to fail on second call")
 
     async def summarize_session(self, prompt: str):
         raise NotImplementedError("not used in this test")
@@ -267,14 +268,10 @@ class TestDT41DeterministicTieBreak:
                 reason=flag.reason,
             )
         ]
-        prompt_key = build_aggregate_prompt(
-            BehaviorFlagType.UNNECESSARY_READ, flag_summaries
-        )
+        prompt_key = build_aggregate_prompt(BehaviorFlagType.UNNECESSARY_READ, flag_summaries)
 
         # Run 1
-        agent1 = FakeAnalysisAgent(
-            aggregate_outputs={prompt_key: aggregate_output}
-        )
+        agent1 = FakeAnalysisAgent(aggregate_outputs={prompt_key: aggregate_output})
         result1 = await aggregate_project_flags(
             _PROJECT_ID,
             behavior_flags_repo=flags_repo,
@@ -287,9 +284,7 @@ class TestDT41DeterministicTieBreak:
         keys_after_run1 = _get_directive_identity_keys(db_engine)
 
         # Run 2 — same inputs, same agent
-        agent2 = FakeAnalysisAgent(
-            aggregate_outputs={prompt_key: aggregate_output}
-        )
+        agent2 = FakeAnalysisAgent(aggregate_outputs={prompt_key: aggregate_output})
         result2 = await aggregate_project_flags(
             _PROJECT_ID,
             behavior_flags_repo=flags_repo,
@@ -305,14 +300,13 @@ class TestDT41DeterministicTieBreak:
         # Specifically verify that "Pattern tie-ccc" (alphabetically last in
         # the tie group) was NOT upserted — only tie-aaa and tie-bbb made top-15.
         from secondsight.storage.directives_table import directives as directives_table
+
         stmt = sa.select(directives_table.c.instruction).where(
             directives_table.c.instruction.contains("Convention tie-ccc")
         )
         with db_engine.engine.connect() as conn:
             rows = conn.execute(stmt).fetchall()
-        assert rows == [], (
-            "Pattern tie-ccc should NOT be in directives (rank 16 > top_n=15)"
-        )
+        assert rows == [], "Pattern tie-ccc should NOT be in directives (rank 16 > top_n=15)"
 
 
 class TestDT42DistinctIdentityKeys:
@@ -360,9 +354,7 @@ class TestDT42DistinctIdentityKeys:
             )
             for f in [flag1, flag2]
         ]
-        prompt_key = build_aggregate_prompt(
-            BehaviorFlagType.UNNECESSARY_READ, flag_summaries
-        )
+        prompt_key = build_aggregate_prompt(BehaviorFlagType.UNNECESSARY_READ, flag_summaries)
 
         agent = FakeAnalysisAgent(aggregate_outputs={prompt_key: aggregate_output})
         result = await aggregate_project_flags(
@@ -518,9 +510,7 @@ class TestDT44FlagsReadDisclosure:
             )
             for f in surviving_flags
         ]
-        prompt_key = build_aggregate_prompt(
-            BehaviorFlagType.UNNECESSARY_READ, flag_summaries
-        )
+        prompt_key = build_aggregate_prompt(BehaviorFlagType.UNNECESSARY_READ, flag_summaries)
 
         agent = FakeAnalysisAgent(
             aggregate_outputs={
@@ -566,9 +556,11 @@ class TestDT45EmptyProject:
         class _TrackingAgent:
             async def analyze_segments(self, prompts):
                 raise NotImplementedError
+
             async def aggregate_flag_type(self, prompt: str) -> AggregateOutput:
                 call_log.append(prompt)
                 return AggregateOutput(patterns=[])
+
             async def summarize_session(self, prompt):
                 raise NotImplementedError
 
@@ -629,32 +621,20 @@ class TestDT46IdentityKeyStability:
         )
 
     def test_different_sessions_different_hash(self) -> None:
-        key1 = compute_identity_key(
-            _PROJECT_ID, BehaviorFlagType.UNNECESSARY_READ, ["sess-A"]
-        )
-        key2 = compute_identity_key(
-            _PROJECT_ID, BehaviorFlagType.UNNECESSARY_READ, ["sess-B"]
-        )
+        key1 = compute_identity_key(_PROJECT_ID, BehaviorFlagType.UNNECESSARY_READ, ["sess-A"])
+        key2 = compute_identity_key(_PROJECT_ID, BehaviorFlagType.UNNECESSARY_READ, ["sess-B"])
         assert key1 != key2
 
     def test_different_flag_types_different_hash(self) -> None:
-        key1 = compute_identity_key(
-            _PROJECT_ID, BehaviorFlagType.UNNECESSARY_READ, ["sess-A"]
-        )
-        key2 = compute_identity_key(
-            _PROJECT_ID, BehaviorFlagType.REDUNDANT_EXPLORATION, ["sess-A"]
-        )
+        key1 = compute_identity_key(_PROJECT_ID, BehaviorFlagType.UNNECESSARY_READ, ["sess-A"])
+        key2 = compute_identity_key(_PROJECT_ID, BehaviorFlagType.REDUNDANT_EXPLORATION, ["sess-A"])
         assert key1 != key2
 
     def test_different_projects_different_hash(self) -> None:
         """Security-privacy-review MEDIUM-3: distinct projects must produce
         distinct hashes even when flag_type + sessions are identical."""
-        key1 = compute_identity_key(
-            "proj-alpha", BehaviorFlagType.UNNECESSARY_READ, ["sess-A"]
-        )
-        key2 = compute_identity_key(
-            "proj-beta", BehaviorFlagType.UNNECESSARY_READ, ["sess-A"]
-        )
+        key1 = compute_identity_key("proj-alpha", BehaviorFlagType.UNNECESSARY_READ, ["sess-A"])
+        key2 = compute_identity_key("proj-beta", BehaviorFlagType.UNNECESSARY_READ, ["sess-A"])
         assert key1 != key2, (
             "Cross-project isolation must be structural in the hash, "
             "not solely enforced by the DB UNIQUE constraint."
@@ -718,14 +698,10 @@ class TestDT47NegativeTopNRaisesValueError:
                 reason=flag.reason,
             )
         ]
-        prompt_key = build_aggregate_prompt(
-            BehaviorFlagType.UNNECESSARY_READ, summaries
-        )
+        prompt_key = build_aggregate_prompt(BehaviorFlagType.UNNECESSARY_READ, summaries)
         agent = FakeAnalysisAgent(
             aggregate_outputs={
-                prompt_key: AggregateOutput(
-                    patterns=[_make_pattern("P", 1, ["sess-001"])]
-                )
+                prompt_key: AggregateOutput(patterns=[_make_pattern("P", 1, ["sess-001"])])
             }
         )
         result = await aggregate_project_flags(
@@ -771,14 +747,10 @@ class TestHPA4IdempotentRerun:
                 reason=flag.reason,
             )
         ]
-        prompt_key = build_aggregate_prompt(
-            BehaviorFlagType.UNNECESSARY_READ, summaries
-        )
+        prompt_key = build_aggregate_prompt(BehaviorFlagType.UNNECESSARY_READ, summaries)
 
         first_output = AggregateOutput(
-            patterns=[
-                _make_pattern("Pattern X", 5, ["sess-001"], "Convention version 1")
-            ]
+            patterns=[_make_pattern("Pattern X", 5, ["sess-001"], "Convention version 1")]
         )
         second_output = AggregateOutput(
             patterns=[
@@ -808,9 +780,7 @@ class TestHPA4IdempotentRerun:
         assert result2.directives_upserted == 1
         count_after_run2 = _count_directives(db_engine)
 
-        assert count_after_run1 == count_after_run2, (
-            "UPSERT on re-run must not create new rows"
-        )
+        assert count_after_run1 == count_after_run2, "UPSERT on re-run must not create new rows"
 
         # identity_key must be the same between runs
         keys = _get_directive_identity_keys(db_engine)
@@ -855,9 +825,7 @@ class TestHPB4TopNBound:
                 reason=flag.reason,
             )
         ]
-        prompt_key = build_aggregate_prompt(
-            BehaviorFlagType.UNNECESSARY_READ, summaries
-        )
+        prompt_key = build_aggregate_prompt(BehaviorFlagType.UNNECESSARY_READ, summaries)
 
         agent = FakeAnalysisAgent(
             aggregate_outputs={prompt_key: AggregateOutput(patterns=patterns)}
@@ -900,9 +868,7 @@ class TestHPB4TopNBound:
                 reason=flag.reason,
             )
         ]
-        prompt_key = build_aggregate_prompt(
-            BehaviorFlagType.UNNECESSARY_READ, summaries
-        )
+        prompt_key = build_aggregate_prompt(BehaviorFlagType.UNNECESSARY_READ, summaries)
 
         agent = FakeAnalysisAgent(
             aggregate_outputs={prompt_key: AggregateOutput(patterns=patterns)}
@@ -941,9 +907,7 @@ class TestResultFields:
                 reason=flag.reason,
             )
         ]
-        prompt_key = build_aggregate_prompt(
-            BehaviorFlagType.UNNECESSARY_READ, summaries
-        )
+        prompt_key = build_aggregate_prompt(BehaviorFlagType.UNNECESSARY_READ, summaries)
 
         agent = FakeAnalysisAgent(
             aggregate_outputs={
@@ -998,9 +962,7 @@ class TestResultFields:
             )
             for f in inserted_flags
         ]
-        prompt_key = build_aggregate_prompt(
-            BehaviorFlagType.UNNECESSARY_READ, summaries
-        )
+        prompt_key = build_aggregate_prompt(BehaviorFlagType.UNNECESSARY_READ, summaries)
 
         agent = FakeAnalysisAgent(
             aggregate_outputs={
@@ -1019,6 +981,7 @@ class TestResultFields:
         assert result.flags_read == 4
         # Check directive frequency in DB
         from secondsight.storage.directives_table import directives as directives_table
+
         stmt = sa.select(directives_table.c.frequency)
         with db_engine.engine.connect() as conn:
             freq = conn.execute(stmt).scalar()
@@ -1060,9 +1023,7 @@ class TestResultFields:
                 reason=flag_redundant.reason,
             )
         ]
-        prompt_key_read = build_aggregate_prompt(
-            BehaviorFlagType.UNNECESSARY_READ, summaries_read
-        )
+        prompt_key_read = build_aggregate_prompt(BehaviorFlagType.UNNECESSARY_READ, summaries_read)
         prompt_key_redundant = build_aggregate_prompt(
             BehaviorFlagType.REDUNDANT_EXPLORATION, summaries_redundant
         )

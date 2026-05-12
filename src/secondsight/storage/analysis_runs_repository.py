@@ -84,9 +84,7 @@ class AnalysisRunsRepository:
             conn.execute(analysis_runs.insert().values(**row))
         return run_id
 
-    def advance_stage(
-        self, run_id: str, stage: str, *, flags_inserted: int = 0
-    ) -> None:
+    def advance_stage(self, run_id: str, stage: str, *, flags_inserted: int = 0) -> None:
         """Move a run to the next stage.
 
         Validates stage against the AnalysisRunStage enum at the
@@ -115,17 +113,12 @@ class AnalysisRunsRepository:
         if stage == AnalysisRunStage.BEHAVIOR_DONE.value:
             values["flags_inserted"] = flags_inserted
 
-        stmt = (
-            sa.update(analysis_runs)
-            .where(analysis_runs.c.id == run_id)
-            .values(**values)
-        )
+        stmt = sa.update(analysis_runs).where(analysis_runs.c.id == run_id).values(**values)
         with self._db.engine.begin() as conn:
             result = conn.execute(stmt)
             if result.rowcount == 0:
                 raise LookupError(
-                    f"analysis_run {run_id!r} not found; "
-                    "advance_stage will not silently no-op"
+                    f"analysis_run {run_id!r} not found; advance_stage will not silently no-op"
                 )
 
     def record_failure(self, run_id: str, error_message: str) -> None:
@@ -149,8 +142,7 @@ class AnalysisRunsRepository:
             result = conn.execute(stmt)
             if result.rowcount == 0:
                 raise LookupError(
-                    f"analysis_run {run_id!r} not found; "
-                    "record_failure will not silently no-op"
+                    f"analysis_run {run_id!r} not found; record_failure will not silently no-op"
                 )
 
     def get_latest_for_session(self, session_id: str) -> AnalysisRun | None:
@@ -202,9 +194,7 @@ class AnalysisRunsRepository:
             result = conn.execute(stmt).scalar()
             return int(result) if result is not None else 0
 
-    def get_failed_runs(
-        self, project_id: str, *, limit: int = 50
-    ) -> list[AnalysisRun]:
+    def get_failed_runs(self, project_id: str, *, limit: int = 50) -> list[AnalysisRun]:
         """Return failed runs for a project, ordered by updated_at DESC.
 
         Used by ``secondsight analyze --retry-failed`` (GUR-108, P3B-6)
@@ -222,10 +212,7 @@ class AnalysisRunsRepository:
             .limit(limit)
         )
         with self._db.engine.connect() as conn:
-            return [
-                self._row_to_run(r)
-                for r in conn.execute(stmt).mappings()
-            ]
+            return [self._row_to_run(r) for r in conn.execute(stmt).mappings()]
 
     @staticmethod
     def _row_to_run(row: sa.RowMapping) -> AnalysisRun:

@@ -84,11 +84,7 @@ class DirectivesRepository:
             )
         self._guard(directive)
         row = self._directive_to_row(directive)
-        stmt = (
-            sqlite_insert(directives)
-            .values(**row)
-            .on_conflict_do_nothing(index_elements=["id"])
-        )
+        stmt = sqlite_insert(directives).values(**row).on_conflict_do_nothing(index_elements=["id"])
         try:
             with self._db.engine.begin() as conn:
                 conn.execute(stmt)
@@ -99,7 +95,7 @@ class DirectivesRepository:
                 f"project_id={directive.project_id!r}, "
                 f"identity_key={directive.identity_key!r}. "
                 f"Two directives in the same project cannot share identity_key. "
-                f"If identity_key is empty (\"\"), use distinct non-empty keys "
+                f'If identity_key is empty (""), use distinct non-empty keys '
                 f"or switch to upsert_with_identity_key()."
             ) from exc
 
@@ -131,10 +127,7 @@ class DirectivesRepository:
             .limit(self._MAX_CONVENTIONS)
         )
         with self._db.engine.connect() as conn:
-            return [
-                self._row_to_directive(r)
-                for r in conn.execute(stmt).mappings()
-            ]
+            return [self._row_to_directive(r) for r in conn.execute(stmt).mappings()]
 
     def get_by_id(self, directive_id: str) -> Directive | None:
         stmt = sa.select(directives).where(directives.c.id == directive_id)
@@ -142,9 +135,7 @@ class DirectivesRepository:
             row = conn.execute(stmt).mappings().first()
             return self._row_to_directive(row) if row else None
 
-    def list_for_project(
-        self, project_id: str, *, active_only: bool = False
-    ) -> list[Directive]:
+    def list_for_project(self, project_id: str, *, active_only: bool = False) -> list[Directive]:
         """List directives for a project ordered by ``updated_at`` DESC.
 
         Backs ``GET /api/directives?active=<bool>`` (GUR-104). When
@@ -160,9 +151,7 @@ class DirectivesRepository:
         _API_VISIBLE = [DirectiveStatus.ACTIVE.value, DirectiveStatus.DISABLED.value]
         where = [directives.c.project_id == project_id]
         if active_only:
-            where.append(
-                directives.c.status == DirectiveStatus.ACTIVE.value
-            )
+            where.append(directives.c.status == DirectiveStatus.ACTIVE.value)
         else:
             where.append(directives.c.status.in_(_API_VISIBLE))
         stmt = (
@@ -171,10 +160,7 @@ class DirectivesRepository:
             .order_by(directives.c.updated_at.desc(), directives.c.id.asc())
         )
         with self._db.engine.connect() as conn:
-            return [
-                self._row_to_directive(r)
-                for r in conn.execute(stmt).mappings()
-            ]
+            return [self._row_to_directive(r) for r in conn.execute(stmt).mappings()]
 
     def upsert_with_identity_key(self, directive: Directive) -> None:
         """ON CONFLICT(project_id, identity_key) DO UPDATE SET
@@ -240,9 +226,7 @@ class DirectivesRepository:
             LookupError — directive_id not found.
         """
         if not isinstance(new_status, DirectiveStatus):
-            raise ValueError(
-                f"new_status must be DirectiveStatus, got {new_status!r}"
-            )
+            raise ValueError(f"new_status must be DirectiveStatus, got {new_status!r}")
 
         now = datetime.now(timezone.utc)
 
@@ -273,17 +257,12 @@ class DirectivesRepository:
                 "updated_at": now,
             }
 
-        stmt = (
-            sa.update(directives)
-            .where(directives.c.id == directive_id)
-            .values(**values)
-        )
+        stmt = sa.update(directives).where(directives.c.id == directive_id).values(**values)
         with self._db.engine.begin() as conn:
             result = conn.execute(stmt)
             if result.rowcount == 0:
                 raise LookupError(
-                    f"directive {directive_id!r} not found; "
-                    "update_status will not silently no-op"
+                    f"directive {directive_id!r} not found; update_status will not silently no-op"
                 )
 
     def compare_and_update_status(
@@ -304,16 +283,16 @@ class DirectivesRepository:
         concurrent PATCHes serialize at the SQLite write-lock level.
         """
         if not isinstance(new_status, DirectiveStatus):
-            raise ValueError(
-                f"new_status must be DirectiveStatus, got {new_status!r}"
-            )
+            raise ValueError(f"new_status must be DirectiveStatus, got {new_status!r}")
 
         now = datetime.now(timezone.utc)
 
         with self._db.engine.begin() as conn:
-            row = conn.execute(
-                sa.select(directives).where(directives.c.id == directive_id)
-            ).mappings().first()
+            row = (
+                conn.execute(sa.select(directives).where(directives.c.id == directive_id))
+                .mappings()
+                .first()
+            )
 
             if row is None:
                 return None, False
@@ -323,17 +302,14 @@ class DirectivesRepository:
                 return None, False
 
             is_noop = current.status == new_status and (
-                new_status != DirectiveStatus.DISABLED
-                or current.disabled_reason == reason
+                new_status != DirectiveStatus.DISABLED or current.disabled_reason == reason
             )
             if is_noop:
                 return current, True
 
             if new_status is DirectiveStatus.DISABLED:
                 if reason is None:
-                    raise ValueError(
-                        "DISABLED transitions require a non-None reason."
-                    )
+                    raise ValueError("DISABLED transitions require a non-None reason.")
                 values = {
                     "status": new_status.value,
                     "disabled_at": now,
@@ -354,14 +330,14 @@ class DirectivesRepository:
                 }
 
             conn.execute(
-                sa.update(directives)
-                .where(directives.c.id == directive_id)
-                .values(**values)
+                sa.update(directives).where(directives.c.id == directive_id).values(**values)
             )
 
-            refreshed_row = conn.execute(
-                sa.select(directives).where(directives.c.id == directive_id)
-            ).mappings().first()
+            refreshed_row = (
+                conn.execute(sa.select(directives).where(directives.c.id == directive_id))
+                .mappings()
+                .first()
+            )
             return self._row_to_directive(refreshed_row), False
 
     @staticmethod
@@ -384,8 +360,7 @@ class DirectivesRepository:
                 DirectiveStatus(directive.status)
             except ValueError as e:
                 raise ValueError(
-                    f"Directive.status={directive.status!r} not in "
-                    f"DirectiveStatus enum"
+                    f"Directive.status={directive.status!r} not in DirectiveStatus enum"
                 ) from e
 
         # 2. type enum
@@ -394,8 +369,7 @@ class DirectivesRepository:
                 DirectiveType(directive.type)
             except ValueError as e:
                 raise ValueError(
-                    f"Directive.type={directive.type!r} not in "
-                    f"DirectiveType enum"
+                    f"Directive.type={directive.type!r} not in DirectiveType enum"
                 ) from e
 
         # 3. lifecycle coherence: disabled_* iff status==DISABLED
@@ -437,9 +411,7 @@ class DirectivesRepository:
             "confidence": d.confidence,
             "max_firing": d.max_firing,
             "source_flag_type": d.source_flag_type,
-            "source_sessions": json.dumps(
-                d.source_sessions, ensure_ascii=False
-            ),
+            "source_sessions": json.dumps(d.source_sessions, ensure_ascii=False),
             "identity_key": d.identity_key,
             "created_at": d.created_at,
             "expires_at": d.expires_at,

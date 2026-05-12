@@ -125,8 +125,7 @@ def enforce_expiry(
                     continue
             count += 1
             _logger.info(
-                "expiry_enforcement: expired directive_id=%r "
-                "(expires_at=%s, now=%s)",
+                "expiry_enforcement: expired directive_id=%r (expires_at=%s, now=%s)",
                 directive_id,
                 row["expires_at"],
                 now.isoformat(),
@@ -185,7 +184,9 @@ def enforce_reactivation(
 
         with db_engine.engine.connect() as conn:
             recent_count_result = conn.execute(
-                sa.select(sa.func.count()).select_from(behavior_flags).where(
+                sa.select(sa.func.count())
+                .select_from(behavior_flags)
+                .where(
                     sa.and_(
                         behavior_flags.c.project_id == project_id,
                         behavior_flags.c.flag_type == flag_type,

@@ -225,4 +225,3 @@ resolved_items:
       extract the FB-2 section (between ### FB-2 heading and next ### heading) via
       _extract_fb2_section() helper, then check for the feature table within that
       scoped section only. Eliminated cross-section false positive risk.
-

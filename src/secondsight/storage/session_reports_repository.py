@@ -71,9 +71,7 @@ class SessionReportsRepository:
 
     def get_for_session(self, session_id: str) -> SessionReport | None:
         """Return the report for this session, or None if absent."""
-        stmt = sa.select(session_reports).where(
-            session_reports.c.session_id == session_id
-        )
+        stmt = sa.select(session_reports).where(session_reports.c.session_id == session_id)
         with self._db.engine.connect() as conn:
             row = conn.execute(stmt).mappings().first()
             return self._row_to_report(row) if row else None
@@ -94,10 +92,7 @@ class SessionReportsRepository:
             .offset(offset)
         )
         with self._db.engine.connect() as conn:
-            return [
-                self._row_to_report(r)
-                for r in conn.execute(stmt).mappings()
-            ]
+            return [self._row_to_report(r) for r in conn.execute(stmt).mappings()]
 
     @staticmethod
     def _guard(report: SessionReport) -> None:
@@ -119,9 +114,7 @@ class SessionReportsRepository:
                 f"A model_construct() bypass may have skipped Pydantic validation."
             )
         if len(report.headline) < 1:
-            raise ValueError(
-                "SessionReport.headline must not be empty (min_length=1)."
-            )
+            raise ValueError("SessionReport.headline must not be empty (min_length=1).")
         if len(report.headline) > 200:
             raise ValueError(
                 f"SessionReport.headline has {len(report.headline)} characters; "
@@ -136,9 +129,7 @@ class SessionReportsRepository:
             "session_id": report.session_id,
             "analysis_run_id": report.analysis_run_id,
             "headline": report.headline,
-            "key_findings": json.dumps(
-                report.key_findings, ensure_ascii=False
-            ),
+            "key_findings": json.dumps(report.key_findings, ensure_ascii=False),
             "body": report.body,
             "created_at": report.created_at,
             "updated_at": report.updated_at,

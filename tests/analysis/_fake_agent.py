@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from secondsight.analysis.agent import AnalysisAgent, AnalysisAgentError
+from secondsight.analysis.agent import AnalysisAgentError
 from secondsight.analysis.prompts.aggregate import AggregateOutput
 from secondsight.analysis.prompts.summary import SummaryOutput
 from secondsight.analysis.schemas import SegmentAnalysis
@@ -75,9 +75,7 @@ class FakeAnalysisAgent:
         self._raise_on_aggregate_call = raise_on_aggregate_call
         self._raise_on_summary_call = raise_on_summary_call
 
-    async def analyze_segments(
-        self, prompts: Sequence[str]
-    ) -> list[SegmentAnalysis]:
+    async def analyze_segments(self, prompts: Sequence[str]) -> list[SegmentAnalysis]:
         """Return canned outputs aligned to prompts.
 
         Raises AnalysisAgentError if raise_on_segments_call is True.

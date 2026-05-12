@@ -200,25 +200,17 @@ class SessionTracker:
             if partial.event_type == EventType.SUB_AGENT_START:
                 agent_id = partial.data.get("sub_agent_id")
                 if agent_id is None:
-                    raise ValueError(
-                        "sub_agent_start data must include non-empty sub_agent_id"
-                    )
+                    raise ValueError("sub_agent_start data must include non-empty sub_agent_id")
                 if not isinstance(agent_id, str) or agent_id == "":
-                    raise ValueError(
-                        "sub_agent_start data must include non-empty sub_agent_id"
-                    )
+                    raise ValueError("sub_agent_start data must include non-empty sub_agent_id")
                 state.sub_agent_stack.append(agent_id)
 
             elif partial.event_type == EventType.SUB_AGENT_END:
                 end_id = partial.data.get("sub_agent_id")
                 if end_id is None:
-                    raise ValueError(
-                        "sub_agent_end data must include non-empty sub_agent_id"
-                    )
+                    raise ValueError("sub_agent_end data must include non-empty sub_agent_id")
                 if not isinstance(end_id, str) or end_id == "":
-                    raise ValueError(
-                        "sub_agent_end data must include non-empty sub_agent_id"
-                    )
+                    raise ValueError("sub_agent_end data must include non-empty sub_agent_id")
                 # end_id is guaranteed str and non-empty after the checks above.
                 if not state.sub_agent_stack:
                     raise SubAgentStackMismatch(

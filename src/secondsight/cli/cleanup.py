@@ -257,14 +257,10 @@ def _project_report(
         base["analysis_purged_session_ids"] = None
         base["analysis_failures"] = None
     else:
-        base["purged_session_ids"] = (
-            list(purge.purged_session_ids) if purge is not None else []
-        )
+        base["purged_session_ids"] = list(purge.purged_session_ids) if purge is not None else []
         base["failures"] = _failures_to_dicts(purge)
         base["analysis_purged_session_ids"] = (
-            list(analysis_purge.purged_session_ids)
-            if analysis_purge is not None
-            else []
+            list(analysis_purge.purged_session_ids) if analysis_purge is not None else []
         )
         base["analysis_failures"] = _failures_to_dicts(analysis_purge)
     return base
@@ -362,9 +358,7 @@ def cleanup(
             # Dry-run never touches either destructive side (D7: both purgers
             # are governed by the same dry-run gate).
             reports.append(
-                _project_report(
-                    outcome, purge=None, analysis_purge=None, dry_run=dry_run
-                )
+                _project_report(outcome, purge=None, analysis_purge=None, dry_run=dry_run)
             )
             continue
 
@@ -393,9 +387,7 @@ def cleanup(
                     any_failure = True
             except Exception as exc:  # noqa: BLE001
                 any_failure = True
-                purge_errors.append(
-                    f"raw_traces purge: {type(exc).__name__}: {exc}"
-                )
+                purge_errors.append(f"raw_traces purge: {type(exc).__name__}: {exc}")
 
         if outcome.expired_analyses:
             try:
@@ -406,16 +398,12 @@ def cleanup(
                     any_failure = True
             except Exception as exc:  # noqa: BLE001
                 any_failure = True
-                purge_errors.append(
-                    f"analysis purge: {type(exc).__name__}: {exc}"
-                )
+                purge_errors.append(f"analysis purge: {type(exc).__name__}: {exc}")
 
         # If a purge raised, surface the error in the report alongside
         # any pre-existing enumeration error.
         if purge_errors:
-            combined_error = "; ".join(
-                ([outcome.error] if outcome.error else []) + purge_errors
-            )
+            combined_error = "; ".join(([outcome.error] if outcome.error else []) + purge_errors)
             outcome = replace(outcome, error=combined_error)
 
         reports.append(

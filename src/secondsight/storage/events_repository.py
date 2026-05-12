@@ -41,11 +41,7 @@ class EventsRepository:
                 conflict — this is an upstream correctness bug, not a retry.
         """
         row = self._event_to_row(event)
-        stmt = (
-            sqlite_insert(events)
-            .values(**row)
-            .on_conflict_do_nothing(index_elements=["id"])
-        )
+        stmt = sqlite_insert(events).values(**row).on_conflict_do_nothing(index_elements=["id"])
         with self._db.engine.begin() as conn:
             conn.execute(stmt)
 
@@ -143,10 +139,7 @@ class EventsRepository:
         with self._db.engine.connect() as conn:
             rows = conn.execute(stmt).mappings().all()
 
-        return [
-            (row["project_id"], row["session_id"], row["last_event_ts"])
-            for row in rows
-        ]
+        return [(row["project_id"], row["session_id"], row["last_event_ts"]) for row in rows]
 
     def get_latest_session_agent_type(self, project_id: str) -> str | None:
         """Return the agent_type for the most-recent session for this project.

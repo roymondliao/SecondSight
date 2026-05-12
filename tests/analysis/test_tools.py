@@ -40,12 +40,9 @@ Assumptions:
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import os
 from pathlib import Path
-from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -117,7 +114,11 @@ class TestDT11SandboxRejectsSymlinkEscape:
 
     @pytest.mark.asyncio
     async def test_DT_1_1_sandbox_rejects_symlink_escape(
-        self, tmp_path: Path, mock_events_repo: MagicMock, mock_flags_repo: MagicMock, mock_directives_repo: MagicMock
+        self,
+        tmp_path: Path,
+        mock_events_repo: MagicMock,
+        mock_flags_repo: MagicMock,
+        mock_directives_repo: MagicMock,
     ) -> None:
         # Arrange: project_root + a symlink inside it pointing OUTSIDE
         project_root = tmp_path / "project"
@@ -145,7 +146,12 @@ class TestDT11SandboxRejectsSymlinkEscape:
 
     @pytest.mark.asyncio
     async def test_symlink_escape_is_warn_logged(
-        self, tmp_path: Path, mock_events_repo: MagicMock, mock_flags_repo: MagicMock, mock_directives_repo: MagicMock, caplog: pytest.LogCaptureFixture
+        self,
+        tmp_path: Path,
+        mock_events_repo: MagicMock,
+        mock_flags_repo: MagicMock,
+        mock_directives_repo: MagicMock,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Rejection must WARN-log the resolved path (audit trail)."""
         project_root = tmp_path / "project"
@@ -173,7 +179,9 @@ class TestDT11SandboxRejectsSymlinkEscape:
             str(secret_file.resolve()) in record.message
             for record in caplog.records
             if record.levelno >= logging.WARNING
-        ), f"Expected resolved path {secret_file.resolve()} in WARN logs. Got: {[r.message for r in caplog.records]}"
+        ), (
+            f"Expected resolved path {secret_file.resolve()} in WARN logs. Got: {[r.message for r in caplog.records]}"
+        )
 
 
 class TestDT12DenylistCaseInsensitive:
@@ -258,7 +266,7 @@ class TestDT13DenylistMatchOnAncestorDirectory:
         ssh_dir = project_root / ".ssh"
         ssh_dir.mkdir()
         id_rsa = ssh_dir / "id_rsa"
-        id_rsa.write_text("-----BEGIN RSA PRIVATE KEY-----\n...")
+        id_rsa.write_text("fake-key-content")
 
         # Act + Assert: blocked by .ssh component matching (ancestor block)
         with pytest.raises(ProjectFileToolError):
@@ -382,8 +390,11 @@ class TestDT15BinaryFilePlaceholder:
 
     @pytest.mark.asyncio
     async def test_DT_1_5b_binary_check_on_full_bytes_before_truncation(
-        self, project_root: Path, mock_events_repo: MagicMock,
-        mock_flags_repo: MagicMock, mock_directives_repo: MagicMock
+        self,
+        project_root: Path,
+        mock_events_repo: MagicMock,
+        mock_flags_repo: MagicMock,
+        mock_directives_repo: MagicMock,
     ) -> None:
         """DT-1.5b (fix-loop): binary detection must happen on the FULL file,
         not the truncated slice.
@@ -398,7 +409,7 @@ class TestDT15BinaryFilePlaceholder:
         # Arrange: file with 256 KiB of text, then null bytes at the end.
         # The size cap is SIZE_CAP = 256 * 1024. Null bytes appear AFTER the cap.
         text_part = b"A" * SIZE_CAP  # exactly the size cap in text
-        null_part = b"\x00" * 1024   # null bytes beyond the cap
+        null_part = b"\x00" * 1024  # null bytes beyond the cap
         mixed_file = project_root / "mixed_binary.bin"
         mixed_file.write_bytes(text_part + null_part)
 
@@ -438,8 +449,11 @@ class TestDT1D8KillSwitch:
 
     @pytest.mark.asyncio
     async def test_kill_switch_disabled_raises_project_file_tool_error(
-        self, tmp_path: Path, mock_events_repo: MagicMock,
-        mock_flags_repo: MagicMock, mock_directives_repo: MagicMock
+        self,
+        tmp_path: Path,
+        mock_events_repo: MagicMock,
+        mock_flags_repo: MagicMock,
+        mock_directives_repo: MagicMock,
     ) -> None:
         """When read_project_file_enabled=False, every call raises ProjectFileToolError."""
         project_root = tmp_path / "project"
@@ -465,8 +479,11 @@ class TestDT1D8KillSwitch:
 
     @pytest.mark.asyncio
     async def test_kill_switch_disabled_no_fs_read_attempted(
-        self, tmp_path: Path, mock_events_repo: MagicMock,
-        mock_flags_repo: MagicMock, mock_directives_repo: MagicMock
+        self,
+        tmp_path: Path,
+        mock_events_repo: MagicMock,
+        mock_flags_repo: MagicMock,
+        mock_directives_repo: MagicMock,
     ) -> None:
         """When disabled, no FS read must be attempted (not even a path resolution)."""
         project_root = tmp_path / "project"
@@ -488,13 +505,13 @@ class TestDT1D8KillSwitch:
             raise AssertionError("FS read attempted despite kill switch!")
 
         import unittest.mock as mock_module
+
         with mock_module.patch("secondsight.analysis.tools.asyncio.to_thread", fake_to_thread):
             with pytest.raises(ProjectFileToolError):
                 await tools.read_project_file("README.md")
 
         assert not call_log, (
-            f"Expected zero FS reads when kill switch is disabled, "
-            f"got calls: {call_log}"
+            f"Expected zero FS reads when kill switch is disabled, got calls: {call_log}"
         )
 
     @pytest.mark.asyncio
@@ -540,16 +557,12 @@ class TestDT16QueryStructuredStoreRejectsUnknownKind:
         mock_directives_repo.get_active_conventions.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_empty_kind_raises_value_error(
-        self, tools: AnalysisTools
-    ) -> None:
+    async def test_empty_kind_raises_value_error(self, tools: AnalysisTools) -> None:
         with pytest.raises(ValueError):
             await tools.query_structured_store({"kind": "", "project_id": "proj"})
 
     @pytest.mark.asyncio
-    async def test_missing_kind_key_raises_value_error(
-        self, tools: AnalysisTools
-    ) -> None:
+    async def test_missing_kind_key_raises_value_error(self, tools: AnalysisTools) -> None:
         with pytest.raises(ValueError):
             await tools.query_structured_store({})
 
@@ -570,9 +583,7 @@ class TestDT16QueryStructuredStoreRejectsUnknownKind:
     ) -> None:
         """Empty project_id must raise rather than querying repo with empty string."""
         with pytest.raises(ValueError):
-            await tools.query_structured_store(
-                {"kind": "behavior_flag_summary", "project_id": ""}
-            )
+            await tools.query_structured_store({"kind": "behavior_flag_summary", "project_id": ""})
         mock_flags_repo.count_by_type.assert_not_called()
 
 
@@ -585,7 +596,10 @@ class TestDT17NoProjectRootRaisesOnFileRead:
 
     @pytest.mark.asyncio
     async def test_no_project_root_raises_project_file_tool_error(
-        self, mock_events_repo: MagicMock, mock_flags_repo: MagicMock, mock_directives_repo: MagicMock
+        self,
+        mock_events_repo: MagicMock,
+        mock_flags_repo: MagicMock,
+        mock_directives_repo: MagicMock,
     ) -> None:
         tools = AnalysisTools(
             project_root=None,
@@ -600,7 +614,10 @@ class TestDT17NoProjectRootRaisesOnFileRead:
         assert "project" in str(exc_info.value).lower() or str(exc_info.value)
 
     def test_relative_project_root_raises_value_error(
-        self, mock_events_repo: MagicMock, mock_flags_repo: MagicMock, mock_directives_repo: MagicMock
+        self,
+        mock_events_repo: MagicMock,
+        mock_flags_repo: MagicMock,
+        mock_directives_repo: MagicMock,
     ) -> None:
         """Non-absolute project_root must raise at construction time, not silently
         resolve against CWD.
@@ -635,17 +652,13 @@ class TestDT18NonExistentFileRaises:
             await tools.read_project_file("does_not_exist.txt")
 
     @pytest.mark.asyncio
-    async def test_file_not_found_error_does_not_escape(
-        self, tools: AnalysisTools
-    ) -> None:
+    async def test_file_not_found_error_does_not_escape(self, tools: AnalysisTools) -> None:
         """Specifically verify FileNotFoundError is NOT raised."""
         with pytest.raises(ProjectFileToolError):
             try:
                 await tools.read_project_file("ghost.py")
             except FileNotFoundError:
-                pytest.fail(
-                    "FileNotFoundError escaped! Must be wrapped as ProjectFileToolError."
-                )
+                pytest.fail("FileNotFoundError escaped! Must be wrapped as ProjectFileToolError.")
 
 
 # =====================================================================
@@ -714,6 +727,7 @@ class TestHP15ReadTraces:
         self, tools: AnalysisTools, mock_events_repo: MagicMock
     ) -> None:
         from unittest.mock import MagicMock as MM
+
         fake_event = MM()
         mock_events_repo.get_session_events.return_value = [fake_event]
 
@@ -743,6 +757,7 @@ class TestHP16QueryStructuredStoreBehaviorFlagSummary:
         mock_flags_repo: MagicMock,
     ) -> None:
         from secondsight.analysis.schemas import BehaviorFlagType
+
         mock_flags_repo.count_by_type.return_value = {
             BehaviorFlagType.UNNECESSARY_READ: 3,
         }
@@ -765,6 +780,7 @@ class TestHP17QueryStructuredStoreDirectiveActive:
         mock_directives_repo: MagicMock,
     ) -> None:
         from unittest.mock import MagicMock as MM
+
         fake_directive = MM()
         mock_directives_repo.get_active_conventions.return_value = [fake_directive]
 
@@ -796,8 +812,10 @@ class TestHP18ReadHistoricalFlags:
         flag3.flag_type = BehaviorFlagType.MISSED_SHORTCUT
 
         mock_flags_repo.get_project_flags_by_type.side_effect = lambda pid, ft: (
-            [flag1, flag2] if ft == BehaviorFlagType.UNNECESSARY_READ
-            else [flag3] if ft == BehaviorFlagType.MISSED_SHORTCUT
+            [flag1, flag2]
+            if ft == BehaviorFlagType.UNNECESSARY_READ
+            else [flag3]
+            if ft == BehaviorFlagType.MISSED_SHORTCUT
             else []
         )
 

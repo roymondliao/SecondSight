@@ -81,9 +81,7 @@ def raw_trace_store(project_dir: Path) -> RawTraceStore:
 
 
 @pytest.fixture
-def real_purger(
-    events_repo: EventsRepository, raw_trace_store: RawTraceStore
-) -> RawTracesPurger:
+def real_purger(events_repo: EventsRepository, raw_trace_store: RawTraceStore) -> RawTracesPurger:
     return RawTracesPurger(repo=events_repo, raw_trace_store=raw_trace_store)
 
 
@@ -158,9 +156,7 @@ class TestDisabledPath:
         with caplog.at_level(logging.INFO):
             trigger("sess-anything")
 
-        assert purge_calls == [], (
-            "Purger MUST NOT be invoked when cleanup_after_analysis=False"
-        )
+        assert purge_calls == [], "Purger MUST NOT be invoked when cleanup_after_analysis=False"
         # Structured INFO line names the disabled state.
         assert any(
             "cleanup_after_analysis=False" in r.getMessage()
@@ -310,9 +306,9 @@ class TestTriggerDoesNotRaiseOnPurgerFailure:
 
         # WARNING line names the session_id and points to RawTracesPurger logs.
         warnings = [
-            r for r in caplog.records
-            if r.levelno >= logging.WARNING
-            and "sess-fails" in r.getMessage()
+            r
+            for r in caplog.records
+            if r.levelno >= logging.WARNING and "sess-fails" in r.getMessage()
         ]
         assert len(warnings) >= 1, (
             f"Expected at least one WARNING for sess-fails, got: "
@@ -361,10 +357,9 @@ class TestHappyPath:
         # session_report.json backup is also gone (gap-fs-collision).
         info_messages = [r.getMessage() for r in caplog.records]
         assert any(sid in m for m in info_messages)
-        assert any(
-            "session_report.json" in m or "DB row remains" in m
-            for m in info_messages
-        ), f"Expected gap-fs-collision disclosure in INFO logs, got: {info_messages}"
+        assert any("session_report.json" in m or "DB row remains" in m for m in info_messages), (
+            f"Expected gap-fs-collision disclosure in INFO logs, got: {info_messages}"
+        )
 
     def test_trigger_uses_actual_last_event_timestamp(
         self,

@@ -45,16 +45,12 @@ async def test_death_concurrent_init_race_single_dbengine(
 
         with patch.object(DBEngine, "__init__", counting_init):
             # 50 concurrent requests for the same brand-new project
-            results = await asyncio.gather(
-                *[registry.get("concurrent-proj-x") for _ in range(50)]
-            )
+            results = await asyncio.gather(*[registry.get("concurrent-proj-x") for _ in range(50)])
 
         # All 50 calls must return the SAME ProjectResources object
         first_id = id(results[0].db_engine)
         for i, res in enumerate(results):
-            assert id(res.db_engine) == first_id, (
-                f"Call {i} returned a different DBEngine instance"
-            )
+            assert id(res.db_engine) == first_id, f"Call {i} returned a different DBEngine instance"
 
         # Only ONE DBEngine should have been constructed
         assert construction_count == 1, (

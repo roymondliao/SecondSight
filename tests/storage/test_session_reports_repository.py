@@ -99,9 +99,7 @@ class TestDeathPaths:
         assert "key_findings" in msg, (
             "ValueError must mention key_findings so callers understand the constraint"
         )
-        assert "6" in msg or "5" in msg, (
-            "ValueError must mention the count or limit"
-        )
+        assert "6" in msg or "5" in msg, "ValueError must mention the count or limit"
 
         # No row was persisted
         assert repo.get_for_session("sess-guard") is None
@@ -181,19 +179,13 @@ class TestDeathPaths:
         assert got is not None
 
         # created_at must be FIRST value preserved
-        assert got.created_at.replace(tzinfo=None) == first_created_at.replace(
-            tzinfo=None
-        ), (
+        assert got.created_at.replace(tzinfo=None) == first_created_at.replace(tzinfo=None), (
             "upsert overwrote created_at — must preserve original creation time"
         )
 
         # These must be updated to second call values
-        assert got.headline == "Updated headline", (
-            "headline must be updated on conflict"
-        )
-        assert got.analysis_run_id == "run-2", (
-            "analysis_run_id must be updated on conflict"
-        )
+        assert got.headline == "Updated headline", "headline must be updated on conflict"
+        assert got.analysis_run_id == "run-2", "analysis_run_id must be updated on conflict"
         assert got.key_findings == ["new finding 1", "new finding 2"], (
             "key_findings must be updated on conflict"
         )
@@ -205,9 +197,7 @@ class TestDeathPaths:
 
 
 class TestHappyPaths:
-    def test_round_trip_key_findings_preserves_order(
-        self, repo: SessionReportsRepository
-    ) -> None:
+    def test_round_trip_key_findings_preserves_order(self, repo: SessionReportsRepository) -> None:
         """JSON encoding/decoding of key_findings must preserve order.
 
         key_findings is stored as JSON-encoded list[str]. Order drift
@@ -262,25 +252,17 @@ class TestHappyPaths:
 
         results = repo.list_for_project("proj-1")
         ids = [r.id for r in results]
-        assert ids == ["r-2", "r-3", "r-1"], (
-            f"Expected created_at DESC order, got {ids}"
-        )
+        assert ids == ["r-2", "r-3", "r-1"], f"Expected created_at DESC order, got {ids}"
 
-    def test_list_for_project_pagination(
-        self, repo: SessionReportsRepository
-    ) -> None:
+    def test_list_for_project_pagination(self, repo: SessionReportsRepository) -> None:
         """limit and offset correctly paginate results."""
         for i in range(5):
             repo.upsert(
                 _report(
                     id=f"r-{i}",
                     session_id=f"sess-{i}",
-                    created_at=datetime(
-                        2026, 5, 6, i, 0, 0, tzinfo=timezone.utc
-                    ),
-                    updated_at=datetime(
-                        2026, 5, 6, i, 0, 0, tzinfo=timezone.utc
-                    ),
+                    created_at=datetime(2026, 5, 6, i, 0, 0, tzinfo=timezone.utc),
+                    updated_at=datetime(2026, 5, 6, i, 0, 0, tzinfo=timezone.utc),
                 )
             )
 
@@ -291,13 +273,9 @@ class TestHappyPaths:
         # No overlap
         assert {r.id for r in page1}.isdisjoint({r.id for r in page2})
 
-    def test_list_for_project_excludes_other_projects(
-        self, repo: SessionReportsRepository
-    ) -> None:
+    def test_list_for_project_excludes_other_projects(self, repo: SessionReportsRepository) -> None:
         r_mine = _report(session_id="sess-mine", project_id="proj-1")
-        r_other = _report(
-            id="r-other", session_id="sess-other", project_id="proj-other"
-        )
+        r_other = _report(id="r-other", session_id="sess-other", project_id="proj-other")
         repo.upsert(r_mine)
         repo.upsert(r_other)
 
@@ -305,9 +283,7 @@ class TestHappyPaths:
         assert len(results) == 1
         assert results[0].session_id == "sess-mine"
 
-    def test_round_trip_all_fields(
-        self, repo: SessionReportsRepository
-    ) -> None:
+    def test_round_trip_all_fields(self, repo: SessionReportsRepository) -> None:
         """Every non-datetime field round-trips exactly."""
         original = _report(
             id="rr-1",

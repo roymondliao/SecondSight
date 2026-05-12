@@ -89,20 +89,14 @@ class TestDeathPaths:
         assert d.status is DirectiveStatus.ACTIVE
         assert d.disabled_at is None
 
-    def test_dt_3_2_non_disabled_with_reason_raises(
-        self, repo: DirectivesRepository
-    ) -> None:
+    def test_dt_3_2_non_disabled_with_reason_raises(self, repo: DirectivesRepository) -> None:
         """DT-3.2 — non-disabled transitions cannot carry a reason."""
         repo.insert(_directive())
         with pytest.raises(ValueError) as exc:
-            repo.update_status(
-                "dir-1", DirectiveStatus.ACTIVE, reason="late note"
-            )
+            repo.update_status("dir-1", DirectiveStatus.ACTIVE, reason="late note")
         assert "reason" in str(exc.value).lower()
 
-    def test_dt_3_3_insert_rejects_model_construct_bypass(
-        self, repo: DirectivesRepository
-    ) -> None:
+    def test_dt_3_3_insert_rejects_model_construct_bypass(self, repo: DirectivesRepository) -> None:
         """DT-3.3 — Pydantic bypass on status must be rejected at repo."""
         bypassed = Directive.model_construct(
             id="bp-1",
@@ -121,9 +115,7 @@ class TestDeathPaths:
 
         assert repo.get_by_id("bp-1") is None
 
-    def test_dt_3_4_re_active_clears_disabled_metadata(
-        self, repo: DirectivesRepository
-    ) -> None:
+    def test_dt_3_4_re_active_clears_disabled_metadata(self, repo: DirectivesRepository) -> None:
         """DT-3.4 — re-active must clear disabled_at + disabled_reason.
 
         Without the clear, re-active rows still report stale "disabled
@@ -131,9 +123,7 @@ class TestDeathPaths:
         (only disabled rows own those fields).
         """
         repo.insert(_directive())
-        repo.update_status(
-            "dir-1", DirectiveStatus.DISABLED, reason="superseded by D-2"
-        )
+        repo.update_status("dir-1", DirectiveStatus.DISABLED, reason="superseded by D-2")
 
         # Sanity: disabled state has the metadata.
         before = repo.get_by_id("dir-1")
@@ -150,16 +140,12 @@ class TestDeathPaths:
         assert after.disabled_at is None, "stale disabled_at leaked"
         assert after.disabled_reason is None, "stale disabled_reason leaked"
 
-    def test_dt_3_5_update_status_unknown_id_raises(
-        self, repo: DirectivesRepository
-    ) -> None:
+    def test_dt_3_5_update_status_unknown_id_raises(self, repo: DirectivesRepository) -> None:
         """update_status on a missing id must raise, not silently no-op."""
         with pytest.raises(LookupError):
             repo.update_status("does-not-exist", DirectiveStatus.SUPERSEDED)
 
-    def test_dt_3_6_invalid_status_type_raises(
-        self, repo: DirectivesRepository
-    ) -> None:
+    def test_dt_3_6_invalid_status_type_raises(self, repo: DirectivesRepository) -> None:
         """update_status requires a DirectiveStatus enum, not a string."""
         repo.insert(_directive())
         with pytest.raises(ValueError) as exc:
@@ -206,14 +192,10 @@ class TestDeathPaths:
 
 
 class TestLifecycle:
-    def test_active_disabled_active_full_cycle(
-        self, repo: DirectivesRepository
-    ) -> None:
+    def test_active_disabled_active_full_cycle(self, repo: DirectivesRepository) -> None:
         repo.insert(_directive())
 
-        repo.update_status(
-            "dir-1", DirectiveStatus.DISABLED, reason="testing"
-        )
+        repo.update_status("dir-1", DirectiveStatus.DISABLED, reason="testing")
         d = repo.get_by_id("dir-1")
         assert d is not None
         assert d.status is DirectiveStatus.DISABLED
@@ -232,9 +214,7 @@ class TestLifecycle:
     ) -> None:
         """Analyzer-set transitions also clear the disabled metadata."""
         repo.insert(_directive())
-        repo.update_status(
-            "dir-1", DirectiveStatus.DISABLED, reason="legacy"
-        )
+        repo.update_status("dir-1", DirectiveStatus.DISABLED, reason="legacy")
         repo.update_status("dir-1", DirectiveStatus.SUPERSEDED)
         d = repo.get_by_id("dir-1")
         assert d is not None
@@ -244,9 +224,7 @@ class TestLifecycle:
 
 
 class TestQueries:
-    def test_get_active_conventions_filters_and_sorts(
-        self, repo: DirectivesRepository
-    ) -> None:
+    def test_get_active_conventions_filters_and_sorts(self, repo: DirectivesRepository) -> None:
         repo.insert(_directive(id="d-1", frequency=0.3))
         repo.insert(_directive(id="d-2", frequency=0.9))
         # disabled — should not appear
@@ -260,27 +238,20 @@ class TestQueries:
             )
         )
         # other type — should not appear
-        repo.insert(
-            _directive(id="d-4", type=DirectiveType.HINT, frequency=0.99)
-        )
+        repo.insert(_directive(id="d-4", type=DirectiveType.HINT, frequency=0.99))
         # other project — should not appear
         repo.insert(_directive(id="d-5", project_id="proj-2"))
 
         rows = repo.get_active_conventions("proj-1")
         ids = [r.id for r in rows]
         assert ids == ["d-2", "d-1"], (
-            "Expected active conventions sorted by frequency desc; "
-            f"got {ids}"
+            f"Expected active conventions sorted by frequency desc; got {ids}"
         )
 
-    def test_get_by_id_returns_none_when_missing(
-        self, repo: DirectivesRepository
-    ) -> None:
+    def test_get_by_id_returns_none_when_missing(self, repo: DirectivesRepository) -> None:
         assert repo.get_by_id("nope") is None
 
-    def test_insert_idempotent_first_wins(
-        self, repo: DirectivesRepository
-    ) -> None:
+    def test_insert_idempotent_first_wins(self, repo: DirectivesRepository) -> None:
         a = _directive(id="d-x", frequency=0.1)
         b = _directive(id="d-x", frequency=0.99)
         repo.insert(a)
@@ -331,9 +302,7 @@ def _directive_with_identity(
 
 
 class TestUpsertWithIdentityKey:
-    def test_dt_empty_identity_key_raises(
-        self, repo: DirectivesRepository
-    ) -> None:
+    def test_dt_empty_identity_key_raises(self, repo: DirectivesRepository) -> None:
         """Death case: calling upsert_with_identity_key with identity_key=''
         must raise ValueError. The server_default='' is a transitional
         DDL default only; no row should ever reach the DB with that value
@@ -390,28 +359,20 @@ class TestUpsertWithIdentityKey:
         got = rows[0]
 
         # These must be updated:
-        assert got.instruction == "Updated instruction", (
-            "instruction must be updated on conflict"
-        )
+        assert got.instruction == "Updated instruction", "instruction must be updated on conflict"
         assert got.frequency == 0.9, "frequency must be updated on conflict"
         assert got.source_sessions == ["s1", "s2", "s3"], (
             "source_sessions must be updated on conflict"
         )
 
         # These must be preserved from the first call:
-        assert got.status is DirectiveStatus.ACTIVE, (
-            "status must be preserved on conflict"
+        assert got.status is DirectiveStatus.ACTIVE, "status must be preserved on conflict"
+        assert got.type is DirectiveType.CONVENTION, "type must be preserved on conflict"
+        assert got.created_at.replace(tzinfo=None) == _now().replace(tzinfo=None), (
+            "created_at must be preserved on conflict"
         )
-        assert got.type is DirectiveType.CONVENTION, (
-            "type must be preserved on conflict"
-        )
-        assert got.created_at.replace(tzinfo=None) == _now().replace(
-            tzinfo=None
-        ), "created_at must be preserved on conflict"
 
-    def test_upsert_insert_then_get_active_conventions(
-        self, repo: DirectivesRepository
-    ) -> None:
+    def test_upsert_insert_then_get_active_conventions(self, repo: DirectivesRepository) -> None:
         """Happy path: insert via upsert_with_identity_key then
         get_active_conventions returns it.
         """

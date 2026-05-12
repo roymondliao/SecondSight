@@ -30,15 +30,13 @@ Assumptions:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Iterator
 
 import pytest
 
 from secondsight.analysis.agent import AnalysisAgentError
 from secondsight.analysis.schemas import (
-    BehaviorFlag,
     BehaviorFlagDraft,
     BehaviorFlagType,
     SegmentAnalysis,
@@ -230,9 +228,7 @@ class TestDeathPaths:
 
         # No flags must have been written.
         flags = repo.get_session_flags("sess-dt32")
-        assert flags == [], (
-            f"Expected no rows after AnalysisAgentError, but found: {flags}"
-        )
+        assert flags == [], f"Expected no rows after AnalysisAgentError, but found: {flags}"
 
     @pytest.mark.asyncio
     async def test_dt_3_3_empty_segment_analysis_returns_zero(
@@ -308,9 +304,7 @@ class TestDeathPaths:
             )
 
         counts = repo.count_by_type("proj-dt34")
-        assert counts == {}, (
-            f"Expected empty DB after confidence ValueError, got: {counts}"
-        )
+        assert counts == {}, f"Expected empty DB after confidence ValueError, got: {counts}"
 
     @pytest.mark.asyncio
     async def test_dt_3_5_empty_event_ids_raises_before_insert(
@@ -360,9 +354,7 @@ class TestDeathPaths:
 
         # DB must be empty — no partial write before validation failure.
         counts = repo.count_by_type("proj-dt35")
-        assert counts == {}, (
-            f"Expected empty DB after empty event_ids ValueError, got: {counts}"
-        )
+        assert counts == {}, f"Expected empty DB after empty event_ids ValueError, got: {counts}"
 
 
 # =====================================================================
@@ -415,9 +407,7 @@ class TestHappyPaths:
         assert BehaviorFlagType.REDUNDANT_EXPLORATION in flag_types
 
         for f in flags:
-            assert f.segment_index == 1, (
-                f"Expected segment_index=1, got {f.segment_index}"
-            )
+            assert f.segment_index == 1, f"Expected segment_index=1, got {f.segment_index}"
             assert f.session_id == "sess-hpa"
             assert f.project_id == "proj-hpa"
 

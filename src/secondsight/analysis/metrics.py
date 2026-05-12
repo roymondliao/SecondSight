@@ -38,9 +38,7 @@ FILE_TOUCHING_TOOLS: frozenset[str] = frozenset(
 # A null token_count on these is a data-quality signal worth logging.
 # Other event types (session_start, tool_use_start, etc.) legitimately
 # carry None and emit no warning.
-_TOKEN_BEARING_EVENT_TYPES: frozenset[str] = frozenset(
-    {"thinking", "response"}
-)
+_TOKEN_BEARING_EVENT_TYPES: frozenset[str] = frozenset({"thinking", "response"})
 
 
 def compute_segment_metrics(segment: SegmentData) -> SegmentMetrics:
@@ -48,9 +46,7 @@ def compute_segment_metrics(segment: SegmentData) -> SegmentMetrics:
     for an event type that is expected to carry one.
     """
     if not segment.events:
-        return SegmentMetrics(
-            total_tokens=0, unique_files=0, duration=0.0, error_count=0
-        )
+        return SegmentMetrics(total_tokens=0, unique_files=0, duration=0.0, error_count=0)
 
     total_tokens = 0
     unique_files: set[str] = set()
@@ -59,10 +55,7 @@ def compute_segment_metrics(segment: SegmentData) -> SegmentMetrics:
 
     for item in segment.events:
         if isinstance(item, ToolUseSpan):
-            if (
-                item.tool_name in FILE_TOUCHING_TOOLS
-                and item.target is not None
-            ):
+            if item.tool_name in FILE_TOUCHING_TOOLS and item.target is not None:
                 unique_files.add(item.target)
             # Only success=False counts as error. success=None (orphan)
             # is "unknown", not "failed".
@@ -78,8 +71,7 @@ def compute_segment_metrics(segment: SegmentData) -> SegmentMetrics:
             event_type = item.get("event_type")
             if event_type in _TOKEN_BEARING_EVENT_TYPES:
                 _logger.warning(
-                    "null token_count on event_id=%r event_type=%r — "
-                    "contributes 0 to total_tokens",
+                    "null token_count on event_id=%r event_type=%r — contributes 0 to total_tokens",
                     item.get("id"),
                     event_type,
                 )

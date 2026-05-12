@@ -29,9 +29,7 @@ FALLBACK_FILENAME: str = "fallback_events.jsonl"
 # Path helpers
 # ---------------------------------------------------------------------------
 
-HOOKS_DIR = (
-    Path(__file__).parent.parent.parent / "scripts" / "hooks"
-)
+HOOKS_DIR = Path(__file__).parent.parent.parent / "scripts" / "hooks"
 
 
 def hook_script(name: str) -> Path:
@@ -63,6 +61,7 @@ def run_hook(
 # ---------------------------------------------------------------------------
 # Fake HTTP server fixture (returns configurable status code)
 # ---------------------------------------------------------------------------
+
 
 class _FakeHandler(BaseHTTPRequestHandler):
     """Request handler that returns a configurable status code and JSON body."""
@@ -117,6 +116,7 @@ def fake_server_500() -> Iterator[int]:
 # Real create_app() server fixture (C2 — for true integration tests)
 # ---------------------------------------------------------------------------
 
+
 # Test stub: a standalone AgentAdapter subclass that DELEGATES to
 # IdentityAdapter for the normalize() body and adds an agent="claude_code"
 # gate in supports(). Composition (not inheritance from IdentityAdapter) keeps
@@ -147,6 +147,7 @@ class _ClaudeCodeAdapterStub:
         if agent != "claude_code":
             return False
         from secondsight.event import EventType
+
         try:
             EventType(event_type)
             return True
@@ -155,6 +156,7 @@ class _ClaudeCodeAdapterStub:
 
     def normalize(self, envelope: Any, event_type: str) -> Any:
         from secondsight.adapters import IdentityAdapter
+
         return IdentityAdapter().normalize(envelope, event_type)
 
     def supported_event_types(self) -> set[str]:
@@ -163,6 +165,7 @@ class _ClaudeCodeAdapterStub:
         # rejects this stub via the consistency guard. The full EventType set
         # is the universal-test floor — task-4 narrows this for the real adapter.
         from secondsight.event import EventType
+
         return {e.value for e in EventType}
 
     # NotImplementedError defaults for inject_convention / inject_hint:
@@ -276,6 +279,7 @@ def real_secondsight_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # Environment builder
 # ---------------------------------------------------------------------------
+
 
 def build_env(
     *,

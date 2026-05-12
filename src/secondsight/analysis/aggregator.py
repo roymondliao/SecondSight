@@ -271,9 +271,9 @@ async def aggregate_project_flags(
     # re-runs (DC-3).
     all_patterns.sort(
         key=lambda fp: (
-            -fp[1].occurrence_count,   # primary DESC
-            fp[0].value,               # tie-break 1: flag_type string ASC
-            fp[1].pattern_description, # tie-break 2: description ASC
+            -fp[1].occurrence_count,  # primary DESC
+            fp[0].value,  # tie-break 1: flag_type string ASC
+            fp[1].pattern_description,  # tie-break 2: description ASC
         )
     )
 
@@ -291,13 +291,12 @@ async def aggregate_project_flags(
 
     for flag_type, pattern in top:
         # Compute identity_key first so we can exclude self-matches in dedup.
-        identity_key = compute_identity_key(
-            project_id, flag_type, pattern.representative_sessions
-        )
+        identity_key = compute_identity_key(project_id, flag_type, pattern.representative_sessions)
 
         # P3B-1: semantic dedup check before UPSERT.
         dedup_result = check_semantic_dedup(
-            pattern.convention, preexisting_conventions,
+            pattern.convention,
+            preexisting_conventions,
             exclude_identity_key=identity_key,
         )
 
@@ -312,13 +311,11 @@ async def aggregate_project_flags(
             )
             continue
 
-        if (
-            dedup_result.verdict == DedupVerdict.SUPERSEDE
-            and dedup_result.matched_directive_id
-        ):
+        if dedup_result.verdict == DedupVerdict.SUPERSEDE and dedup_result.matched_directive_id:
             try:
                 validate_transition(
-                    DirectiveStatus.ACTIVE, DirectiveStatus.SUPERSEDED,
+                    DirectiveStatus.ACTIVE,
+                    DirectiveStatus.SUPERSEDED,
                     directive_id=dedup_result.matched_directive_id,
                 )
                 directives_repo.update_status(
@@ -332,8 +329,7 @@ async def aggregate_project_flags(
                     dedup_result.similarity,
                 )
                 preexisting_conventions = [
-                    d for d in preexisting_conventions
-                    if d.id != dedup_result.matched_directive_id
+                    d for d in preexisting_conventions if d.id != dedup_result.matched_directive_id
                 ]
             except Exception as exc:
                 _logger.warning(
@@ -343,9 +339,7 @@ async def aggregate_project_flags(
                 )
 
         frequency = (
-            float(pattern.occurrence_count) / flags_read_total
-            if flags_read_total > 0
-            else 0.0
+            float(pattern.occurrence_count) / flags_read_total if flags_read_total > 0 else 0.0
         )
         directive = Directive(
             id=str(uuid.uuid4()),
@@ -365,8 +359,7 @@ async def aggregate_project_flags(
 
     if skipped_dedup > 0:
         _logger.info(
-            "aggregator: semantic dedup skipped %d duplicate convention(s) "
-            "for project_id=%r",
+            "aggregator: semantic dedup skipped %d duplicate convention(s) for project_id=%r",
             skipped_dedup,
             project_id,
         )

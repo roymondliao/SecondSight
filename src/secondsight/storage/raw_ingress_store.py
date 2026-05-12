@@ -24,17 +24,13 @@ class RawIngressStore:
 
     def ingress_path(self, record: IngressRecord) -> Path:
         if not is_safe_session_id(record.session_id):
-            raise UnsafePathError(
-                f"session_id contains unsafe characters: {record.session_id!r}"
-            )
+            raise UnsafePathError(f"session_id contains unsafe characters: {record.session_id!r}")
         ingress_dir = self._project_root / "sessions" / record.session_id / "ingress"
         ts_part = (
             record.timestamp.strftime("%Y%m%dT%H%M%S")
             + f"{record.timestamp.microsecond // 1000:03d}Z"
         )
-        filename = (
-            f"{ts_part}_{record.event_type}_seq{record.sequence_number:06d}.json"
-        )
+        filename = f"{ts_part}_{record.event_type}_seq{record.sequence_number:06d}.json"
         return ingress_dir / filename
 
     async def write(self, record: IngressRecord) -> Path:

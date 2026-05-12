@@ -16,6 +16,7 @@ Module-level prereq guard runs before any test class is defined; if
 ``bash``, ``curl``, or ``jq`` is missing from PATH, the entire module
 is skipped with a named message.
 """
+
 from __future__ import annotations
 
 import json
@@ -49,6 +50,7 @@ from tests.scripts.conftest import (  # noqa: E402
 # ---------------------------------------------------------------------------
 # Helpers — payload construction, DB query, fire-and-forget waiting
 # ---------------------------------------------------------------------------
+
 
 def _envelope(
     *,
@@ -125,6 +127,7 @@ def _db_path(home: Path, project_id: str) -> Path:
 # loud) — neither path silently green-passes. If a rename is needed,
 # update both helpers here AND audit every `row[...]` access in tests.
 
+
 def _wait_for_rows(
     db_path: Path,
     session_id: str,
@@ -150,8 +153,7 @@ def _wait_for_rows(
             # See SCHEMA CONTRACT above this helper.
             rows = list(
                 conn.execute(
-                    "SELECT * FROM events WHERE session_id = ? "
-                    "ORDER BY sequence_number ASC",
+                    "SELECT * FROM events WHERE session_id = ? ORDER BY sequence_number ASC",
                     (session_id,),
                 )
             )
@@ -248,6 +250,7 @@ def _stage_fallback_lines(
 # MH-1 — Single event traverses pipeline with verifiable evidence
 # ===========================================================================
 
+
 class TestMH1SingleEvent:
     """MH-1: One real hook event lands in DB and raw trace with the right
     field-level state.
@@ -258,9 +261,7 @@ class TestMH1SingleEvent:
     and adds the URL-drift death case as DT-2.1.
     """
 
-    def test_mh1_single_event_evidence_chain(
-        self, real_secondsight_server: dict[str, Any]
-    ) -> None:
+    def test_mh1_single_event_evidence_chain(self, real_secondsight_server: dict[str, Any]) -> None:
         """Single tool_use_start event: every Event field is observable in DB.
 
         Evidence chain: a future audit can reconstruct the event from the
@@ -309,21 +310,18 @@ class TestMH1SingleEvent:
         )
         assert row["sequence_number"] == 1
         assert row["segment_index"] == 0, (
-            f"First event in a session: segment_index must be 0 "
-            f"(USER_PROMPT increments it; this is tool_use_start)."
+            "First event in a session: segment_index must be 0 "
+            "(USER_PROMPT increments it; this is tool_use_start)."
         )
         assert row["sub_agent_id"] is None
         assert row["depth"] == 0
 
         # --- Raw trace file evidence ---
         trace_dir = home / "projects" / "proj-test" / "sessions" / session_id / "events"
-        assert trace_dir.exists(), (
-            f"Raw trace directory not created: {trace_dir}"
-        )
+        assert trace_dir.exists(), f"Raw trace directory not created: {trace_dir}"
         trace_files = list(trace_dir.glob("*.json"))
         assert len(trace_files) == 1, (
-            f"Expected exactly 1 raw trace file in {trace_dir}; "
-            f"got {len(trace_files)}."
+            f"Expected exactly 1 raw trace file in {trace_dir}; got {len(trace_files)}."
         )
 
     def test_mh1_no_fallback_when_server_accepts(
@@ -397,6 +395,7 @@ class TestMH1SingleEvent:
 # MH-2 — Multi-event session: segment_index transitions + sub-agent nesting
 # ===========================================================================
 
+
 class TestMH2MultiEvent:
     """MH-2: Realistic event sequence exercises segment_index increment
     and sub-agent stack management. Includes DT-2.2 (segment_index frozen)
@@ -463,9 +462,7 @@ class TestMH2MultiEvent:
             )
 
         rows = _wait_for_rows(_db_path(home, "proj-test"), session_id, expected=8)
-        assert len(rows) == 8, (
-            f"Expected 8 DB rows for session {session_id!r}; got {len(rows)}."
-        )
+        assert len(rows) == 8, f"Expected 8 DB rows for session {session_id!r}; got {len(rows)}."
 
         # DT-2.2 specific pre-check: the most damaging silent-failure
         # mode is "every row shares segment_index=0" — tracker.bind()
@@ -528,12 +525,9 @@ class TestMH2MultiEvent:
             sequence_number=2,
             payload={"sub_agent_id": "c1"},
         )
-        r2 = _post_event_via_curl(
-            port=port, event_type="sub_agent_start", envelope_json=env2
-        )
+        r2 = _post_event_via_curl(port=port, event_type="sub_agent_start", envelope_json=env2)
         assert r2.stdout.strip() == "200", (
-            f"sub_agent_start expected 200; got {r2.stdout!r} "
-            f"stderr={r2.stderr!r}"
+            f"sub_agent_start expected 200; got {r2.stdout!r} stderr={r2.stderr!r}"
         )
 
         # 3. tool_use_start (script)
@@ -555,20 +549,13 @@ class TestMH2MultiEvent:
             sequence_number=4,
             payload={"sub_agent_id": "c1"},
         )
-        r4 = _post_event_via_curl(
-            port=port, event_type="sub_agent_end", envelope_json=env4
-        )
+        r4 = _post_event_via_curl(port=port, event_type="sub_agent_end", envelope_json=env4)
         assert r4.stdout.strip() == "200"
 
-        rows = _wait_for_rows(
-            _db_path(home, "proj-test"), session_id, expected=4
-        )
+        rows = _wait_for_rows(_db_path(home, "proj-test"), session_id, expected=4)
         assert len(rows) == 4
 
-        observed = [
-            (r["sequence_number"], r["depth"], r["sub_agent_id"])
-            for r in rows
-        ]
+        observed = [(r["sequence_number"], r["depth"], r["sub_agent_id"]) for r in rows]
         expected = [
             (1, 0, None),
             (2, 1, "c1"),
@@ -610,9 +597,7 @@ class TestMH2MultiEvent:
             sequence_number=1,
             payload={"sub_agent_id": "ghost"},
         )
-        result = _post_event_via_curl(
-            port=port, event_type="sub_agent_end", envelope_json=rogue
-        )
+        result = _post_event_via_curl(port=port, event_type="sub_agent_end", envelope_json=rogue)
         # Server must reject. The actual HTTP code is 422 per api/hooks.py;
         # we accept any 4xx as the contract is "reject loudly".
         code = result.stdout.strip()
@@ -658,6 +643,7 @@ class TestMH2MultiEvent:
 # MH-3 — Server-down fallback → secondsight sync archive (G1-α)
 # ===========================================================================
 
+
 class TestMH3FallbackArchive:
     """MH-3: When the server is down, hook scripts write to
     ``fallback_events.jsonl``. Running ``secondsight sync`` afterward
@@ -680,9 +666,7 @@ class TestMH3FallbackArchive:
     # surface without raising signal. The MH-3 tests below absorb the
     # behavior implicitly via _stage_fallback_lines.
 
-    def test_mh3_sync_archives_fallback_no_db_replay(
-        self, tmp_path: Path
-    ) -> None:
+    def test_mh3_sync_archives_fallback_no_db_replay(self, tmp_path: Path) -> None:
         """DT-3.2: secondsight sync archives the fallback file to
         ``fallback_events.<ts>.bak`` AND does NOT re-INSERT events into
         the DB (G1-α: Path C is carry-forward, not Phase 1).
@@ -701,13 +685,14 @@ class TestMH3FallbackArchive:
         home = tmp_path / ".secondsight"
         home.mkdir()
         event_ids = _stage_fallback_lines(
-            home, 5, project_id="proj-mh3", session_id="sess-mh3-arch",
+            home,
+            5,
+            project_id="proj-mh3",
+            session_id="sess-mh3-arch",
             event_id_prefix="evt-mh3-arch",
         )
         fallback = home / FALLBACK_FILENAME
-        original_lines = [
-            ln for ln in fallback.read_text().splitlines() if ln.strip()
-        ]
+        original_lines = [ln for ln in fallback.read_text().splitlines() if ln.strip()]
         assert len(original_lines) == 5, (
             f"Precondition failed: expected 5 fallback lines pre-sync; "
             f"got {len(original_lines)}. Suggests a regression in either "
@@ -719,8 +704,7 @@ class TestMH3FallbackArchive:
         runner = CliRunner()
         sync_result = runner.invoke(sync_app, ["--home", str(home)])
         assert sync_result.exit_code == 0, (
-            f"secondsight sync exited {sync_result.exit_code}; "
-            f"stdout={sync_result.stdout!r}"
+            f"secondsight sync exited {sync_result.exit_code}; stdout={sync_result.stdout!r}"
         )
 
         # --- Assertion 1: archive exists with all 5 lines preserved ---
@@ -730,19 +714,15 @@ class TestMH3FallbackArchive:
             f"got {len(bak_files)}: {[p.name for p in bak_files]}"
         )
         bak = bak_files[0]
-        archived_lines = [
-            ln for ln in bak.read_text().splitlines() if ln.strip()
-        ]
+        archived_lines = [ln for ln in bak.read_text().splitlines() if ln.strip()]
         assert archived_lines == original_lines, (
-            f"Archived .bak content does not match the original "
-            f"fallback. Sync corrupted the contents during archive."
+            "Archived .bak content does not match the original "
+            "fallback. Sync corrupted the contents during archive."
         )
 
         # --- Assertion 2: original fallback is gone or empty ---
         if fallback.exists():
-            remaining = [
-                ln for ln in fallback.read_text().splitlines() if ln.strip()
-            ]
+            remaining = [ln for ln in fallback.read_text().splitlines() if ln.strip()]
             assert remaining == [], (
                 f"Original fallback file still has {len(remaining)} lines "
                 f"after archive — sync did NOT atomically move it aside."
@@ -782,9 +762,7 @@ class TestMH3FallbackArchive:
             f"and the GUR-99 plan §G1-α."
         )
 
-    def test_mh3_sync_idempotent_on_empty_fallback(
-        self, tmp_path: Path
-    ) -> None:
+    def test_mh3_sync_idempotent_on_empty_fallback(self, tmp_path: Path) -> None:
         """DT-3.3: Re-running secondsight sync does NOT create a second
         .bak from an empty/absent fallback file. Idempotency is the
         baseline contract for any CLI that mutates filesystem state.
@@ -802,7 +780,10 @@ class TestMH3FallbackArchive:
         home = tmp_path / ".secondsight"
         home.mkdir()
         _stage_fallback_lines(
-            home, 1, project_id="proj-mh3", session_id="sess-mh3-idem",
+            home,
+            1,
+            project_id="proj-mh3",
+            session_id="sess-mh3-idem",
             event_id_prefix="evt-mh3-idem",
         )
 
@@ -810,9 +791,7 @@ class TestMH3FallbackArchive:
         first = runner.invoke(sync_app, ["--home", str(home)])
         assert first.exit_code == 0
         first_baks = sorted(home.glob(f"{FALLBACK_FILENAME}.*.bak"))
-        assert len(first_baks) == 1, (
-            f"First sync should produce 1 .bak; got {len(first_baks)}"
-        )
+        assert len(first_baks) == 1, f"First sync should produce 1 .bak; got {len(first_baks)}"
 
         # Second sync on the now-empty (or absent) fallback file.
         second = runner.invoke(sync_app, ["--home", str(home)])
@@ -873,9 +852,7 @@ class TestMH4LatencyBudget:
     intentionally generous. See task-4 spec for the rationale.
     """
 
-    def test_mh4_p95_latency_under_budget(
-        self, real_secondsight_server: dict[str, Any]
-    ) -> None:
+    def test_mh4_p95_latency_under_budget(self, real_secondsight_server: dict[str, Any]) -> None:
         """Fire 50 sequential hooks against a live server and measure
         wall-clock latency for each.
 
@@ -929,8 +906,7 @@ class TestMH4LatencyBudget:
                 )
             dt_ms = (time.perf_counter() - start) * 1000.0
             assert result.returncode == 0, (
-                f"Hook exited {result.returncode} at iteration {i + 1}; "
-                f"stderr={result.stderr!r}"
+                f"Hook exited {result.returncode} at iteration {i + 1}; stderr={result.stderr!r}"
             )
             latencies_ms.append(dt_ms)
 
@@ -950,8 +926,7 @@ class TestMH4LatencyBudget:
 
         # DT-4.2: histogram with literal substrings for grep.
         histogram_line = (
-            f"MH-4 latency ms: p50={p50:.2f} p95={p95:.2f} "
-            f"p99={p99:.2f} n={_MH4_SAMPLE_COUNT}"
+            f"MH-4 latency ms: p50={p50:.2f} p95={p95:.2f} p99={p99:.2f} n={_MH4_SAMPLE_COUNT}"
         )
         # Use sys.__stderr__ to bypass pytest's capsys capture so the
         # histogram is visible in the actual test output regardless of
@@ -986,6 +961,7 @@ _MH5_DAEMON_PORT = 8420
 def _port_is_free(port: int, host: str = "127.0.0.1") -> bool:
     """Best-effort check that `port` is bindable. Returns False if busy."""
     import socket as _socket
+
     s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
     try:
         s.bind((host, port))
@@ -1027,9 +1003,10 @@ def _is_pid_alive(pid: int) -> bool:
     """Return True if `pid` accepts signal 0 (POSIX-only liveness probe)."""
     try:
         import os as _os
+
         _os.kill(pid, 0)
         return True
-    except (ProcessLookupError, PermissionError):
+    except ProcessLookupError, PermissionError:
         return False
 
 
@@ -1054,7 +1031,6 @@ class TestMH5CliLifecycle:
     def test_mh5_lifecycle_composes_end_to_end(self, tmp_path: Path) -> None:
         from typer.testing import CliRunner
 
-        from secondsight.cli.app import app as secondsight_app
         from secondsight.cli.init import app as init_app
         from secondsight.cli.serve import app as serve_app
         from secondsight.cli.status import app as status_app
@@ -1072,6 +1048,7 @@ class TestMH5CliLifecycle:
         # this, the test is meaningless — fail with a named skip rather
         # than crash on FileNotFoundError.
         import shutil as _shutil
+
         if _shutil.which("secondsight") is None:
             pytest.skip(
                 "MH-5 needs the 'secondsight' console script on PATH; "
@@ -1095,24 +1072,22 @@ class TestMH5CliLifecycle:
                 ["--claude-home", str(claude_home), "--dry-run"],
             )
             assert dry.exit_code == 0, (
-                f"init --dry-run failed: exit={dry.exit_code} "
-                f"stdout={dry.stdout!r}"
+                f"init --dry-run failed: exit={dry.exit_code} stdout={dry.stdout!r}"
             )
-            assert not (claude_home / "hooks").exists() or \
-                not list((claude_home / "hooks").iterdir()), (
+            assert not (claude_home / "hooks").exists() or not list(
+                (claude_home / "hooks").iterdir()
+            ), (
                 f"init --dry-run wrote files to {claude_home / 'hooks'} — "
                 f"dry-run must be a no-op on disk."
             )
-            assert not (claude_home / "settings.json").exists() or \
-                (claude_home / "settings.json").read_text().strip() == "", (
-                f"init --dry-run modified settings.json — must be no-op."
-            )
+            assert (
+                not (claude_home / "settings.json").exists()
+                or (claude_home / "settings.json").read_text().strip() == ""
+            ), "init --dry-run modified settings.json — must be no-op."
 
             # --- Step 2: init (real) ---
             real = runner.invoke(init_app, ["--claude-home", str(claude_home)])
-            assert real.exit_code == 0, (
-                f"init failed: exit={real.exit_code} stdout={real.stdout!r}"
-            )
+            assert real.exit_code == 0, f"init failed: exit={real.exit_code} stdout={real.stdout!r}"
             hooks_dir = claude_home / "hooks"
             assert hooks_dir.is_dir(), f"hooks directory not created at {hooks_dir}"
             assert (hooks_dir / "pre-tool-use.sh").is_file(), (
@@ -1124,8 +1099,7 @@ class TestMH5CliLifecycle:
             # The exact patch shape is owned by installer.claude_settings;
             # we assert only that hook entries were written.
             assert "hooks" in settings_content, (
-                f"settings.json missing 'hooks' key after init: "
-                f"{settings_content}"
+                f"settings.json missing 'hooks' key after init: {settings_content}"
             )
 
             # --- Step 3: serve --daemon (subprocess.Popen because of fork) ---
@@ -1150,9 +1124,7 @@ class TestMH5CliLifecycle:
             )
             pid = int(pid_file.read_text().strip())
             # Port must be bound (we earlier asserted it was free)
-            assert _wait_until(
-                lambda: not _port_is_free(_MH5_DAEMON_PORT), timeout=5.0
-            ), (
+            assert _wait_until(lambda: not _port_is_free(_MH5_DAEMON_PORT), timeout=5.0), (
                 f"Port {_MH5_DAEMON_PORT} not bound within 5s after "
                 f"daemon spawn. PID file present but port not bound — "
                 f"silent partial start. PID={pid}, alive={_is_pid_alive(pid)}."
@@ -1188,9 +1160,7 @@ class TestMH5CliLifecycle:
                 home=secondsight_home,
                 agent=envelope_agent,
             )
-            hook_result = run_hook(
-                hook_script("pre-tool-use.sh"), envelope, env=env
-            )
+            hook_result = run_hook(hook_script("pre-tool-use.sh"), envelope, env=env)
             assert hook_result.returncode == 0, (
                 f"Hook against running daemon exited "
                 f"{hook_result.returncode}; stderr={hook_result.stderr!r}"
@@ -1205,16 +1175,15 @@ class TestMH5CliLifecycle:
             # --- Step 5: serve --stop ---
             stop = runner.invoke(serve_app, ["--stop", "--home", str(secondsight_home)])
             assert stop.exit_code == 0, (
-                f"serve --stop failed: exit={stop.exit_code} "
-                f"stdout={stop.stdout!r}"
+                f"serve --stop failed: exit={stop.exit_code} stdout={stop.stdout!r}"
             )
             # Wait for both PID liveness AND port to release.
-            assert _wait_until(
-                lambda: not _is_pid_alive(pid), timeout=5.0
-            ), f"PID {pid} still alive after serve --stop returned exit 0"
-            assert _wait_until(
-                lambda: _port_is_free(_MH5_DAEMON_PORT), timeout=5.0
-            ), f"Port {_MH5_DAEMON_PORT} still bound after stop — TIME_WAIT?"
+            assert _wait_until(lambda: not _is_pid_alive(pid), timeout=5.0), (
+                f"PID {pid} still alive after serve --stop returned exit 0"
+            )
+            assert _wait_until(lambda: _port_is_free(_MH5_DAEMON_PORT), timeout=5.0), (
+                f"Port {_MH5_DAEMON_PORT} still bound after stop — TIME_WAIT?"
+            )
 
             # --- Step 6: status --format json (after stop) ---
             stat = runner.invoke(
@@ -1235,8 +1204,7 @@ class TestMH5CliLifecycle:
             # wrote to rather than an exact count field name.
             project_ids = [p.get("project_id") for p in stat_doc.get("projects", [])]
             assert "proj-mh5" in project_ids, (
-                f"Expected proj-mh5 in status projects after firing hook; "
-                f"got {project_ids}"
+                f"Expected proj-mh5 in status projects after firing hook; got {project_ids}"
             )
 
         finally:
@@ -1263,6 +1231,7 @@ class TestMH5CliLifecycle:
 # ---------------------------------------------------------------------------
 # Scaffold idempotency — preserved from task-1
 # ---------------------------------------------------------------------------
+
 
 def test_prereq_guard_is_idempotent() -> None:
     """Calling the guard twice (module-import + here) must remain a no-op.

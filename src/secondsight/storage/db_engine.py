@@ -112,13 +112,9 @@ class DBEngine:
             if pragma == "synchronous":
                 # SQLite reports synchronous as integer (0|1|2|3); NORMAL == 1
                 if got not in {"1", "normal"}:
-                    raise StoragePragmaMismatchError(
-                        f"synchronous expected NORMAL/1, got {got}"
-                    )
+                    raise StoragePragmaMismatchError(f"synchronous expected NORMAL/1, got {got}")
             elif got != want:
-                raise StoragePragmaMismatchError(
-                    f"PRAGMA {pragma} expected {want}, got {got}"
-                )
+                raise StoragePragmaMismatchError(f"PRAGMA {pragma} expected {want}, got {got}")
 
         expected_cache = -self._settings.cache_size_mb * 1000
         if int(actual["cache_size"]) != expected_cache:

@@ -5,6 +5,9 @@ Two collaborators:
   * :class:`ClaudeSettingsPatcher` — idempotently merges SecondSight hook entries
     into a Claude Code ``settings.json`` without disturbing any pre-existing
     user-defined hooks.
+  * :class:`CodexHooksPatcher` — idempotently merges SecondSight hook entries
+    into a Codex ``hooks.json`` without disturbing any pre-existing user-defined
+    hooks.
 
 The CLI command lives in ``secondsight.cli.init``; this package is the
 boundary-free, side-effect-isolated core that the CLI orchestrates.
@@ -17,6 +20,9 @@ from secondsight.installer.claude_settings import (
     ClaudeSettingsPatcher,
     PatchPlan,
 )
+from secondsight.installer.codex_hooks import (
+    CodexHooksPatcher,
+)
 from secondsight.installer.hook_install import (
     HOOK_FILES,
     HookInstaller,
@@ -28,6 +34,7 @@ __all__ = [
     "HOOK_FILES",
     "SECONDSIGHT_MARKER",
     "ClaudeSettingsPatcher",
+    "CodexHooksPatcher",
     "HookInstallPlan",
     "HookInstaller",
     "PatchPlan",

@@ -100,15 +100,23 @@ def measure_effectiveness(
 
     with db_engine.engine.connect() as conn:
         baseline = _compute_frequency(
-            conn, behavior_flags, directive.project_id,
-            directive.source_flag_type, before=convention_created,
+            conn,
+            behavior_flags,
+            directive.project_id,
+            directive.source_flag_type,
+            before=convention_created,
         )
         current = _compute_frequency(
-            conn, behavior_flags, directive.project_id,
-            directive.source_flag_type, after=convention_created,
+            conn,
+            behavior_flags,
+            directive.project_id,
+            directive.source_flag_type,
+            after=convention_created,
         )
         post_sessions = _count_distinct_sessions(
-            conn, behavior_flags, directive.project_id,
+            conn,
+            behavior_flags,
+            directive.project_id,
             after=convention_created,
         )
 
@@ -125,7 +133,7 @@ def measure_effectiveness(
     if baseline == 0:
         change_ratio = 0.0 if (current or 0) == 0 else 1.0
     else:
-        change_ratio = ((baseline - (current or 0)) / baseline)
+        change_ratio = (baseline - (current or 0)) / baseline
 
     if change_ratio >= _EFFECTIVENESS_THRESHOLD:
         judgment = EffectivenessJudgment.EFFECTIVE
@@ -187,9 +195,7 @@ def _count_distinct_sessions(
     if after is not None:
         where_clauses.append(table.c.created_at >= after)
 
-    stmt = sa.select(
-        sa.func.count(sa.distinct(table.c.session_id))
-    ).where(*where_clauses)
+    stmt = sa.select(sa.func.count(sa.distinct(table.c.session_id))).where(*where_clauses)
 
     result = conn.execute(stmt).scalar()
     return result or 0

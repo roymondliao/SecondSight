@@ -221,9 +221,7 @@ class FallbackModelsConfig:
             Default: ["gpt-4o-mini", "gemini-2.0-flash"] (SD §5.7.2 / D11).
     """
 
-    fallback_models: list[str] = field(
-        default_factory=lambda: list(BUILTIN_FALLBACK_MODELS)
-    )
+    fallback_models: list[str] = field(default_factory=lambda: list(BUILTIN_FALLBACK_MODELS))
 
 
 @dataclass(frozen=True)

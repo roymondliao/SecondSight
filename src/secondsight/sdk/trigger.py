@@ -95,9 +95,7 @@ _DEFAULT_SESSION_TIMEOUT_MINUTES: int = 30
 # Derived from TERMINAL_STAGES: stages where a run is not yet at a definitive end state.
 # When a new AnalysisRunStage is added, TERMINAL_STAGES is the single source of truth;
 # this set is derived automatically. A hardcoded copy would drift silently on new stages.
-NON_TERMINAL_STAGES: frozenset[str] = (
-    frozenset(s.value for s in AnalysisRunStage) - TERMINAL_STAGES
-)
+NON_TERMINAL_STAGES: frozenset[str] = frozenset(s.value for s in AnalysisRunStage) - TERMINAL_STAGES
 
 # Stages that block re-dispatch (do not allow re-analysis) even without force=True.
 # Intentionally excludes "failed": a failed run SHOULD be re-dispatchable so the
@@ -144,9 +142,7 @@ class LockRegistry:
         self._active_sessions: set[str] = set()
 
     @asynccontextmanager
-    async def acquire(
-        self, session_id: str
-    ) -> AsyncGenerator[bool, None]:
+    async def acquire(self, session_id: str) -> AsyncGenerator[bool, None]:
         """Async context manager. Yields True if acquired, False on contention.
 
         Non-blocking: if session_id is already in _active_sessions (another
@@ -278,9 +274,7 @@ class Trigger:
                     session_id,
                     source,
                 )
-                return DispatchResult(
-                    dispatched=False, reason="lock-held", run_id=None
-                )
+                return DispatchResult(dispatched=False, reason="lock-held", run_id=None)
 
             # In-memory in-flight check (pre-DB): prevents rapid re-dispatch
             # before the orchestrator's start_run() has written a row.
@@ -294,10 +288,7 @@ class Trigger:
             # O(len(_in_memory_dispatched)) — acceptable for v1 where the
             # dict is bounded by concurrent active sessions.
             stale_cutoff = now_mono - self._trigger_lock_seconds
-            stale_keys = [
-                k for k, ts in self._in_memory_dispatched.items()
-                if ts < stale_cutoff
-            ]
+            stale_keys = [k for k, ts in self._in_memory_dispatched.items() if ts < stale_cutoff]
             for k in stale_keys:
                 del self._in_memory_dispatched[k]
 
@@ -374,16 +365,12 @@ class Trigger:
             # Schedule the analysis as a background task.
             try:
                 task = asyncio.create_task(
-                    self._orchestrator.analyze_and_aggregate(
-                        session_id, force=force
-                    ),
+                    self._orchestrator.analyze_and_aggregate(session_id, force=force),
                     name=f"analyze-{session_id}",
                 )
                 # Add error logging as a done_callback so exceptions in the
                 # background task are not silently swallowed.
-                task.add_done_callback(
-                    lambda t: self._on_task_done(t, session_id, source)
-                )
+                task.add_done_callback(lambda t: self._on_task_done(t, session_id, source))
             except RuntimeError as exc:
                 # create_task can fail if the event loop is closing.
                 # Remove the in-memory entry so the next dispatch attempt is not
@@ -432,9 +419,7 @@ class Trigger:
                 exc,
             )
 
-    def register_pipeline_callback(
-        self, pipeline: "ObservationPipeline"
-    ) -> None:
+    def register_pipeline_callback(self, pipeline: "ObservationPipeline") -> None:
         """Register a SESSION_END callback on the given ObservationPipeline.
 
         The callback fires after the DB write succeeds in pipeline.ingest().
@@ -458,8 +443,7 @@ class Trigger:
             return
 
         _logger.debug(
-            "_pipeline_callback: SESSION_END received for "
-            "session_id=%r project_id=%r",
+            "_pipeline_callback: SESSION_END received for session_id=%r project_id=%r",
             event.session_id,
             event.project_id,
         )
@@ -600,9 +584,7 @@ class Sweeper:
                     exc,
                 )
 
-    def _find_stale_sessions(
-        self, now: datetime
-    ) -> list[tuple[str, str]]:
+    def _find_stale_sessions(self, now: datetime) -> list[tuple[str, str]]:
         """Query sessions where last_event_ts < now - timeout AND no terminal run.
 
         Returns list of (project_id, session_id) tuples.
@@ -658,11 +640,10 @@ class Sweeper:
         if task is not None and not task.done():
             task.cancel()
             try:
-                await asyncio.wait_for(
-                    asyncio.shield(task), timeout=5.0
-                )
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+            except asyncio.TimeoutError, asyncio.CancelledError:
                 pass
+
 
 __all__ = [
     "DispatchResult",

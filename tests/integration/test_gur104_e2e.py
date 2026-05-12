@@ -98,9 +98,7 @@ def _seed_session_report(home: Path, *, project_id: str, session_id: str) -> Non
     asyncio.run(registry.aclose())
 
 
-def _seed_behavior_flag(
-    home: Path, *, project_id: str, session_id: str, flag_id: str
-) -> None:
+def _seed_behavior_flag(home: Path, *, project_id: str, session_id: str, flag_id: str) -> None:
     registry = ProjectRegistry(secondsight_home=home)
     resources = asyncio.run(registry.get(project_id))
     flags_repo = BehaviorFlagsRepository(resources.db_engine)
@@ -163,23 +161,17 @@ class TestDeathPaths:
         here — we only care that the route RESOLVES.
         """
         with _make_client(home) as client:
-            r = client.get(
-                "/api/analysis/summary", params={"project_id": "nonexistent-proj"}
-            )
+            r = client.get("/api/analysis/summary", params={"project_id": "nonexistent-proj"})
         assert r.status_code != 404, (
-            f"DT-5.1 FAILED: analysis_router not registered — got 404. "
-            f"Body: {r.text}"
+            f"DT-5.1 FAILED: analysis_router not registered — got 404. Body: {r.text}"
         )
 
     def test_dt_5_2_directives_get_registered(self, home: Path) -> None:
         """DT-5.2 — GET /api/directives must NOT return 404."""
         with _make_client(home) as client:
-            r = client.get(
-                "/api/directives", params={"project_id": "nonexistent-proj"}
-            )
+            r = client.get("/api/directives", params={"project_id": "nonexistent-proj"})
         assert r.status_code != 404, (
-            f"DT-5.2 FAILED: directives_router GET not registered — got 404. "
-            f"Body: {r.text}"
+            f"DT-5.2 FAILED: directives_router GET not registered — got 404. Body: {r.text}"
         )
 
     def test_dt_5_3_directives_patch_method_registered(self, home: Path) -> None:
@@ -288,19 +280,14 @@ class TestHappyPaths:
         )
 
         with _make_client(home) as client:
-            r = client.get(
-                "/api/analysis/summary", params={"project_id": project_id}
-            )
+            r = client.get("/api/analysis/summary", params={"project_id": project_id})
 
-        assert r.status_code == 200, (
-            f"HP-5.1: expected 200, got {r.status_code}. Body: {r.text}"
-        )
+        assert r.status_code == 200, f"HP-5.1: expected 200, got {r.status_code}. Body: {r.text}"
         body = r.json()
 
         # 1 analyzed session.
         assert body["analyzed_session_count"] == 1, (
-            f"HP-5.1: expected analyzed_session_count=1, "
-            f"got {body['analyzed_session_count']}"
+            f"HP-5.1: expected analyzed_session_count=1, got {body['analyzed_session_count']}"
         )
 
         # 2 behavior flags total.
@@ -315,9 +302,7 @@ class TestHappyPaths:
             "HP-5.1: GET /api/analysis/summary must emit an ETag header for dashboard polling."
         )
 
-    def test_hp_5_2_patch_to_disabled_excluded_from_active_listing(
-        self, home: Path
-    ) -> None:
+    def test_hp_5_2_patch_to_disabled_excluded_from_active_listing(self, home: Path) -> None:
         """HP-5.2 — E2E PATCH→GET: insert 1 active directive, PATCH to disabled,
         then GET /api/directives with default active=true filter confirms the
         directive is absent.
@@ -338,9 +323,7 @@ class TestHappyPaths:
 
         with _make_client(home) as client:
             # Confirm it appears in the active listing before PATCH.
-            r_before = client.get(
-                "/api/directives", params={"project_id": project_id}
-            )
+            r_before = client.get("/api/directives", params={"project_id": project_id})
             assert r_before.status_code == 200, (
                 f"HP-5.2 pre-PATCH GET failed: {r_before.status_code} {r_before.text}"
             )
@@ -371,9 +354,7 @@ class TestHappyPaths:
             )
 
             # GET active=true (default): disabled directive must NOT appear.
-            r_after = client.get(
-                "/api/directives", params={"project_id": project_id}
-            )
+            r_after = client.get("/api/directives", params={"project_id": project_id})
             assert r_after.status_code == 200, (
                 f"HP-5.2 post-PATCH GET failed: {r_after.status_code} {r_after.text}"
             )

@@ -267,9 +267,7 @@ class Orchestrator:
         Raises:
             TypeError: ``on_analysis_complete`` is a coroutine function.
         """
-        if on_analysis_complete is not None and inspect.iscoroutinefunction(
-            on_analysis_complete
-        ):
+        if on_analysis_complete is not None and inspect.iscoroutinefunction(on_analysis_complete):
             raise TypeError(
                 "on_analysis_complete must be a synchronous callable "
                 "(Callable[[str], None]); a coroutine function was passed. "
@@ -776,8 +774,7 @@ class Orchestrator:
             conventions = self._directives_repo.get_active_conventions(project_id)
         except Exception as exc:
             _logger.warning(
-                "_log_if_directives_stale: failed to read conventions for "
-                "project_id=%r — %s",
+                "_log_if_directives_stale: failed to read conventions for project_id=%r — %s",
                 project_id,
                 exc,
             )
@@ -786,15 +783,10 @@ class Orchestrator:
         if not conventions:
             return
 
-        threshold = datetime.now(tz=timezone.utc) - timedelta(
-            days=STALE_DIRECTIVES_THRESHOLD_DAYS
-        )
+        threshold = datetime.now(tz=timezone.utc) - timedelta(days=STALE_DIRECTIVES_THRESHOLD_DAYS)
         # Normalize directive timestamps: SQLite may return naive datetimes.
         # Make all comparisons in UTC-aware timezone.
-        stale = [
-            d for d in conventions
-            if _ensure_utc(d.updated_at) < threshold
-        ]
+        stale = [d for d in conventions if _ensure_utc(d.updated_at) < threshold]
         if stale:
             _logger.warning(
                 "stale-conventions: project_id=%r has %d active convention(s) "

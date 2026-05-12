@@ -225,16 +225,16 @@ def _handle_rebuild(
             backup_path = db_path.with_name(f"intelligence.db.{ts}.pre-rebuild.bak")
             try:
                 os.replace(db_path, backup_path)
-                _console.print(
-                    f"  {pid}: backed up DB to {backup_path.name}"
-                )
+                _console.print(f"  {pid}: backed up DB to {backup_path.name}")
             except OSError as exc:
                 any_failure = True
-                reports.append({
-                    "project_id": pid,
-                    "error": f"backup failed: {type(exc).__name__}: {exc}",
-                    "backfill": None,
-                })
+                reports.append(
+                    {
+                        "project_id": pid,
+                        "error": f"backup failed: {type(exc).__name__}: {exc}",
+                        "backfill": None,
+                    }
+                )
                 continue
 
             # Also remove WAL and SHM files if they exist.
@@ -251,11 +251,13 @@ def _handle_rebuild(
             resources = registry._build_resources(pid)  # noqa: SLF001
         except Exception as exc:  # noqa: BLE001
             any_failure = True
-            reports.append({
-                "project_id": pid,
-                "error": f"{type(exc).__name__}: {exc}",
-                "backfill": None,
-            })
+            reports.append(
+                {
+                    "project_id": pid,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "backfill": None,
+                }
+            )
             continue
 
         try:
@@ -266,21 +268,25 @@ def _handle_rebuild(
                 resources.db_engine.dispose()
         except Exception as exc:  # noqa: BLE001
             any_failure = True
-            reports.append({
-                "project_id": pid,
-                "error": f"backfill raised: {type(exc).__name__}: {exc}",
-                "backfill": None,
-            })
+            reports.append(
+                {
+                    "project_id": pid,
+                    "error": f"backfill raised: {type(exc).__name__}: {exc}",
+                    "backfill": None,
+                }
+            )
             continue
 
         if backfill_report.failures:
             any_failure = True
 
-        reports.append({
-            "project_id": pid,
-            "error": None,
-            "backfill": asdict(backfill_report),
-        })
+        reports.append(
+            {
+                "project_id": pid,
+                "error": None,
+                "backfill": asdict(backfill_report),
+            }
+        )
         _console.print(
             f"  {pid}: rebuilt — {backfill_report.filesystem_inserted} "
             f"events inserted, {len(backfill_report.failures)} failures"

@@ -95,9 +95,7 @@ class TestDeathPaths:
             "advance_stage must not write to DB before enum validation"
         )
 
-    def test_dt_1_2_advance_stage_unknown_run_id_raises(
-        self, repo: AnalysisRunsRepository
-    ) -> None:
+    def test_dt_1_2_advance_stage_unknown_run_id_raises(self, repo: AnalysisRunsRepository) -> None:
         """advance_stage on a missing run_id must raise, not silently no-op.
 
         Silent no-op here would mean a pipeline transition is "confirmed"
@@ -121,9 +119,7 @@ class TestDeathPaths:
 
 
 class TestLifecycle:
-    def test_full_pipeline_pending_to_aggregated(
-        self, repo: AnalysisRunsRepository
-    ) -> None:
+    def test_full_pipeline_pending_to_aggregated(self, repo: AnalysisRunsRepository) -> None:
         """Full lifecycle: pending → segmented → behavior_done →
         summary_written → aggregated.
 
@@ -181,13 +177,9 @@ class TestLifecycle:
         assert run is not None
         assert run.stage == AnalysisRunStage.FAILED
         assert run.error_message == "LLM timeout"
-        assert run.completed_at is not None, (
-            "record_failure must set completed_at"
-        )
+        assert run.completed_at is not None, "record_failure must set completed_at"
 
-    def test_flags_inserted_default_zero(
-        self, repo: AnalysisRunsRepository
-    ) -> None:
+    def test_flags_inserted_default_zero(self, repo: AnalysisRunsRepository) -> None:
         """flags_inserted defaults to 0; only non-zero after behavior_done."""
         run_id = repo.start_run(project_id="proj-1", session_id="sess-1")
         run = repo.get_latest_for_session("sess-1")
@@ -251,9 +243,7 @@ class TestLifecycle:
         finally:
             eng.dispose()
 
-    def test_get_latest_for_session_id_desc_tiebreak(
-        self, repo: AnalysisRunsRepository
-    ) -> None:
+    def test_get_latest_for_session_id_desc_tiebreak(self, repo: AnalysisRunsRepository) -> None:
         """IMPORTANT-4: When two runs share the same started_at (microsecond
         identical), the tiebreak on `id DESC` must be deterministic.
 
@@ -261,7 +251,6 @@ class TestLifecycle:
         can return either run non-deterministically. This would cause retry
         logic to unpredictably resume the wrong run.
         """
-        import sqlalchemy as sa
         from secondsight.storage.analysis_runs_table import analysis_runs
 
         # Insert two rows with identical started_at via direct SQL
@@ -324,7 +313,6 @@ class TestCorruptDBStage:
         After the fix, the ValueError includes run_id, session_id, and the
         bad stage value.
         """
-        import sqlalchemy as sa
         from secondsight.storage.analysis_runs_table import analysis_runs
 
         # Insert a row with a corrupt stage value directly via SQL
@@ -349,12 +337,6 @@ class TestCorruptDBStage:
 
         msg = str(exc.value)
         # Must include the run_id and session_id for manual repair
-        assert "run-corrupt-stage" in msg, (
-            "ValueError must include run_id to aid manual DB repair"
-        )
-        assert "sess-corrupt" in msg, (
-            "ValueError must include session_id to aid manual DB repair"
-        )
-        assert "INVALID_STAGE_NOT_IN_ENUM" in msg, (
-            "ValueError must include the bad stage value"
-        )
+        assert "run-corrupt-stage" in msg, "ValueError must include run_id to aid manual DB repair"
+        assert "sess-corrupt" in msg, "ValueError must include session_id to aid manual DB repair"
+        assert "INVALID_STAGE_NOT_IN_ENUM" in msg, "ValueError must include the bad stage value"

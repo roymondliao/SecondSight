@@ -47,9 +47,7 @@ _HOOK_TO_EVENT_TYPE: dict[str, EventType] = {
     "stop": EventType.SESSION_END,
 }
 
-_EVENT_TYPE_TO_HOOK: dict[EventType, str] = {
-    et: hook for hook, et in _HOOK_TO_EVENT_TYPE.items()
-}
+_EVENT_TYPE_TO_HOOK: dict[EventType, str] = {et: hook for hook, et in _HOOK_TO_EVENT_TYPE.items()}
 
 DROP_LIST: frozenset[str] = frozenset(
     {
@@ -193,16 +191,12 @@ class CodexAdapter(AgentAdapter):
 
         builder = _DATA_BUILDERS.get(et)
         if builder is None:
-            raise ValueError(
-                f"CodexAdapter: no data builder for event_type {event_type!r}"
-            )
+            raise ValueError(f"CodexAdapter: no data builder for event_type {event_type!r}")
 
         payload: Mapping[str, Any] = envelope.payload or {}
         hook_event_name = payload.get("hook_event_name")
         if not hook_event_name:
-            raise ValueError(
-                "CodexAdapter: payload missing required field 'hook_event_name'"
-            )
+            raise ValueError("CodexAdapter: payload missing required field 'hook_event_name'")
         expected_hook = _EVENT_TYPE_TO_HOOK[et]
         if hook_event_name != expected_hook:
             raise ValueError(

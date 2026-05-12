@@ -46,29 +46,9 @@ jobs:
               printf "{}" > "$CLAUDE_HOME/settings.json"
               secondsight init --claude-home "$CLAUDE_HOME" --format json >/tmp/init.json
               secondsight serve --daemon --home "$SS_HOME"
-              python - <<'"'"'PY'"'"'
-import json, subprocess, time
-cmd = ["secondsight", "status", "--home", "/tmp/secondsight-home", "--format", "json"]
-for _ in range(40):
-    running = json.loads(subprocess.check_output(cmd, text=True))["server"]["running"]
-    if running:
-        break
-    time.sleep(0.25)
-else:
-    raise SystemExit("daemon did not report running=true")
-PY
+              python -c "import json, subprocess, time; cmd = ['secondsight', 'status', '--home', '/tmp/secondsight-home', '--format', 'json']; ok = False; [(ok := json.loads(subprocess.check_output(cmd, text=True))['server']['running']) or time.sleep(0.25) for _ in range(40) if not ok]; assert ok, 'daemon did not report running=true'"
               secondsight serve --stop --home "$SS_HOME"
-              python - <<'"'"'PY'"'"'
-import json, subprocess
-status = json.loads(
-    subprocess.check_output(
-        ["secondsight", "status", "--home", "/tmp/secondsight-home", "--format", "json"],
-        text=True,
-    )
-)
-if status["server"]["running"]:
-    raise SystemExit("status still reports running after stop")
-PY
+              python -c "import json, subprocess; status = json.loads(subprocess.check_output(['secondsight', 'status', '--home', '/tmp/secondsight-home', '--format', 'json'], text=True)); assert not status['server']['running'], 'status still reports running after stop'"
               if secondsight serve --home relative-home >/tmp/serve-negative.log 2>&1; then
                 echo "expected serve failure for relative home" >&2
                 exit 1

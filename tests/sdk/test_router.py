@@ -19,7 +19,7 @@ import asyncio
 import logging
 import time
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -38,15 +38,13 @@ from secondsight.sdk.router import (
 # Helpers / shared fakes
 # ---------------------------------------------------------------------------
 
+
 def _make_primary(**kwargs: Any) -> ModelSpec:
     return ModelSpec(name="gpt-4o-mini", provider="openai", **kwargs)
 
 
 def _make_fallback(n: int = 1) -> list[ModelSpec]:
-    return [
-        ModelSpec(name=f"gemini-2.0-flash-{i}", provider="google")
-        for i in range(n)
-    ]
+    return [ModelSpec(name=f"gemini-2.0-flash-{i}", provider="google") for i in range(n)]
 
 
 def _raising_factory(exc: Exception):
@@ -67,6 +65,7 @@ def _success_factory(output: Any = "ok"):
 
 def _slow_factory(delay_s: float, exc: Exception | None = None, output: Any = "ok"):
     """Return a factory that sleeps ``delay_s`` before raising or returning."""
+
     async def _run(*args: Any, **kwargs: Any) -> Any:
         await asyncio.sleep(delay_s)
         if exc is not None:
@@ -84,6 +83,7 @@ def _slow_factory(delay_s: float, exc: Exception | None = None, output: Any = "o
 # DEATH TESTS — must fail before implementation
 # ---------------------------------------------------------------------------
 
+
 class TestDeathPaths:
     """Silent failure paths — each test names the lie and the truth."""
 
@@ -98,6 +98,7 @@ class TestDeathPaths:
         Truth: router walks __cause__ chain; finds ValidationError; classifies
         as terminal; raises AnalysisAgentError after 1 attempt; fallbacks = 0.
         """
+
         # Build a pydantic.ValidationError (requires a model to fail).
         class _M(pydantic.BaseModel):
             x: int
@@ -232,16 +233,18 @@ class TestDeathPaths:
         assert len(err.attempts) == 3, f"Expected 3 attempts, got {len(err.attempts)}"
 
         for attempt in err.attempts:
-            assert hasattr(attempt, "model_name") or (isinstance(attempt, dict) and "model_name" in attempt), \
-                f"Attempt missing model_name: {attempt}"
-            assert hasattr(attempt, "exception_class") or (isinstance(attempt, dict) and "exception_class" in attempt), \
-                f"Attempt missing exception_class: {attempt}"
-            assert hasattr(attempt, "duration_ms") or (isinstance(attempt, dict) and "duration_ms" in attempt), \
-                f"Attempt missing duration_ms: {attempt}"
+            assert hasattr(attempt, "model_name") or (
+                isinstance(attempt, dict) and "model_name" in attempt
+            ), f"Attempt missing model_name: {attempt}"
+            assert hasattr(attempt, "exception_class") or (
+                isinstance(attempt, dict) and "exception_class" in attempt
+            ), f"Attempt missing exception_class: {attempt}"
+            assert hasattr(attempt, "duration_ms") or (
+                isinstance(attempt, dict) and "duration_ms" in attempt
+            ), f"Attempt missing duration_ms: {attempt}"
 
         model_names = [
-            a["model_name"] if isinstance(a, dict) else a.model_name
-            for a in err.attempts
+            a["model_name"] if isinstance(a, dict) else a.model_name for a in err.attempts
         ]
         assert "gpt-4o-mini" in model_names
 
@@ -297,21 +300,22 @@ class TestDeathPaths:
         assert elapsed < 5.0, f"Router took too long: {elapsed:.2f}s"
 
         err_msg = str(exc_info.value)
-        assert (
-            "chain_total_timeout_exceeded" in err_msg
-            or "timeout" in err_msg.lower()
-        ), f"Expected chain timeout reason, got: {err_msg}"
+        assert "chain_total_timeout_exceeded" in err_msg or "timeout" in err_msg.lower(), (
+            f"Expected chain timeout reason, got: {err_msg}"
+        )
 
         # Fallbacks must NOT have been called.
         assert call_log[0] == "gpt-4o-mini"
         # Fallbacks should not appear in call_log (chain timeout fired before them).
-        assert "gemini-2.0-flash-0" not in call_log, \
+        assert "gemini-2.0-flash-0" not in call_log, (
             "Fallback was called despite chain_total_timeout being exceeded"
+        )
 
 
 # ---------------------------------------------------------------------------
 # DEGRADATION TESTS
 # ---------------------------------------------------------------------------
+
 
 class TestDegradation:
     """DG-*: partial-failure paths that produce recoverable outcomes."""
@@ -366,6 +370,7 @@ class TestDegradation:
 # HAPPY PATH TESTS
 # ---------------------------------------------------------------------------
 
+
 class TestHappyPaths:
     """HP-*: nominal paths with no failures."""
 
@@ -400,8 +405,7 @@ class TestHappyPaths:
 
         assert result == "primary output"
         # Only the primary model was instantiated.
-        assert call_log == ["gpt-4o-mini"], \
-            f"Expected only primary to be called, got: {call_log}"
+        assert call_log == ["gpt-4o-mini"], f"Expected only primary to be called, got: {call_log}"
 
         # Log must record the successful attempt.
         assert "gpt-4o-mini" in caplog.text
@@ -457,6 +461,7 @@ class TestHappyPaths:
     @pytest.mark.asyncio
     async def test_HP_validation_error_direct_raise_terminal(self) -> None:
         """A direct pydantic.ValidationError (not wrapped) is also terminal."""
+
         class _M(pydantic.BaseModel):
             x: int
 
@@ -529,8 +534,9 @@ class TestHappyPaths:
 
         # All 3 models tried: primary (openai first auth), fallback-0 (google first auth),
         # fallback-1 (google second auth = terminal). No 4th model beyond that.
-        assert len(call_log) == 3, \
+        assert len(call_log) == 3, (
             f"Expected exactly 3 models tried with per-provider auth dedup, got: {call_log}"
+        )
         assert call_log == ["gpt-4o-mini", "gemini-2.0-flash-0", "gemini-2.0-flash-1"]
 
     @pytest.mark.asyncio
@@ -542,6 +548,7 @@ class TestHappyPaths:
         previously, factory construction errors escaped as un-classified
         exceptions (AttributeError etc) instead of AnalysisAgentError.
         """
+
         def _bad_factory(spec: ModelSpec) -> Any:
             raise ValueError(f"Unknown provider: {spec.provider}")
 
@@ -552,11 +559,14 @@ class TestHappyPaths:
         )
 
         from secondsight.sdk.router import RouterTerminalError
+
         with pytest.raises(RouterTerminalError) as exc_info:
             await router.call(model_input="test", output_type=str)
 
-        assert "configuration error" in str(exc_info.value).lower() or \
-               "factory" in str(exc_info.value).lower()
+        assert (
+            "configuration error" in str(exc_info.value).lower()
+            or "factory" in str(exc_info.value).lower()
+        )
 
     def test_HP_router_config_public_api_returns_constructor_values(self) -> None:
         """RouterConfig public property returns the same values passed to LLMRouter constructor.
@@ -592,9 +602,7 @@ class TestHappyPaths:
     async def test_HP_unexpected_model_behavior_without_cause_terminal(self) -> None:
         """UnexpectedModelBehavior with no ValidationError in cause chain
         is terminal (unknown error class → do not fallback)."""
-        outer = pydantic_ai.exceptions.UnexpectedModelBehavior(
-            "the model returned garbage"
-        )
+        outer = pydantic_ai.exceptions.UnexpectedModelBehavior("the model returned garbage")
         # No __cause__ set — plain unknown error.
 
         call_log: list[str] = []
@@ -621,6 +629,7 @@ class TestHappyPaths:
 # ---------------------------------------------------------------------------
 # DEATH TEST — logging schema contract (DT-2.5)
 # ---------------------------------------------------------------------------
+
 
 class TestLoggingSchema:
     """DT-2.5 and related: verify the North Star sub-metric logging schema.

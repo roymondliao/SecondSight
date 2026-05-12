@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from secondsight.analysis.schemas import SegmentData, ToolUseSpan
+from secondsight.analysis.schemas import ToolUseSpan
 from secondsight.analysis.segmenter import Segmenter
 from secondsight.event import Event, EventType
 
@@ -116,9 +116,7 @@ class TestDeathPaths:
                 duration_ms=120,
             ),
         ]
-        with caplog.at_level(
-            logging.WARNING, logger="secondsight.analysis.segmenter"
-        ):
+        with caplog.at_level(logging.WARNING, logger="secondsight.analysis.segmenter"):
             seg = Segmenter(_StubEventsRepo(events))
             out = seg.segment_session("sess-1")
 
@@ -244,9 +242,7 @@ class TestHappyPaths:
     def test_full_session_three_segments(self) -> None:
         """8-event session → 3 SegmentData with correct event placement."""
         events = [
-            _evt(
-                seq=0, event_type=EventType.SESSION_START, segment_index=0
-            ),
+            _evt(seq=0, event_type=EventType.SESSION_START, segment_index=0),
             _evt(seq=1, event_type=EventType.USER_PROMPT, segment_index=1),
             _evt(
                 seq=2,

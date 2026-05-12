@@ -197,9 +197,7 @@ def test_death_copyfile_failure_no_target_no_tmp_leftover(tmp_path: Path) -> Non
             HookInstaller(source_dir=src).install(target)
 
     for name in HOOK_FILES:
-        assert not (target / name).exists(), (
-            f"{name} must NOT exist after copyfile failure"
-        )
+        assert not (target / name).exists(), f"{name} must NOT exist after copyfile failure"
     assert list(target.glob(".tmp_*")) == [], (
         "no .tmp_* leftover must remain after copyfile failure"
     )

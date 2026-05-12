@@ -61,6 +61,7 @@ def test_death_stale_pid_kill_refused(tmp_path: Path) -> None:
 
         # stop_daemon must NOT kill sleep — returns REFUSED_STALE due to cmdline mismatch
         from secondsight.daemon import StopOutcome
+
         result = stop_daemon(pid_path, grace_seconds=1.0)
         assert result is StopOutcome.REFUSED_STALE, (
             f"stop_daemon should return StopOutcome.REFUSED_STALE for a stale/mismatched PID, "
@@ -68,9 +69,7 @@ def test_death_stale_pid_kill_refused(tmp_path: Path) -> None:
         )
 
         # Verify sleep is still alive
-        assert proc.poll() is None, (
-            "stop_daemon killed the unrelated 'sleep' process!"
-        )
+        assert proc.poll() is None, "stop_daemon killed the unrelated 'sleep' process!"
     finally:
         proc.kill()
         proc.wait()
@@ -314,8 +313,6 @@ def test_death_log_open_fallback_emits_stderr_diagnostic(
     relevant code block directly (not via full daemonize) with a monkeypatched
     os.open that raises OSError for the log path.
     """
-    from unittest.mock import patch, call
-    import io
 
     # We test the log-open fallback by calling daemonize's internal logic
     # through a subprocess that forks and reports back.  Because we cannot
@@ -355,6 +352,7 @@ def test_death_log_open_fallback_emits_stderr_diagnostic(
         # In the child: redirect stderr to capture file, then trigger the fallback.
         try:
             import sys as _sys
+
             with open(str(stderr_capture), "w") as stderr_file:
                 _sys.stderr = stderr_file
                 # Simulate the log-open fallback block from daemonize()
@@ -407,9 +405,7 @@ def test_death_sigkill_path_returns_stopped_sigkill(tmp_path: Path) -> None:
 
     # Spawn a process that ignores SIGTERM
     ignore_sigterm_script = (
-        "import signal, time; "
-        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-        "time.sleep(30)"
+        "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"
     )
     proc = subprocess.Popen(
         [sys.executable, "-c", ignore_sigterm_script],

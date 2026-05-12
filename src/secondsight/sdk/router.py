@@ -79,6 +79,7 @@ OutputT = TypeVar("OutputT")
 # ModelSpec is the single source of truth defined in _specs.py.
 # Do NOT redefine it here. Import above handles this.
 
+
 @dataclass(frozen=True)
 class RouterConfig:
     """Frozen view of LLMRouter's construction-time configuration.
@@ -121,6 +122,7 @@ class AttemptRecord:
 # Exceptions
 # ---------------------------------------------------------------------------
 
+
 class RouterChainExhaustedError(AnalysisAgentError):
     """All models in the chain were tried and all failed with transport errors.
 
@@ -153,6 +155,7 @@ class RouterTerminalError(AnalysisAgentError):
 # Classification result
 # ---------------------------------------------------------------------------
 
+
 class _ClassifyResult:
     """Internal enum-like result from _classify()."""
 
@@ -164,6 +167,7 @@ class _ClassifyResult:
 # ---------------------------------------------------------------------------
 # LLMRouter
 # ---------------------------------------------------------------------------
+
 
 class LLMRouter:
     """Iterates [primary] + fallbacks with transport-error-only fallback policy.
@@ -311,7 +315,11 @@ class LLMRouter:
                 duration_ms = (time.monotonic() - call_start) * 1000
 
                 # Best-effort token extraction from RunResult.usage().
-                usage = result.usage() if callable(getattr(result, "usage", None)) else getattr(result, "usage", None)
+                usage = (
+                    result.usage()
+                    if callable(getattr(result, "usage", None))
+                    else getattr(result, "usage", None)
+                )
                 tokens_in = usage.request_tokens if usage is not None else None
                 tokens_out = usage.response_tokens if usage is not None else None
 
@@ -502,6 +510,7 @@ class LLMRouter:
 # Classification
 # ---------------------------------------------------------------------------
 
+
 def _classify(exc: BaseException, seen_auth_errors: set[tuple[str, str]]) -> str:
     """Classify ``exc`` into fallback_eligible | auth_once | terminal.
 
@@ -593,14 +602,17 @@ def _is_transport_error(exc: BaseException) -> bool:
     Note: asyncio.TimeoutError is caught before _classify() in the call() loop,
     so it doesn't reach _classify(). Documented here for completeness.
     """
-    if isinstance(exc, (
-        httpx.TimeoutException,
-        httpx.ConnectError,
-        httpx.RemoteProtocolError,
-        litellm.RateLimitError,
-        litellm.APIConnectionError,
-        litellm.ServiceUnavailableError,
-    )):
+    if isinstance(
+        exc,
+        (
+            httpx.TimeoutException,
+            httpx.ConnectError,
+            httpx.RemoteProtocolError,
+            litellm.RateLimitError,
+            litellm.APIConnectionError,
+            litellm.ServiceUnavailableError,
+        ),
+    ):
         return True
 
     # pydantic_ai.exceptions.ModelHTTPError with 5xx status code.
@@ -620,6 +632,7 @@ def _is_auth_error(exc: BaseException) -> bool:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _build_exhausted_message(
     attempts: list[AttemptRecord],
     fallbacks: list[ModelSpec],
@@ -630,8 +643,7 @@ def _build_exhausted_message(
     """
     empty_note = " fallback_models is empty." if not fallbacks else ""
     attempts_str = "; ".join(
-        f"{a.model_name}({a.exception_class},{a.duration_ms:.0f}ms)"
-        for a in attempts
+        f"{a.model_name}({a.exception_class},{a.duration_ms:.0f}ms)" for a in attempts
     )
     return (
         f"chain_exhausted: all {len(attempts)} model(s) failed.{empty_note} "

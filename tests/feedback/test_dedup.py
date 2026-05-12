@@ -9,7 +9,6 @@ import pytest
 from secondsight.analysis.schemas import Directive, DirectiveStatus, DirectiveType
 from secondsight.feedback.dedup import (
     DEDUP_SIMILARITY_THRESHOLD,
-    DedupResult,
     DedupVerdict,
     _jaccard_similarity,
     _normalize_tokens,
@@ -71,14 +70,16 @@ class TestCheckSemanticDedup:
     def test_truly_new_returns_add(self) -> None:
         existing = [_make_directive("Always use grep for searching")]
         result = check_semantic_dedup(
-            "Prefer TypeScript over JavaScript for new files", existing,
+            "Prefer TypeScript over JavaScript for new files",
+            existing,
         )
         assert result.verdict == DedupVerdict.ADD
 
     def test_exact_duplicate_returns_skip(self) -> None:
         existing = [_make_directive("Always use grep for searching")]
         result = check_semantic_dedup(
-            "Always use grep for searching", existing,
+            "Always use grep for searching",
+            existing,
         )
         assert result.verdict == DedupVerdict.SKIP
         assert result.similarity == 1.0
@@ -86,7 +87,8 @@ class TestCheckSemanticDedup:
     def test_semantic_duplicate_returns_skip(self) -> None:
         existing = [_make_directive("Always use grep for searching files")]
         result = check_semantic_dedup(
-            "Always use grep for searching", existing,
+            "Always use grep for searching",
+            existing,
         )
         assert result.similarity >= DEDUP_SIMILARITY_THRESHOLD
         assert result.verdict == DedupVerdict.SKIP

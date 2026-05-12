@@ -82,17 +82,17 @@ _DEFAULT_SIZE_CAP_BYTES: int = BUILTIN_SIZE_CAP_KB * 1024  # 262144 bytes
 #   1. A death test (DT-1.X) in test_tools.py.
 #   2. A comment explaining WHY this pattern is in the built-in list.
 _BUILTIN_DENYLIST: tuple[str, ...] = (
-    ".env",           # dotenv files carry secrets
-    ".env.*",         # .env.local, .env.production, etc.
+    ".env",  # dotenv files carry secrets
+    ".env.*",  # .env.local, .env.production, etc.
     "*credentials*",  # any file with "credentials" in its name
-    "*secret*",       # any file with "secret" in its name
-    "*.pem",          # PEM-encoded private keys / certs
-    "id_rsa*",        # SSH private keys (id_rsa, id_rsa.pub)
-    ".aws",           # AWS credentials directory; any path component matching
-                      # ".aws" (case-insensitive) blocks the entire subtree
-                      # because the directory component is checked.
-    ".ssh",           # SSH directory; same mechanism — ".ssh" component blocks
-                      # all reads inside .ssh/ without needing a "/*" suffix.
+    "*secret*",  # any file with "secret" in its name
+    "*.pem",  # PEM-encoded private keys / certs
+    "id_rsa*",  # SSH private keys (id_rsa, id_rsa.pub)
+    ".aws",  # AWS credentials directory; any path component matching
+    # ".aws" (case-insensitive) blocks the entire subtree
+    # because the directory component is checked.
+    ".ssh",  # SSH directory; same mechanism — ".ssh" component blocks
+    # all reads inside .ssh/ without needing a "/*" suffix.
     # NOTE: ".aws/*" and ".ssh/*" patterns were removed (GUR-103 fix-loop).
     # Path.parts yields components without slashes (.ssh, id_rsa), so fnmatch
     # against ".aws/*" can never match — the "/*" suffix is dead. The ".aws"
@@ -184,8 +184,7 @@ class AnalysisTools:
             project_root = Path(project_root)
             if not project_root.is_absolute():
                 raise ValueError(
-                    f"AnalysisTools: project_root must be an absolute path, "
-                    f"got {project_root!r}"
+                    f"AnalysisTools: project_root must be an absolute path, got {project_root!r}"
                 )
             # Resolve once at construction time (TOCTOU mitigation):
             # a symlink retarget of the project root itself after construction
@@ -222,9 +221,7 @@ class AnalysisTools:
             List of Event objects, ordered by sequence_number ascending.
             Empty list if the session has no events.
         """
-        return await asyncio.to_thread(
-            self._events_repo.get_session_events, session_id
-        )
+        return await asyncio.to_thread(self._events_repo.get_session_events, session_id)
 
     # ------------------------------------------------------------------
     # Tool: read_project_file
@@ -286,9 +283,7 @@ class AnalysisTools:
         except FileNotFoundError:
             # Uniform error: callers catch ProjectFileToolError only.
             # FileNotFoundError must never escape (scar report item).
-            raise ProjectFileToolError(
-                f"read_project_file: file not found: {relative_path!r}"
-            )
+            raise ProjectFileToolError(f"read_project_file: file not found: {relative_path!r}")
         except OSError as exc:
             raise ProjectFileToolError(
                 f"read_project_file: OS error accessing {relative_path!r}: {exc}"
@@ -435,14 +430,10 @@ class AnalysisTools:
             )
 
         if kind == "behavior_flag_summary":
-            return await asyncio.to_thread(
-                self._flags_repo.count_by_type, project_id
-            )
+            return await asyncio.to_thread(self._flags_repo.count_by_type, project_id)
 
         if kind == "directive_active":
-            return await asyncio.to_thread(
-                self._directives_repo.get_active_conventions, project_id
-            )
+            return await asyncio.to_thread(self._directives_repo.get_active_conventions, project_id)
 
         # This line is unreachable given the vocabulary check above,
         # but explicit exhaustion prevents silent no-op if the set drifts.

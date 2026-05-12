@@ -88,9 +88,7 @@ class ConventionSelector:
         token_budget: int = DEFAULT_TOKEN_BUDGET,
     ) -> None:
         if token_budget <= 0:
-            raise ValueError(
-                f"token_budget must be positive, got {token_budget}"
-            )
+            raise ValueError(f"token_budget must be positive, got {token_budget}")
         self._repo = repo
         self._token_budget = token_budget
 

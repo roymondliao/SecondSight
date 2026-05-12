@@ -71,9 +71,7 @@ class ObservationPipeline:
         # contamination in tests. Type: list of async callables.
         self._post_ingest_callbacks: list[Callable[[Event], Awaitable[None]]] = []
 
-    def add_post_ingest_callback(
-        self, cb: Callable[[Event], Awaitable[None]]
-    ) -> None:
+    def add_post_ingest_callback(self, cb: Callable[[Event], Awaitable[None]]) -> None:
         """Register an async post-ingest callback.
 
         cb will be called (via asyncio.create_task) after each event is

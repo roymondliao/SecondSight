@@ -90,7 +90,8 @@ def _make_flag(
 
 class TestEnforceExpiry:
     def test_expires_past_conventions(
-        self, directives_repo: DirectivesRepository,
+        self,
+        directives_repo: DirectivesRepository,
     ) -> None:
         past = datetime.now(tz=timezone.utc) - timedelta(hours=1)
         d = _make_directive(expires_at=past)
@@ -104,7 +105,8 @@ class TestEnforceExpiry:
         assert updated.status == DirectiveStatus.EXPIRED
 
     def test_does_not_expire_future_conventions(
-        self, directives_repo: DirectivesRepository,
+        self,
+        directives_repo: DirectivesRepository,
     ) -> None:
         future = datetime.now(tz=timezone.utc) + timedelta(hours=1)
         d = _make_directive(expires_at=future)
@@ -114,7 +116,8 @@ class TestEnforceExpiry:
         assert count == 0
 
     def test_does_not_expire_conventions_without_ttl(
-        self, directives_repo: DirectivesRepository,
+        self,
+        directives_repo: DirectivesRepository,
     ) -> None:
         d = _make_directive(expires_at=None)
         directives_repo.insert(d)
@@ -141,7 +144,9 @@ class TestEnforceReactivation:
         flags_repo.insert(flag)
 
         count = enforce_reactivation(
-            _PROJECT_ID, directives_repo, db_engine,
+            _PROJECT_ID,
+            directives_repo,
+            db_engine,
         )
         assert count == 1
 
@@ -163,7 +168,9 @@ class TestEnforceReactivation:
         # No flags inserted
 
         count = enforce_reactivation(
-            _PROJECT_ID, directives_repo, db_engine,
+            _PROJECT_ID,
+            directives_repo,
+            db_engine,
         )
         assert count == 0
 
@@ -183,7 +190,9 @@ class TestEnforceReactivation:
         flags_repo.insert(flag)
 
         count = enforce_reactivation(
-            _PROJECT_ID, directives_repo, db_engine,
+            _PROJECT_ID,
+            directives_repo,
+            db_engine,
         )
         assert count == 0
 
@@ -209,7 +218,9 @@ class TestRunLifecycleAutomation:
         flags_repo.insert(flag)
 
         result = run_lifecycle_automation(
-            _PROJECT_ID, directives_repo, db_engine,
+            _PROJECT_ID,
+            directives_repo,
+            db_engine,
         )
         assert result.expired_count == 1
         assert result.reactivated_count == 1

@@ -68,9 +68,7 @@ class Segmenter:
         for segment_index in sorted(by_segment):
             seg_events = by_segment[segment_index]
             user_prompt = self._extract_user_prompt(seg_events)
-            assembled = self._assemble_events(
-                seg_events, exclude_user_prompt=True
-            )
+            assembled = self._assemble_events(seg_events, exclude_user_prompt=True)
             segments.append(
                 SegmentData(
                     segment_index=segment_index,
@@ -128,10 +126,7 @@ class Segmenter:
         pending: dict[tuple[str, Any], list[Event]] = defaultdict(list)
 
         for event in seg_events:
-            if (
-                exclude_user_prompt
-                and event.event_type is EventType.USER_PROMPT
-            ):
+            if exclude_user_prompt and event.event_type is EventType.USER_PROMPT:
                 continue
 
             if event.event_type is EventType.TOOL_USE_START:

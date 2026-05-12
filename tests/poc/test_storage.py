@@ -12,11 +12,7 @@ on real traces (unexpected sizes, nesting, encoding)."
 from __future__ import annotations
 
 import json
-import os
-import sqlite3
-import tempfile
 import time
-import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -28,8 +24,6 @@ from secondsight.poc.event_schema import (
     EventType,
     SecondSightEvent,
     TokenUsage,
-    event_from_dict,
-    event_to_dict,
     normalize_event,
 )
 from secondsight.poc.storage import (
@@ -144,9 +138,7 @@ class TestDeathSyncFailure:
 
         # But the filesystem file should still exist
         fs_events = storage.scan_filesystem_events(event.session_id)
-        assert len(fs_events) >= 1, (
-            "Filesystem should still have the event even if SQLite lost it"
-        )
+        assert len(fs_events) >= 1, "Filesystem should still have the event even if SQLite lost it"
 
     def test_sqlite_write_succeeds_but_filesystem_missing(self, storage: DualLayerStorage) -> None:
         """SQLite has the index entry but the filesystem JSON file is gone.
@@ -172,9 +164,7 @@ class TestDeathSyncFailure:
         assert len(events_after) == 1
 
         # But attempting to load full event from filesystem should report the gap
-        full_event = storage.load_full_event(
-            event.session_id, events_after[0]["filesystem_path"]
-        )
+        full_event = storage.load_full_event(event.session_id, events_after[0]["filesystem_path"])
         assert full_event is None, (
             "load_full_event should return None when filesystem file is missing, "
             "not raise an exception silently swallowed"
@@ -280,7 +270,9 @@ class TestDeathLatencyAtScale:
                     _make_event(
                         session_id=sid,
                         timestamp=ts.isoformat(),
-                        event_type=EventType.TOOL_CALL_START.value if j % 2 == 0 else EventType.TOOL_CALL_END.value,
+                        event_type=EventType.TOOL_CALL_START.value
+                        if j % 2 == 0
+                        else EventType.TOOL_CALL_END.value,
                     )
                 )
 
@@ -309,9 +301,7 @@ class TestDeathLatencyAtScale:
         for i in range(batch_size):
             sid = f"session-{i:04d}"
             ts = base_time + timedelta(seconds=i)
-            events_to_store.append(
-                _make_event(session_id=sid, timestamp=ts.isoformat())
-            )
+            events_to_store.append(_make_event(session_id=sid, timestamp=ts.isoformat()))
 
         storage.store_events_batch(events_to_store)
 
@@ -324,9 +314,7 @@ class TestDeathLatencyAtScale:
         elapsed_ms = (time.perf_counter() - start) * 1000
 
         assert len(events) > 0, "Time range query returned no events"
-        assert elapsed_ms < 500, (
-            f"Time range query latency {elapsed_ms:.1f}ms exceeds 500ms target"
-        )
+        assert elapsed_ms < 500, f"Time range query latency {elapsed_ms:.1f}ms exceeds 500ms target"
 
 
 class TestDeathRealTraceData:
@@ -360,9 +348,7 @@ class TestDeathRealTraceData:
         assert len(events) == 1
 
         # Full event from filesystem should have the complete result
-        full_event = storage.load_full_event(
-            event.session_id, events[0]["filesystem_path"]
-        )
+        full_event = storage.load_full_event(event.session_id, events[0]["filesystem_path"])
         assert full_event is not None
         assert full_event.tool_result == large_output
 
@@ -372,13 +358,7 @@ class TestDeathRealTraceData:
         """
         nested_args = {
             "cmd": "complex command",
-            "options": {
-                "level1": {
-                    "level2": {
-                        "level3": ["a", "b", {"level4": True}]
-                    }
-                }
-            },
+            "options": {"level1": {"level2": {"level3": ["a", "b", {"level4": True}]}}},
         }
         event = _make_event(tool_args=nested_args)
 
@@ -386,9 +366,7 @@ class TestDeathRealTraceData:
 
         # Read back from filesystem and verify nesting is preserved
         events = storage.query_session_events(event.session_id)
-        full_event = storage.load_full_event(
-            event.session_id, events[0]["filesystem_path"]
-        )
+        full_event = storage.load_full_event(event.session_id, events[0]["filesystem_path"])
         assert full_event is not None
         assert full_event.tool_args == nested_args
 
@@ -417,9 +395,7 @@ class TestDeathRealTraceData:
 
         # Read back
         events = storage.query_session_events(event.session_id)
-        full_event = storage.load_full_event(
-            event.session_id, events[0]["filesystem_path"]
-        )
+        full_event = storage.load_full_event(event.session_id, events[0]["filesystem_path"])
         assert full_event is not None
         assert full_event.content == content_with_unicode
 
@@ -481,9 +457,7 @@ class TestDeathRealTraceData:
 
         # Verify all events are queryable
         # The session_meta event sets session_id from payload.id
-        events = storage.query_session_events(
-            "019d3431-8669-7603-be71-7079fa555f4a"
-        )
+        events = storage.query_session_events("019d3431-8669-7603-be71-7079fa555f4a")
         assert len(events) >= 1, (
             f"Expected at least 1 event for Codex session, got {len(events)}. "
             "Some Codex events may not have session_id set."
@@ -572,13 +546,13 @@ class TestDeathConcurrentWrites:
         n_events = 100
 
         for i in range(n_events):
-            ts = datetime(2026, 4, 24, 10, 0, 0, tzinfo=timezone.utc) + timedelta(
-                milliseconds=i
-            )
+            ts = datetime(2026, 4, 24, 10, 0, 0, tzinfo=timezone.utc) + timedelta(milliseconds=i)
             event = _make_event(
                 session_id=session_id,
                 timestamp=ts.isoformat(),
-                event_type=EventType.TOOL_CALL_START.value if i % 2 == 0 else EventType.TOOL_CALL_END.value,
+                event_type=EventType.TOOL_CALL_START.value
+                if i % 2 == 0
+                else EventType.TOOL_CALL_END.value,
             )
             storage.store_event(event)
 
@@ -620,10 +594,7 @@ class TestDeathConcurrentWrites:
             except Exception as e:
                 errors.append(f"Thread {thread_id}: {e}")
 
-        threads = [
-            threading.Thread(target=write_events, args=(tid,))
-            for tid in range(n_threads)
-        ]
+        threads = [threading.Thread(target=write_events, args=(tid,)) for tid in range(n_threads)]
         for t in threads:
             t.start()
         for t in threads:
@@ -634,8 +605,7 @@ class TestDeathConcurrentWrites:
         expected = n_threads * events_per_thread
         events = storage.query_session_events(session_id)
         assert len(events) == expected, (
-            f"Expected {expected} events, got {len(events)}. "
-            "Concurrent writes lost events."
+            f"Expected {expected} events, got {len(events)}. Concurrent writes lost events."
         )
 
 
@@ -908,10 +878,7 @@ class TestFilesystemLayout:
         storage.store_event(event)
 
         metadata_path = (
-            Path(storage._config.base_dir)
-            / "sessions"
-            / "metadata-json-session"
-            / "metadata.json"
+            Path(storage._config.base_dir) / "sessions" / "metadata-json-session" / "metadata.json"
         )
         assert metadata_path.exists()
 

@@ -69,6 +69,7 @@ class StorageConfig:
                    Death tests MUST use use_memory_db=False.
     db_path: Override SQLite database file path. Default: {base_dir}/secondsight.db
     """
+
     base_dir: str
     use_memory_db: bool = False
     db_path: str | None = None
@@ -86,9 +87,11 @@ class StorageConfig:
 # Integrity check result
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class IntegrityResult:
     """Result of an integrity check between filesystem and SQLite."""
+
     session_id: str
     is_consistent: bool
     sqlite_count: int
@@ -100,6 +103,7 @@ class IntegrityResult:
 # ---------------------------------------------------------------------------
 # DualLayerStorage
 # ---------------------------------------------------------------------------
+
 
 class DualLayerStorage:
     """Dual-layer storage: filesystem for raw events, SQLite for indexed queries.
@@ -157,13 +161,9 @@ class DualLayerStorage:
                 updated_at      TEXT NOT NULL
             )
         """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_agent_type ON sessions(agent_type)")
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_sessions_agent_type "
-            "ON sessions(agent_type)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_sessions_last_event_ts "
-            "ON sessions(last_event_ts)"
+            "CREATE INDEX IF NOT EXISTS idx_sessions_last_event_ts ON sessions(last_event_ts)"
         )
 
         conn.execute("""
@@ -183,24 +183,18 @@ class DualLayerStorage:
             )
         """)
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_events_session_id "
-            "ON runtime_events(session_id)"
+            "CREATE INDEX IF NOT EXISTS idx_events_session_id ON runtime_events(session_id)"
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_events_timestamp "
-            "ON runtime_events(timestamp)"
-        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON runtime_events(timestamp)")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_events_session_timestamp "
             "ON runtime_events(session_id, timestamp)"
         )
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_events_event_type "
-            "ON runtime_events(event_type)"
+            "CREATE INDEX IF NOT EXISTS idx_events_event_type ON runtime_events(event_type)"
         )
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_events_agent_type "
-            "ON runtime_events(agent_type)"
+            "CREATE INDEX IF NOT EXISTS idx_events_agent_type ON runtime_events(agent_type)"
         )
 
         conn.commit()
@@ -430,9 +424,7 @@ class DualLayerStorage:
             try:
                 for event, session_id, rel_path in fs_records:
                     timestamp = event.timestamp or now
-                    self._upsert_event_to_sqlite(
-                        event, session_id, timestamp, rel_path, now
-                    )
+                    self._upsert_event_to_sqlite(event, session_id, timestamp, rel_path, now)
                 self._db.commit()
             except Exception:
                 self._db.rollback()
@@ -448,9 +440,7 @@ class DualLayerStorage:
 
         return paths
 
-    def _write_session_metadata_file(
-        self, session_id: str, event: SecondSightEvent
-    ) -> None:
+    def _write_session_metadata_file(self, session_id: str, event: SecondSightEvent) -> None:
         """Write or update the session metadata.json file on filesystem.
 
         NOT thread-safe for concurrent writes to the same session_id.
@@ -469,8 +459,7 @@ class DualLayerStorage:
                     metadata = json.load(f)
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(
-                    "Corrupt or unreadable metadata.json at %s: %s. "
-                    "Resetting to fresh metadata.",
+                    "Corrupt or unreadable metadata.json at %s: %s. Resetting to fresh metadata.",
                     metadata_path,
                     e,
                 )
@@ -508,9 +497,7 @@ class DualLayerStorage:
         rows = cursor.fetchall()
         return [dict(row) for row in rows]
 
-    def query_events_by_time_range(
-        self, start_ts: str, end_ts: str
-    ) -> list[dict[str, Any]]:
+    def query_events_by_time_range(self, start_ts: str, end_ts: str) -> list[dict[str, Any]]:
         """Query events within a time range (inclusive start, exclusive end).
 
         Args:
@@ -530,9 +517,7 @@ class DualLayerStorage:
         rows = cursor.fetchall()
         return [dict(row) for row in rows]
 
-    def load_full_event(
-        self, session_id: str, filesystem_path: str
-    ) -> SecondSightEvent | None:
+    def load_full_event(self, session_id: str, filesystem_path: str) -> SecondSightEvent | None:
         """Load the complete event from filesystem.
 
         Args:
@@ -592,9 +577,7 @@ class DualLayerStorage:
         events_dir = self._session_events_dir(session_id)
         if not os.path.exists(events_dir):
             return []
-        return sorted(
-            f for f in os.listdir(events_dir) if f.endswith(".json")
-        )
+        return sorted(f for f in os.listdir(events_dir) if f.endswith(".json"))
 
     # ------------------------------------------------------------------
     # Integrity check
@@ -629,9 +612,7 @@ class DualLayerStorage:
                 "SELECT filesystem_path FROM runtime_events WHERE session_id = ?",
                 (session_id,),
             )
-            sqlite_paths = {
-                os.path.basename(row[0]) for row in cursor.fetchall()
-            }
+            sqlite_paths = {os.path.basename(row[0]) for row in cursor.fetchall()}
 
             fs_set = set(fs_files)
 
@@ -670,18 +651,14 @@ class DualLayerStorage:
         if not os.path.exists(events_dir):
             return 0
 
-        fs_files = sorted(
-            f for f in os.listdir(events_dir) if f.endswith(".json")
-        )
+        fs_files = sorted(f for f in os.listdir(events_dir) if f.endswith(".json"))
 
         # Get already-indexed paths from SQLite
         cursor = self._db.execute(
             "SELECT filesystem_path FROM runtime_events WHERE session_id = ?",
             (session_id,),
         )
-        indexed_basenames = {
-            os.path.basename(row[0]) for row in cursor.fetchall()
-        }
+        indexed_basenames = {os.path.basename(row[0]) for row in cursor.fetchall()}
 
         recovered = 0
         failed = 0
@@ -709,9 +686,7 @@ class DualLayerStorage:
             timestamp = event.timestamp or now
 
             with self._write_lock:
-                self._upsert_event_to_sqlite(
-                    event, session_id, timestamp, rel_path, now
-                )
+                self._upsert_event_to_sqlite(event, session_id, timestamp, rel_path, now)
                 self._db.commit()
 
             recovered += 1

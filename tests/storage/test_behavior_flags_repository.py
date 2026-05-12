@@ -90,16 +90,12 @@ class TestDeathPaths:
             "repository defensive guard missing"
         )
 
-    def test_dt_2_2_insert_idempotent_on_id_first_wins(
-        self, repo: BehaviorFlagsRepository
-    ) -> None:
+    def test_dt_2_2_insert_idempotent_on_id_first_wins(self, repo: BehaviorFlagsRepository) -> None:
         """DT-2.2 — Two insert()s with same id, different flag_type:
         only FIRST persists. ON CONFLICT DO NOTHING contract.
         """
         f1 = _flag(id="flag-x", flag_type=BehaviorFlagType.UNNECESSARY_READ)
-        f2 = _flag(
-            id="flag-x", flag_type=BehaviorFlagType.REDUNDANT_EXPLORATION
-        )
+        f2 = _flag(id="flag-x", flag_type=BehaviorFlagType.REDUNDANT_EXPLORATION)
 
         repo.insert(f1)
         repo.insert(f2)
@@ -110,9 +106,7 @@ class TestDeathPaths:
             "ON CONFLICT DO NOTHING failed — second insert overwrote first"
         )
 
-    def test_dt_2_3_insert_then_fresh_repo_round_trip(
-        self, tmp_path: Path
-    ) -> None:
+    def test_dt_2_3_insert_then_fresh_repo_round_trip(self, tmp_path: Path) -> None:
         """DT-2.3 — INSERT must commit; a fresh repository instance
         against the same engine must see the row. Detects the silent-
         failure where the INSERT was buffered but never durable.
@@ -194,16 +188,13 @@ class TestHappyPaths:
         assert got.event_ids == ["e1", "e2", "e3"]
 
         # created_at: wall-clock matches; tzinfo dropped (SQLite limitation).
-        assert got.created_at.replace(tzinfo=None) == original.created_at.replace(
-            tzinfo=None
-        )
+        assert got.created_at.replace(tzinfo=None) == original.created_at.replace(tzinfo=None)
 
     def test_insert_many_returns_count_and_count_by_type_aggregates(
         self, repo: BehaviorFlagsRepository
     ) -> None:
         flags = [
-            _flag(id=f"f-{i}", flag_type=BehaviorFlagType.UNNECESSARY_READ)
-            for i in range(30)
+            _flag(id=f"f-{i}", flag_type=BehaviorFlagType.UNNECESSARY_READ) for i in range(30)
         ] + [
             _flag(
                 id=f"g-{i}",
@@ -218,16 +209,10 @@ class TestHappyPaths:
         assert counts[BehaviorFlagType.UNNECESSARY_READ] == 30
         assert counts[BehaviorFlagType.REDUNDANT_EXPLORATION] == 20
 
-    def test_get_project_flags_by_type_filters(
-        self, repo: BehaviorFlagsRepository
-    ) -> None:
+    def test_get_project_flags_by_type_filters(self, repo: BehaviorFlagsRepository) -> None:
         repo.insert(_flag(id="a", flag_type=BehaviorFlagType.WRONG_TOOL_CHOICE))
-        repo.insert(
-            _flag(id="b", flag_type=BehaviorFlagType.UNNECESSARY_READ)
-        )
-        only_wrong = repo.get_project_flags_by_type(
-            "proj-1", BehaviorFlagType.WRONG_TOOL_CHOICE
-        )
+        repo.insert(_flag(id="b", flag_type=BehaviorFlagType.UNNECESSARY_READ))
+        only_wrong = repo.get_project_flags_by_type("proj-1", BehaviorFlagType.WRONG_TOOL_CHOICE)
         assert len(only_wrong) == 1
         assert only_wrong[0].id == "a"
 

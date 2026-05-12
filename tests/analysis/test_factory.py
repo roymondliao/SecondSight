@@ -29,10 +29,8 @@ Production caller status (documented gap):
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import timezone
 from pathlib import Path
-from typing import Iterator
-from unittest.mock import patch
 
 import pytest
 
@@ -44,9 +42,7 @@ from secondsight.analysis.orchestrator import Orchestrator
 from secondsight.analysis.post_analysis_cleanup import PostAnalysisCleanupTrigger
 from secondsight.storage.analysis_runs_repository import AnalysisRunsRepository
 from secondsight.storage.behavior_flags_repository import BehaviorFlagsRepository
-from secondsight.storage.db_engine import DBEngine
 from secondsight.storage.directives_repository import DirectivesRepository
-from secondsight.storage.events_repository import EventsRepository
 from secondsight.storage.session_reports_repository import SessionReportsRepository
 from tests.analysis._fake_agent import FakeAnalysisAgent
 
@@ -118,9 +114,7 @@ class TestDcB4BootTimeGuard:
     ) -> None:
         # Operator opts in via config.
         proj_cfg = home / "projects" / project_id / "config.toml"
-        proj_cfg.write_text(
-            "[retention]\ncleanup_after_analysis = true\n"
-        )
+        proj_cfg.write_text("[retention]\ncleanup_after_analysis = true\n")
 
         # Simulate a wiring drop: monkeypatch the trigger-builder helper
         # so it returns None even though config says enabled.
@@ -193,9 +187,7 @@ class TestFactoryEnabledPath:
         PostAnalysisCleanupTrigger and passes it as the orchestrator's
         on_analysis_complete callback."""
         proj_cfg = home / "projects" / project_id / "config.toml"
-        proj_cfg.write_text(
-            "[retention]\ncleanup_after_analysis = true\n"
-        )
+        proj_cfg.write_text("[retention]\ncleanup_after_analysis = true\n")
 
         orch = build_orchestrator(
             home=home,
@@ -224,9 +216,7 @@ class TestFactoryNonBoolConfigRaises:
         from secondsight.storage.retention import RetentionConfigError
 
         proj_cfg = home / "projects" / project_id / "config.toml"
-        proj_cfg.write_text(
-            '[retention]\ncleanup_after_analysis = "yes"\n'
-        )
+        proj_cfg.write_text('[retention]\ncleanup_after_analysis = "yes"\n')
         with pytest.raises(RetentionConfigError) as exc_info:
             build_orchestrator(
                 home=home,

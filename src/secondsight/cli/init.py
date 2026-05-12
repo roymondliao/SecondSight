@@ -1,38 +1,39 @@
-"""`secondsight init` — install hook scripts + register them with Claude Code.
+"""`secondsight init` — install hook scripts + register them with an agent.
 
 Three-stage operation (the pre-check exists *because* stages 1 and 2 are
 not jointly transactional — see review-response in changes/...):
 
-    0. Pre-check: parse <claude-home>/settings.json. Aborts on malformed
+    0. Pre-check: parse the target agent's registration file. Aborts on malformed
        JSON or wrong-typed `hooks` section BEFORE any hook script is
        copied to disk.
-    1. Copy bundled hook scripts into ``<claude-home>/hooks/`` (default
-       ``~/.claude/hooks/``).
-    2. Patch ``<claude-home>/settings.json`` to register each script under
-       the matching Claude Code hook event (PreToolUse, PostToolUse,
-       UserPromptSubmit, SessionStart, SessionEnd).
+    1. Copy bundled hook scripts into ``<agent-home>/hooks/``.
+    2. Patch the agent's registration file to register each script under
+       the matching hook events.
 
-The pre-check closes a silent-failure mode where settings.json validation
+The pre-check closes a silent-failure mode where registration-file validation
 would otherwise happen *after* hook scripts had already landed on disk
 without registration. A race-window between pre-check and apply still
-exists (another writer could corrupt settings.json in between); when that
-happens we exit with the explicit ``settings_invalid_after_hook_copy``
-error code so the operator knows to re-run init after fixing settings.json.
+exists (another writer could corrupt the registration file in between); when
+that happens we exit with the explicit ``settings_invalid_after_hook_copy``
+error code so the operator knows to re-run init after fixing that file.
 
 All stages are idempotent (re-running yields the same on-disk state) and
 non-destructive (existing user hooks are preserved).
 
 CLI surface (per SD §9.1 — supports both human + agent personas):
 
-    secondsight init                   # human-friendly Rich output, applies changes
-    secondsight init --dry-run         # preview only, no writes
-    secondsight init --format json     # machine-readable summary
-    secondsight init --claude-home DIR # override target (tests + non-default setups)
-    secondsight init --hook-source DIR # override hook bundle (tests)
+    secondsight init                         # default: Claude Code at ~/.claude
+    secondsight init --agent codex          # Codex at ~/.codex
+    secondsight init --dry-run              # preview only, no writes
+    secondsight init --format json          # machine-readable summary
+    secondsight init --agent-home DIR       # override target home for chosen agent
+    secondsight init --claude-home DIR      # Claude-specific compatibility flag
+    secondsight init --codex-home DIR       # Codex-specific flag
+    secondsight init --hook-source DIR      # override hook bundle (tests)
 
 Exit codes:
     0 on success (or clean dry-run);
-    1 on user-actionable error (invalid settings.json, double install warned);
+    1 on user-actionable error (invalid registration file, double install warned);
     2 on packaging error (hook bundle missing).
 """
 
@@ -45,24 +46,43 @@ import typer
 from rich.console import Console
 
 from secondsight.cli._home import claude_home as resolve_claude_home
+from secondsight.cli._home import codex_home as resolve_codex_home
 from secondsight.installer import (
     ClaudeSettingsPatcher,
+    CodexHooksPatcher,
     HookInstaller,
 )
 from secondsight.installer.claude_settings import InvalidSettingsError
 from secondsight.installer.hook_install import HookBundleNotFoundError
 
-app = typer.Typer(name="init", help="Install SecondSight hook scripts into Claude Code.")
+app = typer.Typer(name="init", help="Install SecondSight hook scripts into Claude Code or Codex.")
 _console = Console()
+
+_SUPPORTED_AGENTS = frozenset({"claude_code", "codex"})
 
 
 @app.callback(invoke_without_command=True)
 def init(
     ctx: typer.Context,
+    agent: str = typer.Option(
+        "claude_code",
+        "--agent",
+        help="Target agent: 'claude_code' (default) or 'codex'.",
+    ),
+    agent_home: str = typer.Option(
+        "",
+        "--agent-home",
+        help="Override the selected agent's home directory.",
+    ),
     claude_home: str = typer.Option(
         "",
         "--claude-home",
-        help="Override the Claude Code home directory (default: $CLAUDE_HOME or ~/.claude).",
+        help="Override the Claude Code home directory (compatibility flag).",
+    ),
+    codex_home: str = typer.Option(
+        "",
+        "--codex-home",
+        help="Override the Codex home directory.",
     ),
     hook_source: str = typer.Option(
         "",
@@ -80,25 +100,30 @@ def init(
         help="Output format: 'text' (default, Rich) or 'json' (agent-friendly).",
     ),
 ) -> None:
-    """Install SecondSight hooks into Claude Code (idempotent)."""
+    """Install SecondSight hooks into the chosen agent (idempotent)."""
     # Typer's callback fires on bare `secondsight init`. We do not want sub-
     # commands here; treat any subcommand invocation as an error so future
     # additions don't silently shadow the install behaviour.
     if ctx.invoked_subcommand is not None:  # pragma: no cover — no subcmds defined
         return
 
-    target_claude_home = resolve_claude_home(claude_home)
-    hook_dir = target_claude_home / "hooks"
-    settings_path = target_claude_home / "settings.json"
+    canonical_agent = _normalize_agent(agent)
+    target_agent_home = _resolve_agent_home(
+        canonical_agent,
+        agent_home=agent_home,
+        claude_home=claude_home,
+        codex_home=codex_home,
+    )
+    hook_dir = target_agent_home / "hooks"
+    registration_path, patcher = _registration_target(canonical_agent, target_agent_home)
 
     installer = HookInstaller(
         source_dir=Path(hook_source).expanduser() if hook_source else None,
     )
-    patcher = ClaudeSettingsPatcher(settings_path=settings_path)
 
-    # ----- Stage 0: validate settings.json BEFORE touching hooks -----
+    # ----- Stage 0: validate registration file BEFORE touching hooks -----
     # The two stages (hook copy + settings patch) are not jointly transactional.
-    # If we wrote hooks first and then discovered settings.json is malformed,
+    # If we wrote hooks first and then discovered the registration file is malformed,
     # hooks would land on disk but never be registered — exactly the silent
     # failure mode this command must prevent. Calling plan() up-front raises
     # InvalidSettingsError on malformed JSON or wrong-typed sections WITHOUT
@@ -118,29 +143,32 @@ def init(
         _emit_error(output_format, "hook_bundle_missing", str(exc))
         raise typer.Exit(code=2) from exc
 
-    # ----- Stage 2: apply (or report) settings.json patch -----
+    # ----- Stage 2: apply (or report) registration patch -----
     if dry_run:
         patch_plan = precheck_plan
     else:
         try:
             patch_plan = patcher.apply(hook_dir)
         except InvalidSettingsError as exc:
-            # settings.json was parseable at pre-check time but became invalid
+            # The registration file was parseable at pre-check time but became invalid
             # between pre-check and apply (race with another writer). Hooks
             # are now on disk; surface the half-state honestly so the operator
-            # can re-run after fixing settings.json.
+            # can re-run after fixing the registration file.
             _emit_error(
                 output_format,
                 "settings_invalid_after_hook_copy",
-                f"hooks copied but settings.json patch failed: {exc}. "
-                f"Re-run `secondsight init` after fixing {settings_path}.",
+                f"hooks copied but registration patch failed: {exc}. "
+                f"Re-run `secondsight init` after fixing {registration_path}.",
             )
             raise typer.Exit(code=1) from exc
 
     summary = {
+        "agent": canonical_agent,
+        "agent_home": str(target_agent_home),
         "dry_run": dry_run,
         "hook_dir": str(hook_dir),
-        "settings_path": str(settings_path),
+        "registration_path": str(registration_path),
+        "settings_path": str(registration_path),
         "scripts_copied": install_plan.copied,
         "scripts_skipped_identical": install_plan.skipped_identical,
         "scripts_source": str(install_plan.source_dir),
@@ -161,8 +189,8 @@ def init(
     if patch_plan.foreign_secondsight_paths and output_format != "json":
         _console.print(
             "[yellow]warning:[/yellow] Other SecondSight install paths are "
-            "already registered in settings.json — review before running "
-            "Claude Code to avoid double-firing hooks:"
+            "already registered in the agent config — review before running "
+            "to avoid double-firing hooks:"
         )
         for cmd in patch_plan.foreign_secondsight_paths:
             _console.print(f"  - {cmd}")
@@ -178,8 +206,10 @@ def _emit_error(output_format: str, code: str, message: str) -> None:
 def _render_text(summary: dict[str, object]) -> None:
     title = "[cyan]Dry run[/cyan]" if summary["dry_run"] else "[cyan]Installed[/cyan]"
     _console.print(title)
+    _console.print(f"  agent:         {summary['agent']}")
+    _console.print(f"  agent home:    {summary['agent_home']}")
     _console.print(f"  hook dir:      {summary['hook_dir']}")
-    _console.print(f"  settings.json: {summary['settings_path']}")
+    _console.print(f"  registration:  {summary['registration_path']}")
     _console.print(f"  source bundle: {summary['scripts_source']}")
 
     copied = summary["scripts_copied"]
@@ -205,6 +235,54 @@ def _render_text(summary: dict[str, object]) -> None:
                 f"  [yellow]settings conflict (different install path):[/yellow] "
                 f"{', '.join(sorted(confs))}"
             )
+
+
+def _normalize_agent(agent: str) -> str:
+    candidate = agent.strip().lower()
+    if candidate == "claude":
+        candidate = "claude_code"
+    if candidate not in _SUPPORTED_AGENTS:
+        supported = ", ".join(sorted(_SUPPORTED_AGENTS))
+        raise typer.BadParameter(
+            f"Unsupported agent {agent!r}. Supported values: {supported}.",
+            param_hint="--agent",
+        )
+    return candidate
+
+
+def _resolve_agent_home(
+    agent: str,
+    *,
+    agent_home: str,
+    claude_home: str,
+    codex_home: str,
+) -> Path:
+    if agent == "claude_code" and codex_home:
+        raise typer.BadParameter(
+            "--codex-home can only be used with --agent codex.",
+            param_hint="--codex-home",
+        )
+    if agent == "codex" and claude_home:
+        raise typer.BadParameter(
+            "--claude-home can only be used with --agent claude_code.",
+            param_hint="--claude-home",
+        )
+
+    if agent == "claude_code":
+        chosen = agent_home or claude_home
+        return resolve_claude_home(chosen)
+
+    chosen = agent_home or codex_home
+    return resolve_codex_home(chosen)
+
+
+def _registration_target(agent: str, agent_home: Path) -> tuple[Path, object]:
+    if agent == "claude_code":
+        settings_path = agent_home / "settings.json"
+        return settings_path, ClaudeSettingsPatcher(settings_path=settings_path)
+
+    hooks_path = agent_home / "hooks.json"
+    return hooks_path, CodexHooksPatcher(hooks_path=hooks_path)
 
 
 __all__ = ["app"]

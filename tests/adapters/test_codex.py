@@ -268,7 +268,12 @@ def test_inject_convention_formats_correctly() -> None:
     from secondsight.feedback.convention import Convention
 
     adapter = CodexAdapter()
-    conv = Convention(id="c1", instruction="Read AGENTS.md first", frequency=0.9, source_flag_type="unnecessary_read")
+    conv = Convention(
+        id="c1",
+        instruction="Read AGENTS.md first",
+        frequency=0.9,
+        source_flag_type="unnecessary_read",
+    )
     result = adapter.inject_convention(conv)
     assert result == "- Read AGENTS.md first"
 

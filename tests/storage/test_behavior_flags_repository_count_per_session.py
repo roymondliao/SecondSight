@@ -11,7 +11,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
-from uuid import uuid4
 
 import pytest
 
@@ -127,9 +126,7 @@ class TestDeathPaths:
                     )
                 )
 
-        result = flags_repo.count_per_session_for_project(
-            project_id, limit=10
-        )
+        result = flags_repo.count_per_session_for_project(project_id, limit=10)
 
         # DC-7 assertion: exactly 10 SESSIONS, not 10 flags.
         assert len(result) == 10, (
@@ -138,9 +135,7 @@ class TestDeathPaths:
         )
 
         # Each session's bucket carries all 5 flags it owns.
-        total_flag_rows = sum(
-            sum(b.counts_by_type.values()) for b in result
-        )
+        total_flag_rows = sum(sum(b.counts_by_type.values()) for b in result)
         assert total_flag_rows == 50, (
             f"Expected 50 total flag counts (10 sessions x 5 each); "
             f"got {total_flag_rows}. Suggests row-level LIMIT bug."
@@ -157,9 +152,7 @@ class TestDeathPaths:
         # Insert 5 sessions with strictly increasing created_at.
         for i in range(5):
             sid = f"sess-{i}"
-            reports_repo.upsert(
-                _report(project_id=project_id, session_id=sid, minute=i)
-            )
+            reports_repo.upsert(_report(project_id=project_id, session_id=sid, minute=i))
             flags_repo.insert(
                 _flag(
                     project_id=project_id,
@@ -169,9 +162,7 @@ class TestDeathPaths:
                 )
             )
 
-        result = flags_repo.count_per_session_for_project(
-            project_id, limit=5
-        )
+        result = flags_repo.count_per_session_for_project(project_id, limit=5)
 
         analyzed_ats = [b.analyzed_at for b in result]
         assert analyzed_ats == sorted(analyzed_ats, reverse=True), (
@@ -196,9 +187,7 @@ class TestDeathPaths:
         project_id = "proj-A"
 
         # Two sessions: one with a flag, one without.
-        reports_repo.upsert(
-            _report(project_id=project_id, session_id="sess-with", minute=1)
-        )
+        reports_repo.upsert(_report(project_id=project_id, session_id="sess-with", minute=1))
         flags_repo.insert(
             _flag(
                 project_id=project_id,
@@ -207,15 +196,9 @@ class TestDeathPaths:
                 minute=1,
             )
         )
-        reports_repo.upsert(
-            _report(
-                project_id=project_id, session_id="sess-empty", minute=2
-            )
-        )
+        reports_repo.upsert(_report(project_id=project_id, session_id="sess-empty", minute=2))
 
-        result = flags_repo.count_per_session_for_project(
-            project_id, limit=10
-        )
+        result = flags_repo.count_per_session_for_project(project_id, limit=10)
 
         ids = {b.session_id for b in result}
         assert ids == {"sess-with", "sess-empty"}
@@ -236,9 +219,7 @@ class TestDeathPaths:
         flags_repo, reports_repo = repos
 
         # Project A: 1 session, 1 flag.
-        reports_repo.upsert(
-            _report(project_id="proj-A", session_id="A-1", minute=1)
-        )
+        reports_repo.upsert(_report(project_id="proj-A", session_id="A-1", minute=1))
         flags_repo.insert(
             _flag(
                 project_id="proj-A",
@@ -251,9 +232,7 @@ class TestDeathPaths:
         # Project B: 3 sessions, 9 flags.
         for i in range(3):
             sid = f"B-{i}"
-            reports_repo.upsert(
-                _report(project_id="proj-B", session_id=sid, minute=10 + i)
-            )
+            reports_repo.upsert(_report(project_id="proj-B", session_id=sid, minute=10 + i))
             for j in range(3):
                 flags_repo.insert(
                     _flag(
@@ -265,12 +244,8 @@ class TestDeathPaths:
                     )
                 )
 
-        result_a = flags_repo.count_per_session_for_project(
-            "proj-A", limit=50
-        )
-        result_b = flags_repo.count_per_session_for_project(
-            "proj-B", limit=50
-        )
+        result_a = flags_repo.count_per_session_for_project("proj-A", limit=50)
+        result_b = flags_repo.count_per_session_for_project("proj-B", limit=50)
 
         assert {b.session_id for b in result_a} == {"A-1"}
         assert {b.session_id for b in result_b} == {"B-0", "B-1", "B-2"}
@@ -313,9 +288,7 @@ class TestHappyPath:
         }
 
         for i, (sid, flag_list) in enumerate(distribution.items()):
-            reports_repo.upsert(
-                _report(project_id=project_id, session_id=sid, minute=i)
-            )
+            reports_repo.upsert(_report(project_id=project_id, session_id=sid, minute=i))
             for j, ft in enumerate(flag_list):
                 flags_repo.insert(
                     _flag(
@@ -327,9 +300,7 @@ class TestHappyPath:
                     )
                 )
 
-        result = flags_repo.count_per_session_for_project(
-            project_id, limit=10
-        )
+        result = flags_repo.count_per_session_for_project(project_id, limit=10)
         by_id = {b.session_id: b.counts_by_type for b in result}
 
         assert by_id["S1"] == {BehaviorFlagType.UNNECESSARY_READ: 2}

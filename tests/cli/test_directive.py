@@ -23,7 +23,6 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -38,7 +37,6 @@ from secondsight.analysis.schemas import (
 from secondsight.api.directives import DirectiveOut
 from secondsight.api.registry import ProjectRegistry
 from secondsight.api.server import create_app
-from secondsight.storage.db_engine import DBEngine
 from secondsight.storage.directives_repository import DirectivesRepository
 
 # CLI entry point under test
@@ -118,9 +116,7 @@ class TestDeathPaths:
     # DT-4.1: byte-identical JSON between server-mode and --no-server
     # ------------------------------------------------------------------
 
-    def test_dt_4_1_byte_identical_json_server_vs_no_server(
-        self, home: Path
-    ) -> None:
+    def test_dt_4_1_byte_identical_json_server_vs_no_server(self, home: Path) -> None:
         """DC-4 defense: --no-server JSON MUST be byte-identical to server-mode JSON.
 
         Silent failure this closes: if the CLI formats datetime differently than
@@ -154,9 +150,12 @@ class TestDeathPaths:
             [
                 "directive",
                 "--active",
-                "--format", "json",
-                "--project", _PROJECT_ID,
-                "--home", str(home),
+                "--format",
+                "json",
+                "--project",
+                _PROJECT_ID,
+                "--home",
+                str(home),
                 "--no-server",
             ],
         )
@@ -191,19 +190,21 @@ class TestDeathPaths:
         with patch("secondsight.cli.directive.httpx") as mock_httpx:
             mock_httpx.ConnectError = _real_httpx.ConnectError
             mock_httpx.HTTPStatusError = _real_httpx.HTTPStatusError
-            mock_httpx.get = MagicMock(
-                side_effect=_real_httpx.ConnectError("connection refused")
-            )
+            mock_httpx.get = MagicMock(side_effect=_real_httpx.ConnectError("connection refused"))
 
             result = runner.invoke(
                 app,
                 [
                     "directive",
                     "--active",
-                    "--format", "json",
-                    "--project", _PROJECT_ID,
-                    "--home", str(home),
-                    "--server-url", "http://127.0.0.1:19999",
+                    "--format",
+                    "json",
+                    "--project",
+                    _PROJECT_ID,
+                    "--home",
+                    str(home),
+                    "--server-url",
+                    "http://127.0.0.1:19999",
                 ],
             )
 
@@ -223,9 +224,7 @@ class TestDeathPaths:
     # DT-4.3: HTTPStatusError → loud exit, NO fallback
     # ------------------------------------------------------------------
 
-    def test_dt_4_3_http_status_error_loud_exit_no_fallback(
-        self, home: Path
-    ) -> None:
+    def test_dt_4_3_http_status_error_loud_exit_no_fallback(self, home: Path) -> None:
         """HTTPStatusError → exit 1, stderr has status code, in-process NOT called.
 
         Silent failure this closes: if HTTPStatusError triggered in-process fallback
@@ -248,18 +247,20 @@ class TestDeathPaths:
             mock_httpx.HTTPStatusError = _real_httpx.HTTPStatusError
             mock_httpx.get = MagicMock(side_effect=http_error)
 
-            with patch(
-                "secondsight.cli.directive._list_directives_in_process"
-            ) as mock_in_process:
+            with patch("secondsight.cli.directive._list_directives_in_process") as mock_in_process:
                 result = runner.invoke(
                     app,
                     [
                         "directive",
                         "--active",
-                        "--format", "json",
-                        "--project", _PROJECT_ID,
-                        "--home", str(home),
-                        "--server-url", "http://127.0.0.1:8420",
+                        "--format",
+                        "json",
+                        "--project",
+                        _PROJECT_ID,
+                        "--home",
+                        str(home),
+                        "--server-url",
+                        "http://127.0.0.1:8420",
                     ],
                 )
                 mock_in_process.assert_not_called()
@@ -268,9 +269,7 @@ class TestDeathPaths:
             f"DT-4.3: Expected exit 1 for HTTPStatusError (server up, endpoint broken). "
             f"Got {result.exit_code}. stdout={result.stdout!r} stderr={result.stderr!r}"
         )
-        assert "500" in result.stderr, (
-            f"DT-4.3: Expected '500' in stderr. Got: {result.stderr!r}"
-        )
+        assert "500" in result.stderr, f"DT-4.3: Expected '500' in stderr. Got: {result.stderr!r}"
 
     # ------------------------------------------------------------------
     # DT-4.4: --disable requires --reason
@@ -290,9 +289,12 @@ class TestDeathPaths:
             app,
             [
                 "directive",
-                "--disable", _DIR_ID_1,
-                "--project", _PROJECT_ID,
-                "--home", str(home),
+                "--disable",
+                _DIR_ID_1,
+                "--project",
+                _PROJECT_ID,
+                "--home",
+                str(home),
                 "--no-server",
             ],
         )
@@ -329,9 +331,12 @@ class TestDeathPaths:
             app,
             [
                 "directive",
-                "--enable", _DIR_ID_1,
-                "--project", _PROJECT_ID,
-                "--home", str(home),
+                "--enable",
+                _DIR_ID_1,
+                "--project",
+                _PROJECT_ID,
+                "--home",
+                str(home),
                 "--no-server",
             ],
         )
@@ -378,9 +383,12 @@ class TestHappyPaths:
             [
                 "directive",
                 "--active",
-                "--format", "json",
-                "--project", _PROJECT_ID,
-                "--home", str(home),
+                "--format",
+                "json",
+                "--project",
+                _PROJECT_ID,
+                "--home",
+                str(home),
                 "--no-server",
             ],
         )
@@ -419,8 +427,10 @@ class TestHappyPaths:
             [
                 "directive",
                 "--active",
-                "--project", _PROJECT_ID,
-                "--home", str(home),
+                "--project",
+                _PROJECT_ID,
+                "--home",
+                str(home),
                 "--no-server",
             ],
         )
@@ -457,10 +467,14 @@ class TestHappyPaths:
             app,
             [
                 "directive",
-                "--disable", _DIR_ID_1,
-                "--reason", "outdated vocabulary",
-                "--project", _PROJECT_ID,
-                "--home", str(home),
+                "--disable",
+                _DIR_ID_1,
+                "--reason",
+                "outdated vocabulary",
+                "--project",
+                _PROJECT_ID,
+                "--home",
+                str(home),
                 "--no-server",
             ],
         )
@@ -493,9 +507,12 @@ class TestHappyPaths:
             app,
             [
                 "directive",
-                "--enable", _DIR_ID_1,
-                "--project", _PROJECT_ID,
-                "--home", str(home),
+                "--enable",
+                _DIR_ID_1,
+                "--project",
+                _PROJECT_ID,
+                "--home",
+                str(home),
                 "--no-server",
             ],
         )

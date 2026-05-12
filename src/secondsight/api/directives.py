@@ -156,9 +156,7 @@ def _hash_etag(seed: str) -> str:
     return f'W/"{digest[:16]}"'
 
 
-def _directives_etag(
-    db_engine, project_id: str, *, active_only: bool
-) -> str | None:
+def _directives_etag(db_engine, project_id: str, *, active_only: bool) -> str | None:
     """ETag for the directives listing.
 
     Scope: rows in ``directives`` where ``project_id`` matches and
@@ -265,15 +263,11 @@ async def list_directives(
     resources = await _aresources(request, project_id)
     repo = _directives_repo(resources)
 
-    etag = _directives_etag(
-        resources.db_engine, project_id, active_only=active
-    )
+    etag = _directives_etag(resources.db_engine, project_id, active_only=active)
     if etag is not None and request.headers.get("if-none-match") == etag:
         return Response(status_code=304)
 
-    directives_list = repo.list_for_project(
-        project_id, active_only=active
-    )
+    directives_list = repo.list_for_project(project_id, active_only=active)
 
     if etag is not None:
         response.headers["ETag"] = etag
@@ -307,9 +301,7 @@ async def patch_directive(
     if not is_safe_id(directive_id):
         raise HTTPException(
             status_code=422,
-            detail=(
-                f"directive_id {directive_id!r} contains unsafe characters."
-            ),
+            detail=(f"directive_id {directive_id!r} contains unsafe characters."),
         )
 
     resources = await _aresources(request, project_id)
@@ -324,16 +316,16 @@ async def patch_directive(
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
-            detail={"error": "lifecycle_violation", "message": "Directive lifecycle rule violated."},
+            detail={
+                "error": "lifecycle_violation",
+                "message": "Directive lifecycle rule violated.",
+            },
         ) from exc
 
     if result is None:
         raise HTTPException(
             status_code=404,
-            detail=(
-                f"directive {directive_id!r} not found in project "
-                f"{project_id!r}."
-            ),
+            detail=(f"directive {directive_id!r} not found in project {project_id!r}."),
         )
 
     return DirectiveOut.from_directive(result)

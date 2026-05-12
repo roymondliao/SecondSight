@@ -42,6 +42,7 @@ class SessionFlagBreakdown:
     analyzed_at: datetime
     counts_by_type: dict[BehaviorFlagType, int]
 
+
 _logger = logging.getLogger(__name__)
 
 
@@ -93,9 +94,7 @@ class BehaviorFlagsRepository:
         for flag in flags:
             self._guard(flag)
         rows = [self._flag_to_row(f) for f in flags]
-        stmt = sqlite_insert(behavior_flags).on_conflict_do_nothing(
-            index_elements=["id"]
-        )
+        stmt = sqlite_insert(behavior_flags).on_conflict_do_nothing(index_elements=["id"])
         with self._db.engine.begin() as conn:
             conn.execute(stmt, rows)
         return len(rows)
@@ -107,9 +106,7 @@ class BehaviorFlagsRepository:
             .order_by(behavior_flags.c.created_at.asc())
         )
         with self._db.engine.connect() as conn:
-            return [
-                self._row_to_flag(r) for r in conn.execute(stmt).mappings()
-            ]
+            return [self._row_to_flag(r) for r in conn.execute(stmt).mappings()]
 
     def get_project_flags_by_type(
         self, project_id: str, flag_type: BehaviorFlagType
@@ -121,9 +118,7 @@ class BehaviorFlagsRepository:
             )
         )
         with self._db.engine.connect() as conn:
-            return [
-                self._row_to_flag(r) for r in conn.execute(stmt).mappings()
-            ]
+            return [self._row_to_flag(r) for r in conn.execute(stmt).mappings()]
 
     def count_by_type(self, project_id: str) -> dict[BehaviorFlagType, int]:
         """Aggregate counts per flag_type for a project.
@@ -300,8 +295,7 @@ class BehaviorFlagsRepository:
             BehaviorFlagType(flag.flag_type)
         except ValueError as e:
             raise ValueError(
-                f"BehaviorFlag.flag_type={flag.flag_type!r} is not a "
-                f"valid BehaviorFlagType"
+                f"BehaviorFlag.flag_type={flag.flag_type!r} is not a valid BehaviorFlagType"
             ) from e
 
     @staticmethod

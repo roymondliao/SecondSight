@@ -214,30 +214,22 @@ class TestDCB1AnalysisTtlTypoFallsThroughToDefault:
     "loader fell through to builtin because the key was misspelled".
     """
 
-    def test_per_project_typo_in_key_falls_through_to_builtin(
-        self, tmp_path: Path
-    ) -> None:
+    def test_per_project_typo_in_key_falls_through_to_builtin(self, tmp_path: Path) -> None:
         home = tmp_path
         proj = home / "projects" / "proj-alpha"
         proj.mkdir(parents=True)
         # Typo: `analysis_ttl_day` (missing `s`).
-        (proj / "config.toml").write_text(
-            "[retention]\nanalysis_ttl_day = 30\n"
-        )
+        (proj / "config.toml").write_text("[retention]\nanalysis_ttl_day = 30\n")
 
         cfg = RetentionConfig.load(home=home, project_id="proj-alpha")
 
         assert cfg.analysis_ttl_days == BUILTIN_DEFAULT_ANALYSIS_TTL_DAYS == 365
         assert cfg.analysis_ttl_source == "builtin_default"
 
-    def test_global_typo_in_key_falls_through_to_builtin(
-        self, tmp_path: Path
-    ) -> None:
+    def test_global_typo_in_key_falls_through_to_builtin(self, tmp_path: Path) -> None:
         home = tmp_path
         # Typo at global scope.
-        (home / "config.toml").write_text(
-            "[retention]\nanalisys_ttl_days = 30\n"
-        )
+        (home / "config.toml").write_text("[retention]\nanalisys_ttl_days = 30\n")
 
         cfg = RetentionConfig.load(home=home, project_id="proj-alpha")
 
@@ -250,30 +242,20 @@ class TestAnalysisTtlPrecedence:
     global → builtin chain as raw_traces_ttl_days, with independent
     source attribution."""
 
-    def test_per_project_overrides_global_for_analysis_ttl(
-        self, tmp_path: Path
-    ) -> None:
+    def test_per_project_overrides_global_for_analysis_ttl(self, tmp_path: Path) -> None:
         home = tmp_path
-        (home / "config.toml").write_text(
-            "[retention]\nanalysis_ttl_days = 60\n"
-        )
+        (home / "config.toml").write_text("[retention]\nanalysis_ttl_days = 60\n")
         proj = home / "projects" / "proj-alpha"
         proj.mkdir(parents=True)
-        (proj / "config.toml").write_text(
-            "[retention]\nanalysis_ttl_days = 30\n"
-        )
+        (proj / "config.toml").write_text("[retention]\nanalysis_ttl_days = 30\n")
 
         cfg = RetentionConfig.load(home=home, project_id="proj-alpha")
         assert cfg.analysis_ttl_days == 30
         assert cfg.analysis_ttl_source == "per_project_config"
 
-    def test_global_used_when_per_project_omits_analysis_ttl(
-        self, tmp_path: Path
-    ) -> None:
+    def test_global_used_when_per_project_omits_analysis_ttl(self, tmp_path: Path) -> None:
         home = tmp_path
-        (home / "config.toml").write_text(
-            "[retention]\nanalysis_ttl_days = 90\n"
-        )
+        (home / "config.toml").write_text("[retention]\nanalysis_ttl_days = 90\n")
         proj = home / "projects" / "proj-alpha"
         proj.mkdir(parents=True)
         (proj / "config.toml").write_text("[retention]\n")
@@ -282,9 +264,7 @@ class TestAnalysisTtlPrecedence:
         assert cfg.analysis_ttl_days == 90
         assert cfg.analysis_ttl_source == "global_config"
 
-    def test_builtin_used_when_neither_overrides_analysis_ttl(
-        self, tmp_path: Path
-    ) -> None:
+    def test_builtin_used_when_neither_overrides_analysis_ttl(self, tmp_path: Path) -> None:
         home = tmp_path
         cfg = RetentionConfig.load(home=home, project_id="never-existed")
         assert cfg.analysis_ttl_days == 365
@@ -295,44 +275,32 @@ class TestAnalysisTtlValidation:
     """Same validation rules as raw_traces_ttl_days: bool / non-int /
     non-positive must raise RetentionConfigError. Reuses _validate_ttl."""
 
-    def test_per_project_analysis_ttl_string_raises(
-        self, tmp_path: Path
-    ) -> None:
+    def test_per_project_analysis_ttl_string_raises(self, tmp_path: Path) -> None:
         home = tmp_path
         proj = home / "projects" / "proj-alpha"
         proj.mkdir(parents=True)
-        (proj / "config.toml").write_text(
-            '[retention]\nanalysis_ttl_days = "thirty"\n'
-        )
+        (proj / "config.toml").write_text('[retention]\nanalysis_ttl_days = "thirty"\n')
 
         with pytest.raises(RetentionConfigError) as exc_info:
             RetentionConfig.load(home=home, project_id="proj-alpha")
         assert "analysis_ttl_days" in str(exc_info.value)
 
-    def test_per_project_analysis_ttl_negative_raises(
-        self, tmp_path: Path
-    ) -> None:
+    def test_per_project_analysis_ttl_negative_raises(self, tmp_path: Path) -> None:
         home = tmp_path
         proj = home / "projects" / "proj-alpha"
         proj.mkdir(parents=True)
-        (proj / "config.toml").write_text(
-            "[retention]\nanalysis_ttl_days = -5\n"
-        )
+        (proj / "config.toml").write_text("[retention]\nanalysis_ttl_days = -5\n")
 
         with pytest.raises(RetentionConfigError):
             RetentionConfig.load(home=home, project_id="proj-alpha")
 
-    def test_per_project_analysis_ttl_bool_raises(
-        self, tmp_path: Path
-    ) -> None:
+    def test_per_project_analysis_ttl_bool_raises(self, tmp_path: Path) -> None:
         """A bool is technically an int in Python; reject explicitly so
         `analysis_ttl_days = true` is treated as a typo, not 1 day."""
         home = tmp_path
         proj = home / "projects" / "proj-alpha"
         proj.mkdir(parents=True)
-        (proj / "config.toml").write_text(
-            "[retention]\nanalysis_ttl_days = true\n"
-        )
+        (proj / "config.toml").write_text("[retention]\nanalysis_ttl_days = true\n")
 
         with pytest.raises(RetentionConfigError):
             RetentionConfig.load(home=home, project_id="proj-alpha")
@@ -345,14 +313,10 @@ class TestIndependentSourceAttribution:
 
     def test_per_project_raw_only_global_analysis(self, tmp_path: Path) -> None:
         home = tmp_path
-        (home / "config.toml").write_text(
-            "[retention]\nanalysis_ttl_days = 60\n"
-        )
+        (home / "config.toml").write_text("[retention]\nanalysis_ttl_days = 60\n")
         proj = home / "projects" / "proj-alpha"
         proj.mkdir(parents=True)
-        (proj / "config.toml").write_text(
-            "[retention]\nraw_traces_ttl_days = 30\n"
-        )
+        (proj / "config.toml").write_text("[retention]\nraw_traces_ttl_days = 30\n")
 
         cfg = RetentionConfig.load(home=home, project_id="proj-alpha")
 

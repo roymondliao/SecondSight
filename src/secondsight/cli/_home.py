@@ -3,9 +3,9 @@
 Centralises the precedence rules so every subcommand resolves paths the
 same way:
 
-    1. CLI flag (--home, --claude-home) if non-empty;
-    2. environment variable (SECONDSIGHT_HOME, CLAUDE_HOME) if set;
-    3. compiled-in default (~/.secondsight, ~/.claude).
+    1. CLI flag (--home, --claude-home, --codex-home) if non-empty;
+    2. environment variable (SECONDSIGHT_HOME, CLAUDE_HOME, CODEX_HOME) if set;
+    3. compiled-in default (~/.secondsight, ~/.claude, ~/.codex).
 
 Resolution is intentionally lazy (called per-command, not at import) so
 that env vars set by a wrapping shell script — or by tests via
@@ -19,6 +19,7 @@ from pathlib import Path
 
 DEFAULT_SECONDSIGHT_HOME = "~/.secondsight"
 DEFAULT_CLAUDE_HOME = "~/.claude"
+DEFAULT_CODEX_HOME = "~/.codex"
 
 
 def secondsight_home(cli_value: str = "") -> Path:
@@ -33,9 +34,17 @@ def claude_home(cli_value: str = "") -> Path:
     return Path(chosen).expanduser()
 
 
+def codex_home(cli_value: str = "") -> Path:
+    """Resolve the Codex config home (~/.codex by default)."""
+    chosen = cli_value or os.environ.get("CODEX_HOME") or DEFAULT_CODEX_HOME
+    return Path(chosen).expanduser()
+
+
 __all__ = [
     "DEFAULT_CLAUDE_HOME",
+    "DEFAULT_CODEX_HOME",
     "DEFAULT_SECONDSIGHT_HOME",
     "claude_home",
+    "codex_home",
     "secondsight_home",
 ]

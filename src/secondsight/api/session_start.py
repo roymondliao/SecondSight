@@ -120,9 +120,7 @@ async def session_start_conventions(
     state: AppState = request.app.state.server_state
 
     try:
-        adapter = state.adapter_registry.for_(
-            body.agent, EventType.SESSION_START.value
-        )
+        adapter = state.adapter_registry.for_(body.agent, EventType.SESSION_START.value)
     except NoAdapterError:
         raise HTTPException(
             status_code=422,
@@ -159,8 +157,7 @@ async def session_start_conventions(
             raise HTTPException(
                 status_code=501,
                 detail=(
-                    f"Adapter for agent={body.agent!r} does not implement "
-                    f"inject_convention: {exc}"
+                    f"Adapter for agent={body.agent!r} does not implement inject_convention: {exc}"
                 ),
             ) from exc
         if formatted:

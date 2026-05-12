@@ -94,7 +94,7 @@ def read_pidfile(pid_path: Path) -> int | None:
     try:
         text = pid_path.read_text(encoding="utf-8").strip()
         return int(text)
-    except (FileNotFoundError, ValueError):
+    except FileNotFoundError, ValueError:
         return None
     except OSError:
         return None
@@ -132,7 +132,7 @@ def _get_process_cmdline(pid: int) -> str | None:
         if result.returncode == 0:
             return result.stdout.strip()
         return None
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
 
 
@@ -405,8 +405,9 @@ def daemonize(
     # We use a conservative upper bound; getrlimit gives us the actual limit.
     try:
         import resource  # noqa: PLC0415
+
         max_fd = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
-    except (ImportError, ValueError):
+    except ImportError, ValueError:
         max_fd = 1024
 
     # Close fds 3..max_fd-1.  Ignore errors (most fds won't be open).
@@ -426,8 +427,7 @@ def daemonize(
     except OSError as exc:
         # Can't write PID file — log and continue (server can still run,
         # status/stop commands will just not work).
-        print(f"daemonize: WARNING: could not write PID file {pid_path}: {exc}",
-              file=sys.stderr)
+        print(f"daemonize: WARNING: could not write PID file {pid_path}: {exc}", file=sys.stderr)
 
     # Run the server.
     try:

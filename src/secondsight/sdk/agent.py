@@ -101,6 +101,7 @@ def _make_scoped_agent_factory(
     Returns:
         A callable ModelSpec -> Agent suitable for LLMRouter's agent_factory.
     """
+
     def factory(spec: ModelSpec) -> Agent:  # type: ignore[type-arg]
         model_id = _spec_to_model_id(spec)
         return Agent(
@@ -109,6 +110,7 @@ def _make_scoped_agent_factory(
             tools=tools,
             defer_model_check=True,
         )
+
     return factory
 
 

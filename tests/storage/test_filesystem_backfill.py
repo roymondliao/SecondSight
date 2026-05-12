@@ -355,9 +355,7 @@ def test_death_archive_rename_failure_surfaces_as_report_error(
     report = archive_fallback_events(fb)
     assert report.archived is False
     assert report.archive_path is None
-    assert report.error is not None, (
-        "os.replace failure must surface as report.error, not raise"
-    )
+    assert report.error is not None, "os.replace failure must surface as report.error, not raise"
     assert "PermissionError" in report.error
     assert report.line_count == 1
     assert fb.exists(), "original file must be preserved on rename failure"

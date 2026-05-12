@@ -1,8 +1,8 @@
 # SecondSight Task Breakdown
 
-**版本**：1.2  
-**日期**：2026 年 4 月 23 日  
-**基於**：PRD v1.3  
+**版本**：1.2
+**日期**：2026 年 4 月 23 日
+**基於**：PRD v1.3
 **變更**：Phase 3 拆分為 3A/3B、Failure Attribution 改為 hypothesis-based、補 Evaluation Governance、補 Fallback Design、成功指標分層
 
 ---
@@ -444,7 +444,7 @@ Phase 1 ────────────────────────
                         ├─→ P1-5 (structured)──┤
                         │                      │
                         └─→ P1-8 (adapter if) ─┴─→ P1-9,10,11 (adapters)
-                        
+
    P1-3 (framework schema) ─→ P2-19, P2-24
 
 Phase 2 ──────────────────────────────────────────────────────────────

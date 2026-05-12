@@ -81,6 +81,7 @@ if TYPE_CHECKING:
     # strings at runtime, so this TYPE_CHECKING-only import is sufficient.
     from secondsight.storage.behavior_flags_repository import BehaviorFlagsRepository
 
+
 def _make_flag_id(
     session_id: str,
     segment_index: int,

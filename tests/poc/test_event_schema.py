@@ -20,12 +20,7 @@ Test organization:
 from __future__ import annotations
 
 import json
-from dataclasses import fields as dc_fields
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
-
-import pytest
 
 
 # ============================================================================
@@ -189,9 +184,12 @@ class TestDeathFalseUnification:
                         "content": [{"type": "text", "text": "done"}],
                         "model": "claude-sonnet-4-6",
                         "id": "msg1",
-                        "usage": {"input_tokens": 100, "output_tokens": 50,
-                                  "cache_read_input_tokens": 0,
-                                  "cache_creation_input_tokens": 0},
+                        "usage": {
+                            "input_tokens": 100,
+                            "output_tokens": 50,
+                            "cache_read_input_tokens": 0,
+                            "cache_creation_input_tokens": 0,
+                        },
                     },
                     "sessionId": "s1",
                     "timestamp": "2026-04-24T10:00:00Z",
@@ -283,9 +281,7 @@ class TestDeathFalseUnification:
         single_agent_fields = {
             name: agents
             for name, agents in field_population.items()
-            if len(agents) == 1
-            and name not in context_fields
-            and name != "agent_metadata"
+            if len(agents) == 1 and name not in context_fields and name != "agent_metadata"
         }
 
         # Allow at most 2 single-agent fields in shared schema
@@ -358,9 +354,7 @@ class TestDeathCannotRepresentRealEvents:
 
         for raw_event in real_codex_events:
             event = normalize_event("codex", raw_event)
-            assert event is not None, (
-                f"Failed to parse real Codex JSONL event: {raw_event['type']}"
-            )
+            assert event is not None, f"Failed to parse real Codex JSONL event: {raw_event['type']}"
             assert event.agent_type == "codex"
 
     def test_death_codex_double_parse_arguments(self):
@@ -411,7 +405,13 @@ class TestDeathSchemaVersioning:
 
     def test_death_schema_version_in_json_export(self):
         """JSON Schema export must include version so validators can detect mismatches."""
-        schema_path = Path(__file__).parent.parent.parent / "src" / "secondsight" / "poc" / "event_schema.json"
+        schema_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "secondsight"
+            / "poc"
+            / "event_schema.json"
+        )
         assert schema_path.exists(), f"JSON Schema file not found at {schema_path}"
 
         with open(schema_path) as f:
@@ -424,6 +424,7 @@ class TestDeathSchemaVersioning:
         # Check for actual version string
         schema_text = json.dumps(schema)
         from secondsight.poc.event_schema import SCHEMA_VERSION
+
         assert SCHEMA_VERSION in schema_text, (
             f"JSON Schema export must reference schema version {SCHEMA_VERSION}"
         )
@@ -594,26 +595,42 @@ class TestSchemaJsonExport:
     """JSON Schema export is valid and comprehensive."""
 
     def test_json_schema_file_exists(self):
-        schema_path = Path(__file__).parent.parent.parent / "src" / "secondsight" / "poc" / "event_schema.json"
+        schema_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "secondsight"
+            / "poc"
+            / "event_schema.json"
+        )
         assert schema_path.exists(), f"JSON Schema not found at {schema_path}"
 
     def test_json_schema_is_valid_json(self):
-        schema_path = Path(__file__).parent.parent.parent / "src" / "secondsight" / "poc" / "event_schema.json"
+        schema_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "secondsight"
+            / "poc"
+            / "event_schema.json"
+        )
         with open(schema_path) as f:
             schema = json.load(f)
         assert isinstance(schema, dict)
         assert "type" in schema or "$schema" in schema
 
     def test_json_schema_includes_event_types(self):
-        schema_path = Path(__file__).parent.parent.parent / "src" / "secondsight" / "poc" / "event_schema.json"
+        schema_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "secondsight"
+            / "poc"
+            / "event_schema.json"
+        )
         with open(schema_path) as f:
             schema = json.load(f)
         schema_text = json.dumps(schema)
         # Must include the unified event types
         for event_type in ["tool_call_start", "tool_call_end", "session_start", "turn_end"]:
-            assert event_type in schema_text, (
-                f"JSON Schema must define event type '{event_type}'"
-            )
+            assert event_type in schema_text, f"JSON Schema must define event type '{event_type}'"
 
 
 class TestSchemaEventTypes:
@@ -624,24 +641,22 @@ class TestSchemaEventTypes:
         from secondsight.poc.event_schema import EventType
 
         required_categories = {
-            "tool_call_start",   # tool calls (pre)
-            "tool_call_end",     # tool calls (post)
-            "session_start",     # session lifecycle
-            "session_end",       # session lifecycle
-            "turn_end",          # session lifecycle (turn level)
-            "user_prompt",       # user prompts
-            "agent_response",    # agent responses
+            "tool_call_start",  # tool calls (pre)
+            "tool_call_end",  # tool calls (post)
+            "session_start",  # session lifecycle
+            "session_end",  # session lifecycle
+            "turn_end",  # session lifecycle (turn level)
+            "user_prompt",  # user prompts
+            "agent_response",  # agent responses
             "token_usage_report",  # token tracking
-            "subagent_start",    # sub-agent lifecycle
-            "subagent_end",      # sub-agent lifecycle
-            "error",             # error events
+            "subagent_start",  # sub-agent lifecycle
+            "subagent_end",  # sub-agent lifecycle
+            "error",  # error events
         }
 
         actual_types = {e.value for e in EventType}
         missing = required_categories - actual_types
-        assert not missing, (
-            f"Schema is missing required event types: {missing}"
-        )
+        assert not missing, f"Schema is missing required event types: {missing}"
 
 
 class TestSchemaSerializationRoundTrip:

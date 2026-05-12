@@ -29,7 +29,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -45,7 +45,6 @@ from secondsight.analysis.schemas import (
     DirectiveType,
     SegmentAnalysis,
     SegmentData,
-    SegmentMetrics,
 )
 from secondsight.event import Event, EventType
 from secondsight.storage.analysis_runs_repository import AnalysisRunsRepository
@@ -58,8 +57,6 @@ from tests.analysis._fake_agent import FakeAnalysisAgent
 
 # --- import module under test (will FAIL until orchestrator.py is created) ---
 from secondsight.analysis.orchestrator import (
-    AnalyzeAndAggregateResult,
-    AnalyzeSessionResult,
     Orchestrator,
     SessionAlreadyAnalyzedError,
     SessionIncompleteError,
@@ -311,8 +308,13 @@ class TestDeathPaths:
         agent = FakeAnalysisAgent(raise_on_segments_call=True)
 
         orch = _make_orchestrator(
-            events_repo, flags_repo, directives_repo, runs_repo, reports_repo,
-            agent, fake_segmenter=fake_segmenter,
+            events_repo,
+            flags_repo,
+            directives_repo,
+            runs_repo,
+            reports_repo,
+            agent,
+            fake_segmenter=fake_segmenter,
         )
 
         with pytest.raises((AnalysisAgentError, Exception)):
@@ -358,8 +360,13 @@ class TestDeathPaths:
 
         with patch.dict("os.environ", {"SECONDSIGHT_HOME": str(tmp_path)}):
             orch = _make_orchestrator(
-                events_repo, flags_repo, directives_repo, runs_repo, reports_repo,
-                agent, fake_segmenter=fake_segmenter,
+                events_repo,
+                flags_repo,
+                directives_repo,
+                runs_repo,
+                reports_repo,
+                agent,
+                fake_segmenter=fake_segmenter,
             )
 
             # First run: succeeds.
@@ -402,7 +409,11 @@ class TestDeathPaths:
         agent = FakeAnalysisAgent()
 
         orch = _make_orchestrator(
-            events_repo, flags_repo, directives_repo, runs_repo, reports_repo,
+            events_repo,
+            flags_repo,
+            directives_repo,
+            runs_repo,
+            reports_repo,
             agent,
         )
 
@@ -412,7 +423,8 @@ class TestDeathPaths:
         # Error message must name the consumer-not-recoverer contract.
         msg = str(exc_info.value).lower()
         assert any(
-            term in msg for term in ("consumer", "incomplete", "no events", "zero events", "session")
+            term in msg
+            for term in ("consumer", "incomplete", "no events", "zero events", "session")
         ), f"Error message must reference the contract violation. Got: {exc_info.value!r}"
 
         # No analysis_runs row should exist: verifier fires BEFORE start_run.
@@ -461,8 +473,13 @@ class TestDeathPaths:
 
         with patch.dict("os.environ", {"SECONDSIGHT_HOME": str(tmp_path)}):
             orch = _make_orchestrator(
-                events_repo, flags_repo, directives_repo, runs_repo, reports_repo,
-                agent, fake_segmenter=fake_segmenter,
+                events_repo,
+                flags_repo,
+                directives_repo,
+                runs_repo,
+                reports_repo,
+                agent,
+                fake_segmenter=fake_segmenter,
             )
 
             with pytest.raises(AnalysisAgentError):
@@ -529,8 +546,13 @@ class TestDeathPaths:
 
         with patch.dict("os.environ", {"SECONDSIGHT_HOME": str(tmp_path)}):
             orch = _make_orchestrator(
-                events_repo, flags_repo, directives_repo, runs_repo, reports_repo,
-                agent, fake_segmenter=fake_segmenter,
+                events_repo,
+                flags_repo,
+                directives_repo,
+                runs_repo,
+                reports_repo,
+                agent,
+                fake_segmenter=fake_segmenter,
             )
 
             # Capture both INFO (aggregator skipped) and WARNING (stale directives).
@@ -547,8 +569,7 @@ class TestDeathPaths:
 
         # Verify stale-conventions warning (logged at WARNING level).
         assert any(
-            "stale" in msg.lower() or "stale-conventions" in msg.lower()
-            for msg in caplog.messages
+            "stale" in msg.lower() or "stale-conventions" in msg.lower() for msg in caplog.messages
         ), f"Expected stale-conventions warning in logs. Got: {caplog.messages}"
 
     @pytest.mark.asyncio
@@ -601,8 +622,13 @@ class TestDeathPaths:
 
         with patch.dict("os.environ", {"SECONDSIGHT_HOME": str(tmp_path)}):
             orch = _make_orchestrator(
-                events_repo, flags_repo, directives_repo, runs_repo, reports_repo,
-                _FailOnSecondCallAgent(), fake_segmenter=fake_segmenter,
+                events_repo,
+                flags_repo,
+                directives_repo,
+                runs_repo,
+                reports_repo,
+                _FailOnSecondCallAgent(),
+                fake_segmenter=fake_segmenter,
             )
 
             with pytest.raises(AnalysisAgentError):
@@ -717,8 +743,13 @@ class TestHappyPaths:
 
         with patch.dict("os.environ", {"SECONDSIGHT_HOME": str(tmp_path)}):
             orch = _make_orchestrator(
-                events_repo, flags_repo, directives_repo, runs_repo, reports_repo,
-                multi_agent, fake_segmenter=fake_segmenter,
+                events_repo,
+                flags_repo,
+                directives_repo,
+                runs_repo,
+                reports_repo,
+                multi_agent,
+                fake_segmenter=fake_segmenter,
             )
             result = await orch.analyze_session(_SESSION_ID)
 
@@ -785,8 +816,13 @@ class TestHappyPaths:
 
         with patch.dict("os.environ", {"SECONDSIGHT_HOME": str(tmp_path)}):
             orch = _make_orchestrator(
-                events_repo, flags_repo, directives_repo, runs_repo, reports_repo,
-                agent, fake_segmenter=fake_segmenter,
+                events_repo,
+                flags_repo,
+                directives_repo,
+                runs_repo,
+                reports_repo,
+                agent,
+                fake_segmenter=fake_segmenter,
             )
             result = await orch.analyze_and_aggregate(_SESSION_ID)
 
@@ -830,8 +866,13 @@ class TestHappyPaths:
 
         with patch.dict("os.environ", {"SECONDSIGHT_HOME": str(tmp_path)}):
             orch = _make_orchestrator(
-                events_repo, flags_repo, directives_repo, runs_repo, reports_repo,
-                agent, fake_segmenter=fake_segmenter,
+                events_repo,
+                flags_repo,
+                directives_repo,
+                runs_repo,
+                reports_repo,
+                agent,
+                fake_segmenter=fake_segmenter,
             )
 
             result1 = await orch.analyze_session(_SESSION_ID)
@@ -841,9 +882,6 @@ class TestHappyPaths:
             assert result2.stage == AnalysisRunStage.SUMMARY_WRITTEN
 
         # 2 analysis_runs rows exist.
-        import sqlalchemy as sa
-        from secondsight.storage.analysis_runs_table import analysis_runs
-        from secondsight.storage.db_engine import DBEngine as _DBEngine
 
         # Count via repo query.
         all_flags = flags_repo.get_session_flags(_SESSION_ID)
@@ -885,8 +923,6 @@ class TestHappyPaths:
 
         # Build aggregate output for the aggregator step.
         # The aggregator will call aggregate_flag_type for UNNECESSARY_READ.
-        from secondsight.analysis.prompts.aggregate import build_aggregate_prompt
-        from secondsight.analysis.prompts.aggregate import FlagSummary
 
         # We can't know the exact prompt without running, so use a wildcard approach:
         # configure the FakeAnalysisAgent to return output for ANY aggregate call.
@@ -919,8 +955,13 @@ class TestHappyPaths:
 
         with patch.dict("os.environ", {"SECONDSIGHT_HOME": str(tmp_path)}):
             orch = _make_orchestrator(
-                events_repo, flags_repo, directives_repo, runs_repo, reports_repo,
-                flex_agent, fake_segmenter=fake_segmenter,
+                events_repo,
+                flags_repo,
+                directives_repo,
+                runs_repo,
+                reports_repo,
+                flex_agent,
+                fake_segmenter=fake_segmenter,
             )
             result = await orch.analyze_and_aggregate(_SESSION_ID)
 
@@ -989,7 +1030,11 @@ class TestB3OnAnalysisCompleteCallback:
 
         with patch.dict("os.environ", {"SECONDSIGHT_HOME": str(tmp_path)}):
             orch = _make_orchestrator(
-                events_repo, flags_repo, directives_repo, runs_repo, reports_repo,
+                events_repo,
+                flags_repo,
+                directives_repo,
+                runs_repo,
+                reports_repo,
                 agent,
                 fake_segmenter=fake_segmenter,
                 on_analysis_complete=on_complete,
@@ -1022,8 +1067,13 @@ class TestB3OnAnalysisCompleteCallback:
 
         with patch.dict("os.environ", {"SECONDSIGHT_HOME": str(tmp_path)}):
             orch = _make_orchestrator(
-                events_repo, flags_repo, directives_repo, runs_repo, reports_repo,
-                agent, fake_segmenter=fake_segmenter,
+                events_repo,
+                flags_repo,
+                directives_repo,
+                runs_repo,
+                reports_repo,
+                agent,
+                fake_segmenter=fake_segmenter,
                 # on_analysis_complete defaults to None.
             )
             result = await orch.analyze_session(_SESSION_ID)
@@ -1058,7 +1108,11 @@ class TestB3OnAnalysisCompleteCallback:
 
         with patch.dict("os.environ", {"SECONDSIGHT_HOME": str(tmp_path)}):
             orch = _make_orchestrator(
-                events_repo, flags_repo, directives_repo, runs_repo, reports_repo,
+                events_repo,
+                flags_repo,
+                directives_repo,
+                runs_repo,
+                reports_repo,
                 agent,
                 fake_segmenter=fake_segmenter,
                 on_analysis_complete=raising_callback,
@@ -1078,10 +1132,9 @@ class TestB3OnAnalysisCompleteCallback:
 
         # ERROR log was emitted naming the callback failure.
         error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
-        assert any(
-            "on_analysis_complete" in r.getMessage()
-            for r in error_records
-        ), f"Expected ERROR log for callback failure, got: {[r.getMessage() for r in error_records]}"
+        assert any("on_analysis_complete" in r.getMessage() for r in error_records), (
+            f"Expected ERROR log for callback failure, got: {[r.getMessage() for r in error_records]}"
+        )
         # Sanitized message includes the exception class name.
         assert any("RuntimeError" in r.getMessage() for r in error_records)
 
@@ -1113,7 +1166,11 @@ class TestB3OnAnalysisCompleteCallback:
 
         with pytest.raises(TypeError) as exc_info:
             _make_orchestrator(
-                events_repo, flags_repo, directives_repo, runs_repo, reports_repo,
+                events_repo,
+                flags_repo,
+                directives_repo,
+                runs_repo,
+                reports_repo,
                 agent,
                 on_analysis_complete=async_callback,
             )

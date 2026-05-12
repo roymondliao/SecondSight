@@ -34,9 +34,9 @@ P0-1,2,3 (hook investigation) ──┬──→ P0-12 (event schema POC)
 P0-5 (injection feasibility) ───┤──→ P0-8 (fallback design)
                                 │
 P0-6 (comprehension test) ──────┘
-                                
+
 P0-12 (event schema POC) ──────→ P0-13 (storage POC)
-                                
+
 P0-15 (session identity) ──────→ (independent, can parallel with P0-12/13)
 ```
 

@@ -128,8 +128,7 @@ class PostAnalysisCleanupTrigger:
         """
         if not self._cleanup_after_analysis:
             _logger.info(
-                "post_analysis_cleanup: skipped session_id=%r "
-                "(cleanup_after_analysis=False)",
+                "post_analysis_cleanup: skipped session_id=%r (cleanup_after_analysis=False)",
                 session_id,
             )
             return

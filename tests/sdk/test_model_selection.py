@@ -23,7 +23,6 @@ Migration markers:
 
 from __future__ import annotations
 
-from typing import Protocol
 from unittest.mock import MagicMock
 
 import pytest
@@ -118,8 +117,7 @@ class TestDT31MissingConfigRaisesWithSuggestion:
         assert "[analysis.models.codex]" in str(err) or "analysis.models.codex" in str(err)
         # Error must contain a suggested snippet (ready to paste into TOML)
         assert "set analysis.models.codex" in str(err) or (
-            hasattr(err, "suggested_config")
-            and "analysis.models.codex" in err.suggested_config
+            hasattr(err, "suggested_config") and "analysis.models.codex" in err.suggested_config
         )
 
     def test_model_selection_error_has_suggested_config_attribute(self) -> None:
@@ -467,9 +465,7 @@ class TestRegistryConsistency:
             _ADAPTER_ERROR_CONFIGS,
         )
 
-        config_field_names = frozenset(
-            f.name for f in fields(ModelsConfig) if f.name != "fallback"
-        )
+        config_field_names = frozenset(f.name for f in fields(ModelsConfig) if f.name != "fallback")
         adapter_keys = frozenset(_ADAPTER_DEFAULTS.keys())
 
         # Derive raise-only adapters from _ADAPTER_ERROR_CONFIGS.keys() (single source
@@ -494,9 +490,7 @@ class TestRegistryConsistency:
 
         from secondsight.analysis.config import ModelsConfig
 
-        config_field_names = frozenset(
-            f.name for f in fields(ModelsConfig) if f.name != "fallback"
-        )
+        config_field_names = frozenset(f.name for f in fields(ModelsConfig) if f.name != "fallback")
 
         for adapter in config_field_names:
             assert adapter in _KNOWN_AGENT_TYPES, (

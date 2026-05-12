@@ -16,6 +16,7 @@ LIMITATION: these tests invoke the helper from inside test scope, where
 module-import scope is documented as a BOUNDARY CONTRACT in _prereqs.py
 itself; that docstring is the regression guard for the flag.
 """
+
 from __future__ import annotations
 
 from typing import Callable
@@ -27,19 +28,20 @@ from tests.integration import _prereqs
 
 def _patched_which(missing: set[str]) -> Callable[[str], str | None]:
     """Return a shutil.which replacement that reports `missing` as absent."""
+
     def _which(tool: str) -> str | None:
         if tool in missing:
             return None
         return f"/fake/path/to/{tool}"
+
     return _which
 
 
 # --- DT-1.1..DT-1.3: each missing tool produces a named skip ---
 
+
 @pytest.mark.parametrize("missing_tool", ["bash", "curl", "jq"])
-def test_named_skip_on_missing_tool(
-    monkeypatch: pytest.MonkeyPatch, missing_tool: str
-) -> None:
+def test_named_skip_on_missing_tool(monkeypatch: pytest.MonkeyPatch, missing_tool: str) -> None:
     """A missing tool must raise pytest.skip whose message names that tool.
 
     Anti-silent-loss: if the helper raised a generic 'prerequisite missing'
@@ -48,21 +50,19 @@ def test_named_skip_on_missing_tool(
     """
     # See COUPLING CONTRACT in _prereqs.py — patching _prereqs.shutil.which
     # depends on _prereqs holding shutil as a module attribute.
-    monkeypatch.setattr(
-        _prereqs.shutil, "which", _patched_which({missing_tool})
-    )
+    monkeypatch.setattr(_prereqs.shutil, "which", _patched_which({missing_tool}))
 
     with pytest.raises(pytest.skip.Exception) as excinfo:
         _prereqs.require_e2e_prereqs_or_skip()
 
     msg = str(excinfo.value)
     assert missing_tool in msg, (
-        f"Skip message must name the missing tool {missing_tool!r}; "
-        f"got message: {msg!r}"
+        f"Skip message must name the missing tool {missing_tool!r}; got message: {msg!r}"
     )
 
 
 # --- DT-1.4: no skip when all tools present ---
+
 
 def test_no_skip_when_all_present(monkeypatch: pytest.MonkeyPatch) -> None:
     """All tools present → require_e2e_prereqs_or_skip returns None.

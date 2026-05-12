@@ -52,6 +52,7 @@ from tests.scripts.conftest import (
 # Minimal valid Claude Code-style payload for tests
 # ---------------------------------------------------------------------------
 
+
 def minimal_payload(*, tool_name: str = "Bash", extra: str = "") -> str:
     """Return a minimal raw Claude Code-style PreToolUse payload."""
     obj = {
@@ -87,6 +88,7 @@ def unique_payload(*, seq: int = 0) -> str:
 # DEATH TESTS — must fail red before any production bash is written
 # ===========================================================================
 
+
 class TestDeathTests:
     """DT-1 through DT-9: target silent-failure paths."""
 
@@ -104,8 +106,7 @@ class TestDeathTests:
         env = build_env(port=1, home=home)
         result = run_hook(hook_script("pre-tool-use.sh"), minimal_payload(), env=env)
         assert result.returncode == 0, (
-            f"Hook must exit 0 even on dead port; got {result.returncode}. "
-            f"stderr={result.stderr!r}"
+            f"Hook must exit 0 even on dead port; got {result.returncode}. stderr={result.stderr!r}"
         )
 
     # -----------------------------------------------------------------------
@@ -187,9 +188,7 @@ class TestDeathTests:
     # -----------------------------------------------------------------------
     # DT-4: Server returns 5xx → fallback written
     # -----------------------------------------------------------------------
-    def test_dt4_server_5xx_triggers_fallback(
-        self, tmp_path: Path, fake_server_500: int
-    ) -> None:
+    def test_dt4_server_5xx_triggers_fallback(self, tmp_path: Path, fake_server_500: int) -> None:
         """DT-4: A 5xx response must be treated as 'server did not get it'.
 
         The hook must fall through to secondsight_fallback_append.
@@ -227,7 +226,20 @@ class TestDeathTests:
             r = subprocess.run(["which", name], capture_output=True, text=True)
             return r.stdout.strip()
 
-        for tool in ("bash", "jq", "date", "mkdir", "cat", "printf", "env", "sh", "wc", "tr", "head", "base64"):
+        for tool in (
+            "bash",
+            "jq",
+            "date",
+            "mkdir",
+            "cat",
+            "printf",
+            "env",
+            "sh",
+            "wc",
+            "tr",
+            "head",
+            "base64",
+        ):
             path = _which(tool)
             assert path, (
                 f"Test prerequisite missing: tool {tool!r} not found in PATH. "
@@ -285,7 +297,20 @@ class TestDeathTests:
 
         # Include everything EXCEPT curl AND jq.
         # dirname is required so `$(dirname "$0")/_lib.sh` resolves correctly.
-        for tool in ("bash", "date", "mkdir", "cat", "printf", "env", "sh", "wc", "tr", "head", "base64", "dirname"):
+        for tool in (
+            "bash",
+            "date",
+            "mkdir",
+            "cat",
+            "printf",
+            "env",
+            "sh",
+            "wc",
+            "tr",
+            "head",
+            "base64",
+            "dirname",
+        ):
             path = _which(tool)
             assert path, (
                 f"Test prerequisite missing: tool {tool!r} not found in PATH. "
@@ -376,8 +401,8 @@ class TestDeathTests:
             f"export SECONDSIGHT_HOME={home!s}\n"
             f"export SECONDSIGHT_AGENT=test-agent\n"
             f"export PATH=$PATH\n"
-            f"echo '{{\"session_id\":\"sess\",\"cwd\":\"/tmp/proj-test\","
-            f"\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\"}}' | bash {script!s}\n"
+            f'echo \'{{"session_id":"sess","cwd":"/tmp/proj-test",'
+            f'"hook_event_name":"PreToolUse","tool_name":"Bash"}}\' | bash {script!s}\n'
             "echo 'PARENT_CONTINUED'\n"
         )
         result = subprocess.run(
@@ -387,8 +412,7 @@ class TestDeathTests:
             timeout=10,
         )
         assert result.returncode == 0, (
-            f"Parent with set -e aborted. returncode={result.returncode} "
-            f"stderr={result.stderr!r}"
+            f"Parent with set -e aborted. returncode={result.returncode} stderr={result.stderr!r}"
         )
         assert "PARENT_CONTINUED" in result.stdout, (
             "Parent shell did not reach the line after hook invocation"
@@ -500,14 +524,13 @@ class TestDeathTests:
             f"stderr={result.stderr!r}"
         )
         lines = [ln for ln in fallback.read_text().splitlines() if ln.strip()]
-        assert len(lines) == 1, (
-            f"Expected 1 fallback line from symlinked hook, got {len(lines)}"
-        )
+        assert len(lines) == 1, f"Expected 1 fallback line from symlinked hook, got {len(lines)}"
 
 
 # ===========================================================================
 # UNIT TESTS
 # ===========================================================================
+
 
 class TestUnitTests:
     """UT-1 through UT-8 + UT-1b: functional correctness tests."""
@@ -586,9 +609,7 @@ class TestUnitTests:
         )
         conn = sqlite3.connect(str(db_path))
         try:
-            rows = conn.execute(
-                "SELECT id FROM events WHERE id = ?", (event_id,)
-            ).fetchall()
+            rows = conn.execute("SELECT id FROM events WHERE id = ?", (event_id,)).fetchall()
         finally:
             conn.close()
         assert len(rows) == 1, (
@@ -598,9 +619,7 @@ class TestUnitTests:
 
         # --- Assert raw trace file ---
         sessions_dir = home / "projects" / "proj-test" / "sessions" / "sess-ut1" / "events"
-        assert sessions_dir.exists(), (
-            f"Raw trace sessions dir not created: {sessions_dir}"
-        )
+        assert sessions_dir.exists(), f"Raw trace sessions dir not created: {sessions_dir}"
         trace_files = list(sessions_dir.glob("*.json"))
         assert len(trace_files) == 1, (
             f"Expected 1 raw trace file, got {len(trace_files)}: {trace_files}"
@@ -634,9 +653,7 @@ class TestUnitTests:
         futures = []
         with ThreadPoolExecutor(max_workers=20) as pool:
             for p in payloads:
-                futures.append(
-                    pool.submit(run_hook, hook_script("pre-tool-use.sh"), p, env=env)
-                )
+                futures.append(pool.submit(run_hook, hook_script("pre-tool-use.sh"), p, env=env))
         for f in futures:
             r = f.result()
             assert r.returncode == 0, f"Hook returned {r.returncode}; stderr={r.stderr!r}"
@@ -668,8 +685,7 @@ class TestUnitTests:
         found_ids = {row[0] for row in rows}
         missing = set(event_ids) - found_ids
         assert len(missing) == 0, (
-            f"Expected all 100 event_ids in DB; missing {len(missing)}: "
-            f"{list(missing)[:5]}..."
+            f"Expected all 100 event_ids in DB; missing {len(missing)}: {list(missing)[:5]}..."
         )
 
     # -----------------------------------------------------------------------
@@ -690,9 +706,7 @@ class TestUnitTests:
     # -----------------------------------------------------------------------
     # UT-3: 5xx server → one line in fallback JSONL
     # -----------------------------------------------------------------------
-    def test_ut3_5xx_writes_fallback(
-        self, tmp_path: Path, fake_server_500: int
-    ) -> None:
+    def test_ut3_5xx_writes_fallback(self, tmp_path: Path, fake_server_500: int) -> None:
         """UT-3: 5xx server response → hook falls through to fallback."""
         home = tmp_path / ".secondsight"
         home.mkdir()
@@ -753,9 +767,7 @@ class TestUnitTests:
     # -----------------------------------------------------------------------
     def test_ut5_shellcheck_clean(self) -> None:
         """UT-5: shellcheck must report zero findings on all hook scripts."""
-        shellcheck = subprocess.run(
-            ["which", "shellcheck"], capture_output=True, text=True
-        )
+        shellcheck = subprocess.run(["which", "shellcheck"], capture_output=True, text=True)
         if shellcheck.returncode != 0:
             pytest.skip("shellcheck not installed — install via 'brew install shellcheck'")
 
@@ -767,9 +779,7 @@ class TestUnitTests:
             capture_output=True,
             text=True,
         )
-        assert result.returncode == 0, (
-            f"shellcheck found issues:\n{result.stdout}\n{result.stderr}"
-        )
+        assert result.returncode == 0, f"shellcheck found issues:\n{result.stdout}\n{result.stderr}"
 
     # -----------------------------------------------------------------------
     # UT-6: Relative SECONDSIGHT_HOME → exit 0 with warning
@@ -820,9 +830,7 @@ class TestUnitTests:
         assert envelope["hook_script_version"] == EXPECTED_VERSION, (
             f"Wrong version: {envelope['hook_script_version']!r}"
         )
-        assert envelope["agent"] == "my-agent", (
-            f"Agent mismatch: {envelope['agent']!r}"
-        )
+        assert envelope["agent"] == "my-agent", f"Agent mismatch: {envelope['agent']!r}"
         assert isinstance(envelope["payload"], dict), "payload must be a dict"
         assert envelope["sequence_number"] == 0, envelope
 
@@ -846,9 +854,7 @@ class TestUnitTests:
     # -----------------------------------------------------------------------
     # UT-8: All per-event scripts share the same exit-0 guarantee
     # -----------------------------------------------------------------------
-    def test_ut8_all_event_scripts_exit_zero_on_dead_port(
-        self, tmp_path: Path
-    ) -> None:
+    def test_ut8_all_event_scripts_exit_zero_on_dead_port(self, tmp_path: Path) -> None:
         """UT-8: Every hook script must exit 0 even with a dead port.
 
         Checks pre-tool-use.sh, post-tool-use.sh, session-start.sh,
@@ -865,10 +871,7 @@ class TestUnitTests:
             "user-prompt.sh",
         ]
         for script_name in scripts:
-            result = run_hook(
-                hook_script(script_name), minimal_payload(), env=env
-            )
+            result = run_hook(hook_script(script_name), minimal_payload(), env=env)
             assert result.returncode == 0, (
-                f"{script_name} exited non-zero ({result.returncode}). "
-                f"stderr={result.stderr!r}"
+                f"{script_name} exited non-zero ({result.returncode}). stderr={result.stderr!r}"
             )

@@ -149,8 +149,9 @@ deferred_validation: |
   remain in_review, not done.
 
 next_actions:
-  - Open a no-op PR against this branch to trigger the new workflow and
-    observe the actual GHA result. If green: mark GUR-111 done. If red:
+  - >-
+    Open a no-op PR against this branch to trigger the new workflow and
+    observe the actual GHA result. If green, mark GUR-111 done. If red,
     triage the failures (most likely scar-3 ruff format on 4 files or
     additional F841 hits inside changes/ that the exclude doesn't cover).
   - Create child issues for scars 1, 2, 4, and possibly 5 (Phase 1 API

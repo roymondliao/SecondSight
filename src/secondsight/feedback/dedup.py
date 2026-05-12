@@ -151,8 +151,7 @@ def check_semantic_dedup(
         )
 
     _logger.info(
-        "semantic_dedup: skipping duplicate convention "
-        "(similarity=%.3f, matched directive_id=%r)",
+        "semantic_dedup: skipping duplicate convention (similarity=%.3f, matched directive_id=%r)",
         best_similarity,
         best_match.id,
     )

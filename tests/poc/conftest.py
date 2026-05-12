@@ -16,12 +16,12 @@ Reference sources:
 from __future__ import annotations
 
 import pytest
-from datetime import datetime, timezone
 
 
 # ---------------------------------------------------------------------------
 # Claude Code sample events (from Task 1 investigation)
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def claude_code_pre_tool_use_event() -> dict:
@@ -137,6 +137,7 @@ def claude_code_subagent_start_event() -> dict:
 # OpenCode sample events (from Task 2 investigation)
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def opencode_tool_execute_before_event() -> dict:
     """tool.execute.before plugin hook - confirmed from plugin API docs."""
@@ -250,6 +251,7 @@ def opencode_db_part_tool_event() -> dict:
 # ---------------------------------------------------------------------------
 # Codex sample events (from Task 3 investigation)
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def codex_session_meta_event() -> dict:
@@ -410,6 +412,7 @@ def codex_task_complete_event() -> dict:
 # Storage fixtures (Task 8)
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def real_codex_jsonl_events() -> list[dict]:
     """Real Codex JSONL events from reference_opensoure/lazyagent/internal/codex/process_test.go.
@@ -514,4 +517,3 @@ def large_tool_result_payload() -> str:
             f"src/module_{i:04d}/component_{i:04d}.tsx"
         )
     return "\n".join(lines)
-

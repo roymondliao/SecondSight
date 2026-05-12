@@ -54,9 +54,7 @@ class TestDeathPaths:
                 "token_count": 500,
             },
         ]
-        with caplog.at_level(
-            logging.WARNING, logger="secondsight.analysis.metrics"
-        ):
+        with caplog.at_level(logging.WARNING, logger="secondsight.analysis.metrics"):
             metrics = compute_segment_metrics(_segment(events))
 
         assert metrics["total_tokens"] == 500
@@ -264,8 +262,6 @@ class TestHappyPaths:
                 "token_count": None,
             },
         ]
-        with caplog.at_level(
-            logging.WARNING, logger="secondsight.analysis.metrics"
-        ):
+        with caplog.at_level(logging.WARNING, logger="secondsight.analysis.metrics"):
             compute_segment_metrics(_segment(events))
         assert "null token_count" not in caplog.text.lower()

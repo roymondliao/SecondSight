@@ -35,6 +35,7 @@ from fastapi.testclient import TestClient
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_valid_payload(
     *,
     project_id: str = "proj-hook-test",
@@ -62,6 +63,7 @@ def _make_valid_payload(
 def _make_app(tmp_secondsight_home: Path):  # type: ignore[return]
     """Create a fresh app with a real registry for integration tests."""
     from secondsight.api.server import create_app
+
     return create_app(secondsight_home=tmp_secondsight_home)
 
 
@@ -155,10 +157,7 @@ def test_death_missing_project_id_returns_422(tmp_secondsight_home: Path) -> Non
     data = response.json()
     # Pydantic v2 validation error shape: {"detail": [{"loc": [...], "msg": ..., "type": ...}]}
     assert "detail" in data
-    loc_paths = [
-        ".".join(str(x) for x in err.get("loc", []))
-        for err in data["detail"]
-    ]
+    loc_paths = [".".join(str(x) for x in err.get("loc", [])) for err in data["detail"]]
     assert any("project_id" in loc for loc in loc_paths), (
         f"DEATH: 422 error must reference 'project_id' field. Got locs: {loc_paths}"
     )
@@ -293,9 +292,7 @@ def test_death_duplicate_event_id_idempotent(tmp_secondsight_home: Path) -> None
     db_path = tmp_secondsight_home / "projects" / "proj-hook-test" / "intelligence.db"
     assert db_path.exists(), f"DB not found at {db_path}"
     row_count = _count_events_by_id_from_db(db_path, "evt-dup-iddmp")
-    assert row_count == 1, (
-        f"DEATH: Expected 1 row for duplicate event_id, got {row_count}"
-    )
+    assert row_count == 1, f"DEATH: Expected 1 row for duplicate event_id, got {row_count}"
 
 
 def _count_events_by_id_from_db(db_path: Path, event_id: str) -> int:
@@ -303,9 +300,7 @@ def _count_events_by_id_from_db(db_path: Path, event_id: str) -> int:
     import sqlite3
 
     with sqlite3.connect(str(db_path)) as conn:
-        cursor = conn.execute(
-            "SELECT COUNT(*) FROM events WHERE id = ?", (event_id,)
-        )
+        cursor = conn.execute("SELECT COUNT(*) FROM events WHERE id = ?", (event_id,))
         return cursor.fetchone()[0]
 
 
@@ -394,10 +389,7 @@ def test_unit_missing_agent_field_returns_422(tmp_secondsight_home: Path) -> Non
     )
     data = response.json()
     assert "detail" in data
-    loc_paths = [
-        ".".join(str(x) for x in err.get("loc", []))
-        for err in data["detail"]
-    ]
+    loc_paths = [".".join(str(x) for x in err.get("loc", [])) for err in data["detail"]]
     assert any("agent" in loc for loc in loc_paths), (
         f"422 error must reference 'agent' field. Got locs: {loc_paths}"
     )

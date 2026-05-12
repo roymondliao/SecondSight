@@ -1,8 +1,8 @@
 # Claude Code Hook Mechanism Investigation
 
-**Date:** 2026-04-24  
-**Agent:** Claude Code  
-**Verdict:** PARTIALLY_FEASIBLE  
+**Date:** 2026-04-24
+**Agent:** Claude Code
+**Verdict:** PARTIALLY_FEASIBLE
 **Investigator:** SecondSight Task 1
 
 ---
@@ -110,7 +110,7 @@ The JSONL transcript at `~/.claude/projects/<encoded-path>/<session-uuid>.jsonl`
 | Agent response content | NOT available | transcript type:assistant records | JSONL only |
 | Sub-agent spawning | SubagentStart/Stop | subagent JSONL files | Fully covered (hooks) |
 
-**Coverage rate:** 71.4% via hooks alone (5 of 7 required types fully covered)  
+**Coverage rate:** 71.4% via hooks alone (5 of 7 required types fully covered)
 **Coverage with JSONL:** ~100% (all needs addressable, subject to format stability risk)
 
 ---

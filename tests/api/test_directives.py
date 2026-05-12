@@ -111,9 +111,7 @@ def _read_directive(home: Path, project_id: str, directive_id: str) -> Directive
 
 
 class TestDeathPaths:
-    def test_dt_2_1_patch_noop_does_not_advance_updated_at(
-        self, home: Path
-    ) -> None:
+    def test_dt_2_1_patch_noop_does_not_advance_updated_at(self, home: Path) -> None:
         """DC-2 — PATCH active→active must NOT mutate updated_at."""
         _seed_directive(home, project_id="P", directive_id="D1")
         # Read AFTER seed to get the stored (tz-naive) updated_at, so
@@ -240,9 +238,7 @@ class TestDeathPaths:
                 params={"project_id": "P", "active": False},
             )
             etag3 = r3.headers.get("etag")
-        assert etag1 != etag3, (
-            f"ETag must change after a real PATCH; got {etag1} == {etag3}"
-        )
+        assert etag1 != etag3, f"ETag must change after a real PATCH; got {etag1} == {etag3}"
 
     def test_dt_2_8_etag_unchanged_after_noop_patch(self, home: Path) -> None:
         _seed_directive(home, project_id="P", directive_id="D1")
@@ -258,15 +254,11 @@ class TestDeathPaths:
             assert r2.status_code == 200
             r3 = client.get("/api/directives", params={"project_id": "P"})
             etag3 = r3.headers.get("etag")
-        assert etag1 == etag3, (
-            f"ETag must be stable across PATCH no-op; {etag1} != {etag3}"
-        )
+        assert etag1 == etag3, f"ETag must be stable across PATCH no-op; {etag1} != {etag3}"
 
 
 class TestDegradation:
-    def test_dg_2_1_openapi_patch_includes_phase3_caveat(
-        self, home: Path
-    ) -> None:
+    def test_dg_2_1_openapi_patch_includes_phase3_caveat(self, home: Path) -> None:
         """DG-2.1 — PATCH route description must surface the Phase 3 cache
         runtime-effect caveat for operators."""
         with _client(home) as client:
@@ -274,9 +266,7 @@ class TestDegradation:
         assert r.status_code == 200
         spec = r.json()
         patch_path = (
-            spec.get("paths", {})
-            .get("/api/directives/{directive_id}", {})
-            .get("patch", {})
+            spec.get("paths", {}).get("/api/directives/{directive_id}", {}).get("patch", {})
         )
         description = patch_path.get("description") or patch_path.get("summary") or ""
         assert "GUR-105" in description or "Phase 3" in description
@@ -301,9 +291,7 @@ class TestHappyPaths:
         ids = {d["id"] for d in r.json()}
         assert ids == {"D1", "D2"}
 
-    def test_hp_2_2_patch_active_to_disabled_persists_reason(
-        self, home: Path
-    ) -> None:
+    def test_hp_2_2_patch_active_to_disabled_persists_reason(self, home: Path) -> None:
         _seed_directive(home, project_id="P", directive_id="D1")
         with _client(home) as client:
             r = client.patch(

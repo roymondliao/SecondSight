@@ -25,7 +25,6 @@ shared module. The behaviour is identical.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 
 import pytest
 

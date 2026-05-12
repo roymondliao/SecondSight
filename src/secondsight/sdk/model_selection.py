@@ -159,14 +159,12 @@ _ADAPTER_DEFAULTS: dict[str, ModelSpec] = {
 
 _ADAPTER_ERROR_CONFIGS: dict[str, str] = {
     "codex": (
-        "[analysis.models]\n"
-        'codex = "<model-name>"  '
-        "# set analysis.models.codex = \"<model-name>\""
+        '[analysis.models]\ncodex = "<model-name>"  # set analysis.models.codex = "<model-name>"'
     ),
     "opencode": (
         "[analysis.models]\n"
         'opencode = "<model-name>"  '
-        "# set analysis.models.opencode = \"<model-name>\""
+        '# set analysis.models.opencode = "<model-name>"'
     ),
 }
 
@@ -216,9 +214,7 @@ def _verify_adapter_registry_consistency() -> None:
 
     from secondsight.analysis.config import ModelsConfig
 
-    config_field_names = frozenset(
-        f.name for f in dc_fields(ModelsConfig) if f.name != "fallback"
-    )
+    config_field_names = frozenset(f.name for f in dc_fields(ModelsConfig) if f.name != "fallback")
     # Known adapter keys: those with defaults + those that intentionally raise
     all_adapter_keys = frozenset(_ADAPTER_DEFAULTS.keys()) | frozenset(
         _ADAPTER_ERROR_CONFIGS.keys()
@@ -333,9 +329,7 @@ def select_model(
             name=project_model,
             provider=_infer_provider(project_model),
         )
-        fallback_names: list[str] = (
-            global_config.analysis.models.fallback.fallback_models  # type: ignore[attr-defined]
-        )
+        fallback_names: list[str] = global_config.analysis.models.fallback.fallback_models  # type: ignore[attr-defined]
         return primary, _parse_fallback_models(fallback_names)
 
     # Step 2: Resolve agent_type from global default_agent.

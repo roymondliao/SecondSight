@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -161,8 +160,7 @@ def analyze(
         except httpx.ConnectError:
             # Server is not running — in-process fallback is the correct path.
             _logger.info(
-                "analyze: server at %s not reachable; "
-                "falling back to in-process dispatch",
+                "analyze: server at %s not reachable; falling back to in-process dispatch",
                 server_url,
             )
             typer.echo(
@@ -336,8 +334,7 @@ def _resolve_project_id(secondsight_home: Path) -> str:
     projects_dir = secondsight_home / "projects"
     if not projects_dir.exists():
         raise typer.BadParameter(
-            f"No projects found under {projects_dir}. "
-            "Pass --project PROJECT_ID explicitly.",
+            f"No projects found under {projects_dir}. Pass --project PROJECT_ID explicitly.",
             param_hint="--project",
         )
     project_dirs = [d for d in projects_dir.iterdir() if d.is_dir()]
@@ -517,6 +514,7 @@ def _run_in_process_dispatch(
     the CLI blocks until analysis completes. This is intentional for the
     manual CLI path — the operator wants to see the result.
     """
+
     async def _dispatch_and_wait() -> DispatchResult:
         result = await trigger.dispatch(
             project_id,
@@ -528,14 +526,13 @@ def _run_in_process_dispatch(
             # Wait for all pending tasks (the analysis task) to complete.
             # We gather all tasks except ourselves.
             pending = [
-                t for t in asyncio.all_tasks()
-                if t is not asyncio.current_task()
-                and not t.done()
+                t for t in asyncio.all_tasks() if t is not asyncio.current_task() and not t.done()
             ]
             if pending:
                 typer.echo(f"Waiting for analysis of session {session_id!r}...")
                 done, still_pending = await asyncio.wait(
-                    pending, timeout=300.0  # 5-minute timeout for in-process analysis
+                    pending,
+                    timeout=300.0,  # 5-minute timeout for in-process analysis
                 )
                 if still_pending:
                     _logger.warning(
@@ -580,9 +577,7 @@ def _handle_dispatch_result(result: DispatchResult, *, session_id: str) -> None:
 
     if result.reason == "already-analyzed":
         when = (
-            result.existing_completed_at.isoformat()
-            if result.existing_completed_at
-            else "unknown"
+            result.existing_completed_at.isoformat() if result.existing_completed_at else "unknown"
         )
         msg = (
             f"Skipped: session {session_id!r} already analyzed at {when} "

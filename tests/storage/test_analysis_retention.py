@@ -213,12 +213,14 @@ class TestDCB6PartialPurgeOrphanGuard:
         assert reports_repo.get_for_session("sess-old") is not None
         assert len(flags_repo.get_session_flags("sess-old")) == 3
 
-        result = purger.purge([
-            ExpiredAnalysis(
-                session_id="sess-old",
-                report_created_at=old_ts,
-            )
-        ])
+        result = purger.purge(
+            [
+                ExpiredAnalysis(
+                    session_id="sess-old",
+                    report_created_at=old_ts,
+                )
+            ]
+        )
 
         assert "sess-old" in result.purged_session_ids
         assert reports_repo.get_for_session("sess-old") is None
@@ -255,19 +257,17 @@ class TestDCB6PartialPurgeOrphanGuard:
             call_order.append(f"session_reports:{sid}")
             return real_reports_delete(repo, sid)
 
-        monkeypatch.setattr(
-            ar_module, "_delete_behavior_flags_for_session", spy_flags
-        )
-        monkeypatch.setattr(
-            ar_module, "_delete_session_report_for_session", spy_reports
-        )
+        monkeypatch.setattr(ar_module, "_delete_behavior_flags_for_session", spy_flags)
+        monkeypatch.setattr(ar_module, "_delete_session_report_for_session", spy_reports)
 
-        purger.purge([
-            ExpiredAnalysis(
-                session_id="sess-x",
-                report_created_at=old_ts,
-            )
-        ])
+        purger.purge(
+            [
+                ExpiredAnalysis(
+                    session_id="sess-x",
+                    report_created_at=old_ts,
+                )
+            ]
+        )
 
         assert call_order == [
             "behavior_flags:sess-x",
@@ -336,9 +336,7 @@ class TestDCB6PartialPurgeOrphanGuard:
         # Second pass: re-detect sess-a as expired, re-attempt purge.
         # behavior_flags delete is now a no-op (rowcount 0 — already gone);
         # session_reports delete succeeds this time (spy is exhausted).
-        result2 = purger.purge([
-            ExpiredAnalysis(session_id="sess-a", report_created_at=old_ts)
-        ])
+        result2 = purger.purge([ExpiredAnalysis(session_id="sess-a", report_created_at=old_ts)])
         assert "sess-a" in result2.purged_session_ids
         assert result2.failures == ()
         assert reports_repo.get_for_session("sess-a") is None
@@ -359,9 +357,7 @@ class TestEnumeratorBoundary:
         Strict inequality would let rows linger one tick past their
         advertised TTL."""
         boundary_ts = NOW - timedelta(days=30)
-        reports_repo.upsert(
-            _make_report(session_id="sess-on-boundary", created_at=boundary_ts)
-        )
+        reports_repo.upsert(_make_report(session_id="sess-on-boundary", created_at=boundary_ts))
         result = enumerate_expired_analyses(
             reports_repo,
             analysis_ttl_days=30,
@@ -374,9 +370,7 @@ class TestEnumeratorBoundary:
         self, reports_repo: SessionReportsRepository
     ) -> None:
         boundary_ts = NOW - timedelta(days=30) + timedelta(seconds=1)
-        reports_repo.upsert(
-            _make_report(session_id="sess-just-young", created_at=boundary_ts)
-        )
+        reports_repo.upsert(_make_report(session_id="sess-just-young", created_at=boundary_ts))
         result = enumerate_expired_analyses(
             reports_repo,
             analysis_ttl_days=30,
@@ -428,10 +422,7 @@ class TestHappyPath:
                     )
                 )
 
-        expired = [
-            ExpiredAnalysis(session_id=sid, report_created_at=old_ts)
-            for sid in sessions
-        ]
+        expired = [ExpiredAnalysis(session_id=sid, report_created_at=old_ts) for sid in sessions]
         result = purger.purge(expired)
 
         assert set(result.purged_session_ids) == set(sessions)
@@ -451,27 +442,21 @@ class TestHappyPath:
         old_ts = NOW - timedelta(days=400)
         fresh_ts = NOW - timedelta(days=1)
 
-        reports_repo.upsert(
-            _make_report(session_id="sess-old", created_at=old_ts)
-        )
-        flags_repo.insert(
-            _make_flag(session_id="sess-old", created_at=old_ts)
-        )
-        reports_repo.upsert(
-            _make_report(session_id="sess-fresh", created_at=fresh_ts)
-        )
-        flags_repo.insert(
-            _make_flag(session_id="sess-fresh", created_at=fresh_ts)
-        )
+        reports_repo.upsert(_make_report(session_id="sess-old", created_at=old_ts))
+        flags_repo.insert(_make_flag(session_id="sess-old", created_at=old_ts))
+        reports_repo.upsert(_make_report(session_id="sess-fresh", created_at=fresh_ts))
+        flags_repo.insert(_make_flag(session_id="sess-fresh", created_at=fresh_ts))
 
         # Purger only reaps what enumerator passes — the contract is the
         # input list, NOT a global scan.
-        result = purger.purge([
-            ExpiredAnalysis(
-                session_id="sess-old",
-                report_created_at=old_ts,
-            )
-        ])
+        result = purger.purge(
+            [
+                ExpiredAnalysis(
+                    session_id="sess-old",
+                    report_created_at=old_ts,
+                )
+            ]
+        )
 
         assert "sess-old" in result.purged_session_ids
         assert reports_repo.get_for_session("sess-old") is None
@@ -514,20 +499,20 @@ class TestSecurityFinding2SessionIdGate:
         """
         old_ts = NOW - timedelta(days=400)
         unsafe_sid = "../../etc/passwd"  # contains '/' which the regex rejects
-        result = purger.purge([
-            ExpiredAnalysis(
-                session_id=unsafe_sid,
-                report_created_at=old_ts,
-            ),
-        ])
+        result = purger.purge(
+            [
+                ExpiredAnalysis(
+                    session_id=unsafe_sid,
+                    report_created_at=old_ts,
+                ),
+            ]
+        )
 
         # Failure recorded, no purge.
         assert result.had_failures is True
         assert unsafe_sid not in result.purged_session_ids
         assert any(
-            f.session_id == unsafe_sid
-            and f.stage == "database"
-            and "unsafe session_id" in f.error
+            f.session_id == unsafe_sid and f.stage == "database" and "unsafe session_id" in f.error
             for f in result.failures
         ), f"Expected unsafe session_id failure, got: {result.failures!r}"
 
@@ -546,10 +531,12 @@ class TestSecurityFinding2SessionIdGate:
 
         # 'evil/path' contains '/' which the is_safe_session_id regex rejects.
         unsafe_sid = "evil/path"
-        result = purger.purge([
-            ExpiredAnalysis(session_id=unsafe_sid, report_created_at=old_ts),
-            ExpiredAnalysis(session_id="sess-safe", report_created_at=old_ts),
-        ])
+        result = purger.purge(
+            [
+                ExpiredAnalysis(session_id=unsafe_sid, report_created_at=old_ts),
+                ExpiredAnalysis(session_id="sess-safe", report_created_at=old_ts),
+            ]
+        )
 
         # Unsafe rejected, safe purged.
         assert "sess-safe" in result.purged_session_ids

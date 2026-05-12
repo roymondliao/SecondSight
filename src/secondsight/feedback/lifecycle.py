@@ -49,22 +49,30 @@ from __future__ import annotations
 from secondsight.analysis.schemas import DirectiveStatus
 
 VALID_TRANSITIONS: dict[DirectiveStatus, frozenset[DirectiveStatus]] = {
-    DirectiveStatus.ACTIVE: frozenset({
-        DirectiveStatus.DISABLED,
-        DirectiveStatus.OBSOLETE,
-        DirectiveStatus.SUPERSEDED,
-        DirectiveStatus.EXPIRED,
-    }),
-    DirectiveStatus.DISABLED: frozenset({
-        DirectiveStatus.ACTIVE,
-    }),
-    DirectiveStatus.OBSOLETE: frozenset({
-        DirectiveStatus.ACTIVE,
-    }),
+    DirectiveStatus.ACTIVE: frozenset(
+        {
+            DirectiveStatus.DISABLED,
+            DirectiveStatus.OBSOLETE,
+            DirectiveStatus.SUPERSEDED,
+            DirectiveStatus.EXPIRED,
+        }
+    ),
+    DirectiveStatus.DISABLED: frozenset(
+        {
+            DirectiveStatus.ACTIVE,
+        }
+    ),
+    DirectiveStatus.OBSOLETE: frozenset(
+        {
+            DirectiveStatus.ACTIVE,
+        }
+    ),
     DirectiveStatus.SUPERSEDED: frozenset(),
-    DirectiveStatus.EXPIRED: frozenset({
-        DirectiveStatus.ACTIVE,
-    }),
+    DirectiveStatus.EXPIRED: frozenset(
+        {
+            DirectiveStatus.ACTIVE,
+        }
+    ),
 }
 
 

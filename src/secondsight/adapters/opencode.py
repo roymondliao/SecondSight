@@ -56,9 +56,7 @@ _HOOK_TO_EVENT_TYPE: dict[str, EventType] = {
     "chat.message": EventType.USER_PROMPT,
 }
 
-_EVENT_TYPE_TO_HOOK: dict[EventType, str] = {
-    et: hook for hook, et in _HOOK_TO_EVENT_TYPE.items()
-}
+_EVENT_TYPE_TO_HOOK: dict[EventType, str] = {et: hook for hook, et in _HOOK_TO_EVENT_TYPE.items()}
 
 DROP_LIST: frozenset[str] = frozenset(
     {
@@ -80,15 +78,11 @@ def _normalize_tool_execute_before(payload: Mapping[str, Any]) -> dict[str, Any]
     """
     input_data = payload.get("input") or {}
     if not isinstance(input_data, Mapping):
-        raise ValueError(
-            "OpenCodeAdapter: tool.execute.before payload missing 'input' object"
-        )
+        raise ValueError("OpenCodeAdapter: tool.execute.before payload missing 'input' object")
 
     tool_name = input_data.get("tool")
     if not tool_name:
-        raise ValueError(
-            "OpenCodeAdapter: tool.execute.before input missing required field 'tool'"
-        )
+        raise ValueError("OpenCodeAdapter: tool.execute.before input missing required field 'tool'")
 
     data: dict[str, Any] = {"tool_name": tool_name}
 
@@ -116,15 +110,11 @@ def _normalize_tool_execute_after(payload: Mapping[str, Any]) -> dict[str, Any]:
     """
     input_data = payload.get("input") or {}
     if not isinstance(input_data, Mapping):
-        raise ValueError(
-            "OpenCodeAdapter: tool.execute.after payload missing 'input' object"
-        )
+        raise ValueError("OpenCodeAdapter: tool.execute.after payload missing 'input' object")
 
     tool_name = input_data.get("tool")
     if not tool_name:
-        raise ValueError(
-            "OpenCodeAdapter: tool.execute.after input missing required field 'tool'"
-        )
+        raise ValueError("OpenCodeAdapter: tool.execute.after input missing required field 'tool'")
 
     data: dict[str, Any] = {"tool_name": tool_name}
 
@@ -246,9 +236,7 @@ class OpenCodeAdapter(AgentAdapter):
 
     def normalize(self, envelope: IngressEnvelope, event_type: str) -> PartialEvent:
         if not envelope.event_id:
-            raise ValueError(
-                "OpenCodeAdapter: envelope missing required field 'event_id'"
-            )
+            raise ValueError("OpenCodeAdapter: envelope missing required field 'event_id'")
 
         try:
             et = EventType(event_type)
@@ -260,16 +248,12 @@ class OpenCodeAdapter(AgentAdapter):
 
         builder = _DATA_BUILDERS.get(et)
         if builder is None:
-            raise ValueError(
-                f"OpenCodeAdapter: no data builder for event_type {event_type!r}"
-            )
+            raise ValueError(f"OpenCodeAdapter: no data builder for event_type {event_type!r}")
 
         payload: Mapping[str, Any] = envelope.payload or {}
         hook_event_name = payload.get("hook_event_name")
         if not hook_event_name:
-            raise ValueError(
-                "OpenCodeAdapter: payload missing required field 'hook_event_name'"
-            )
+            raise ValueError("OpenCodeAdapter: payload missing required field 'hook_event_name'")
         expected_hook = _EVENT_TYPE_TO_HOOK[et]
         if hook_event_name != expected_hook:
             raise ValueError(
@@ -281,13 +265,9 @@ class OpenCodeAdapter(AgentAdapter):
         data = builder(payload)
         session_id = envelope.session_id or _session_id_from_payload(payload)
         if not session_id:
-            raise ValueError(
-                "OpenCodeAdapter: payload missing required field 'session_id'"
-            )
+            raise ValueError("OpenCodeAdapter: payload missing required field 'session_id'")
         if not envelope.project_id:
-            raise ValueError(
-                "OpenCodeAdapter: envelope missing required field 'project_id'"
-            )
+            raise ValueError("OpenCodeAdapter: envelope missing required field 'project_id'")
         return PartialEvent(
             id=envelope.event_id,
             session_id=session_id,

@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -73,8 +72,7 @@ def _resolve_project_id(secondsight_home: Path) -> str:
     projects_dir = secondsight_home / "projects"
     if not projects_dir.exists():
         raise typer.BadParameter(
-            f"No projects found under {projects_dir}. "
-            "Pass --project PROJECT_ID explicitly.",
+            f"No projects found under {projects_dir}. Pass --project PROJECT_ID explicitly.",
             param_hint="--project",
         )
     project_dirs = [d for d in projects_dir.iterdir() if d.is_dir()]
@@ -271,8 +269,7 @@ def _handle_list_active(
             raise typer.Exit(code=0)
         except httpx.ConnectError:
             _logger.info(
-                "directive: server at %s not reachable; "
-                "falling back to in-process",
+                "directive: server at %s not reachable; falling back to in-process",
                 server_url,
             )
             typer.echo(
@@ -390,8 +387,7 @@ def _render_directives(
             output_format,
         )
         typer.echo(
-            f"Warning: unknown --format {output_format!r}; using 'table'. "
-            "Supported: json, table.",
+            f"Warning: unknown --format {output_format!r}; using 'table'. Supported: json, table.",
             err=True,
         )
 
@@ -450,8 +446,7 @@ def _handle_disable(
             raise typer.Exit(code=0)
         except httpx.ConnectError:
             _logger.info(
-                "directive: server at %s not reachable; "
-                "falling back to in-process for --disable",
+                "directive: server at %s not reachable; falling back to in-process for --disable",
                 server_url,
             )
             typer.echo(
@@ -521,8 +516,7 @@ def _handle_enable(
             raise typer.Exit(code=0)
         except httpx.ConnectError:
             _logger.info(
-                "directive: server at %s not reachable; "
-                "falling back to in-process for --enable",
+                "directive: server at %s not reachable; falling back to in-process for --enable",
                 server_url,
             )
             typer.echo(

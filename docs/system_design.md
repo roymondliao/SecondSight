@@ -467,7 +467,7 @@ Hook 觸發到資料落地的完整流程。Hook script 是 **thin HTTP client**
 ```
 Hook script（thin client）                    API Server（常駐）
 ─────────────────────                        ──────────────────
-hook 觸發                                    
+hook 觸發
   → HTTP POST localhost:8420/hook/{type}     → 收到 request
      body: raw_payload                       → Adapter.normalize()
                                              → SessionTracker (segment_index, nesting)

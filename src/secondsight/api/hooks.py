@@ -209,9 +209,7 @@ async def _handle_ingest(
         project_id=partial.project_id,
         payload=dict(envelope.payload),
     )
-    task = asyncio.create_task(
-        resources.pipeline.ingest(event, ingress_record=ingress_record)
-    )
+    task = asyncio.create_task(resources.pipeline.ingest(event, ingress_record=ingress_record))
 
     # Attach done_callback for structured error logging.
     # Without this, asyncio swallows exceptions when the task is GC'd.

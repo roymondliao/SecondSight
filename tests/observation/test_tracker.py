@@ -173,9 +173,7 @@ async def test_death_sub_agent_mismatch_not_silently_swallowed() -> None:
     assert evt_check.sub_agent_id == "agent-A", (
         "After mismatch, sub_agent_id must still be 'agent-A' — stack not mutated."
     )
-    assert evt_check.depth == 1, (
-        "After mismatch, depth must still be 1 — stack not mutated."
-    )
+    assert evt_check.depth == 1, "After mismatch, depth must still be 1 — stack not mutated."
 
 
 async def test_death_concurrent_bind_race_no_duplicates() -> None:
@@ -203,8 +201,7 @@ async def test_death_concurrent_bind_race_no_duplicates() -> None:
     segment_indices = [e.segment_index for e in results]
 
     assert len(set(segment_indices)) == 100, (
-        f"Duplicate segment_index values found under concurrency: "
-        f"{sorted(segment_indices)}"
+        f"Duplicate segment_index values found under concurrency: {sorted(segment_indices)}"
     )
     assert set(segment_indices) == set(range(1, 101)), (
         f"Expected exactly {{1..100}}, got: {sorted(segment_indices)}"
@@ -297,6 +294,7 @@ async def test_death_warm_start_failure_does_not_default_to_zero() -> None:
     Silent default to 0 is the worst possible failure — it would re-stamp
     every restart's first segment as 0 and corrupt history.
     """
+
     async def failing_warm_start(session_id: str) -> int | None:
         raise OSError("disk full")
 

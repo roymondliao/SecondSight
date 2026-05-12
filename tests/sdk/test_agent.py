@@ -26,20 +26,18 @@ Design note (Path B, documented in scar report):
 from __future__ import annotations
 
 import json
-import asyncio
-from collections.abc import Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic_ai.models import ModelRequestParameters, ModelSettings
-from pydantic_ai.messages import ModelMessage, ModelResponse, RetryPromptPart, ToolCallPart
+from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.test import TestModel
 
 from secondsight.analysis.agent import AnalysisAgent, AnalysisAgentError
 from secondsight.analysis.prompts.aggregate import AggregateOutput, AggregatePattern
 from secondsight.analysis.prompts.summary import SummaryOutput
-from secondsight.analysis.schemas import BehaviorFlagDraft, BehaviorFlagType, SegmentAnalysis
+from secondsight.analysis.schemas import SegmentAnalysis
 from secondsight.sdk._specs import ModelSpec
 from secondsight.sdk.router import LLMRouter
 
@@ -103,22 +101,29 @@ def _raising_factory(exc: Exception):
 def _import_agent_class():
     """Import PydanticAIAnalysisAgent — deferred so test file can exist before impl."""
     from secondsight.sdk.agent import PydanticAIAnalysisAgent  # noqa: PLC0415
+
     return PydanticAIAnalysisAgent
 
 
 def _make_fake_tools():
     """Return a minimal fake AnalysisTools with no real repos (for DT-4.1 tool-scoping test)."""
     from unittest.mock import MagicMock  # noqa: PLC0415
+
     tools = MagicMock()
+
     # Give each mock method a __name__ so pydantic_ai Tool() can introspect it.
     async def read_traces(session_id: str) -> list:  # noqa: ANN001
         return []
+
     async def read_project_file(relative_path: str) -> str:  # noqa: ANN001
         return ""
+
     async def query_structured_store(query: dict) -> Any:  # noqa: ANN001
         return {}
+
     async def read_historical_flags(project_id: str, limit: int = 200) -> dict:  # noqa: ANN001
         return {}
+
     tools.read_traces = read_traces
     tools.read_project_file = read_project_file
     tools.query_structured_store = query_structured_store
@@ -166,8 +171,7 @@ class TestDeathPaths:
         assert "read_project_file" not in aggregate_tool_names, (
             "aggregate_flag_type's tool list must NOT contain read_project_file. "
             "Tool scoping is the security control preventing the aggregator "
-            "from reading raw project files (D4). Found tools: "
-            + str(aggregate_tool_names)
+            "from reading raw project files (D4). Found tools: " + str(aggregate_tool_names)
         )
         # Summary agent MUST NOT have read_project_file.
         assert "read_project_file" not in summary_tool_names, (
@@ -201,7 +205,6 @@ class TestDeathPaths:
         The bad model requests read_project_file, which is not registered — PydanticAI
         raises UnexpectedModelBehavior, the router wraps it as RouterTerminalError.
         """
-        from pydantic_ai.exceptions import UnexpectedModelBehavior  # noqa: PLC0415
         from secondsight.sdk.router import RouterTerminalError  # noqa: PLC0415
 
         PydanticAIAnalysisAgent = _import_agent_class()
@@ -220,10 +223,12 @@ class TestDeathPaths:
             ) -> ModelResponse:
                 call_count[0] += 1
                 return ModelResponse(
-                    parts=[ToolCallPart(
-                        tool_name="read_project_file",
-                        args=json.dumps({"relative_path": "secrets.txt"}),
-                    )]
+                    parts=[
+                        ToolCallPart(
+                            tool_name="read_project_file",
+                            args=json.dumps({"relative_path": "secrets.txt"}),
+                        )
+                    ]
                 )
 
         # Build a scoped agent_factory that creates a PydanticAI Agent for aggregate:
@@ -231,6 +236,7 @@ class TestDeathPaths:
         # The bad model requests read_project_file, which is unknown → UnexpectedModelBehavior.
         def bad_agent_factory(spec: ModelSpec):
             from pydantic_ai import Agent  # noqa: PLC0415
+
             return Agent(
                 AlwaysCallsReadProjectFile(),
                 output_type=AggregateOutput,
@@ -316,6 +322,7 @@ class TestDeathPaths:
         # Callers can distinguish RouterChainExhaustedError from RouterTerminalError etc.
         # If analyze_segments wraps with base AnalysisAgentError, this fails.
         from secondsight.sdk.router import RouterTerminalError  # noqa: PLC0415
+
         assert isinstance(exc_info.value, RouterTerminalError), (
             f"analyze_segments must re-raise with the SAME exception type as the router raised. "
             f"The router wrapped the mock's AnalysisAgentError as RouterTerminalError. "
@@ -334,13 +341,10 @@ class TestDeathPaths:
 
         # p3 must never have been attempted.
         assert "p3" not in call_order, (
-            f"p3 should never be attempted after p2 fails. "
-            f"Actual call order: {call_order}"
+            f"p3 should never be attempted after p2 fails. Actual call order: {call_order}"
         )
         # p1 succeeded, p2 failed.
-        assert call_order == ["p1", "p2"], (
-            f"Expected calls to be [p1, p2], got {call_order}"
-        )
+        assert call_order == ["p1", "p2"], f"Expected calls to be [p1, p2], got {call_order}"
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +387,9 @@ class TestHappyPaths:
         assert all(isinstance(r, SegmentAnalysis) for r in result), (
             "All results must be SegmentAnalysis instances"
         )
-        assert call_count[0] == 2, f"Router agent.run must be called exactly 2 times, got {call_count[0]}"
+        assert call_count[0] == 2, (
+            f"Router agent.run must be called exactly 2 times, got {call_count[0]}"
+        )
         assert result[0].segment_summary == "seg-A"
         assert result[1].segment_summary == "seg-B"
 

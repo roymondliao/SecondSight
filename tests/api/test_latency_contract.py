@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_valid_payload(
     event_id: str = "evt-lc-001",
     seq: int = 0,
@@ -47,6 +48,7 @@ def _make_valid_payload(
 # ---------------------------------------------------------------------------
 # DT-1: Latency contract — handler MUST return before ingest completes
 # ---------------------------------------------------------------------------
+
 
 class _BlockingPipeline:
     """Pipeline whose ingest blocks until released. Used to verify the route
@@ -123,8 +125,7 @@ async def test_death_latency_contract_handler_does_not_await_ingest(
                     timeout=0.2,
                 )
                 assert response.status_code == 200, (
-                    f"Expected 200 (fire-and-forget), got {response.status_code}: "
-                    f"{response.text}"
+                    f"Expected 200 (fire-and-forget), got {response.status_code}: {response.text}"
                 )
             finally:
                 # Release the gate so the ingest task can complete and the
@@ -141,6 +142,7 @@ async def test_death_latency_contract_handler_does_not_await_ingest(
 # ---------------------------------------------------------------------------
 # DT-3: Unhandled ingest task exception must emit structured ERROR log
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_death_ingest_exception_emits_error_log(
@@ -205,6 +207,7 @@ async def test_death_ingest_exception_emits_error_log(
 # DT-7: Concurrent shutdown drains in-flight tasks with bounded timeout
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_death_shutdown_drains_inflight_tasks(
     tmp_secondsight_home: Path,
@@ -263,6 +266,7 @@ async def test_death_shutdown_drains_inflight_tasks(
 # DT-C1: inflight_tasks set tracks in-flight tasks and drains on completion
 # ---------------------------------------------------------------------------
 
+
 def test_death_inflight_set_tracks_tasks_and_drains(
     tmp_secondsight_home: Path,
 ) -> None:
@@ -298,11 +302,13 @@ def test_death_inflight_set_tracks_tasks_and_drains(
             # asyncio.to_thread so we can use threading.Event.wait without
             # blocking the event loop — allows other tasks to proceed.
             import asyncio as _asyncio
+
             await _asyncio.to_thread(thread_gate.wait)
 
     registry = ProjectRegistry(secondsight_home=tmp_secondsight_home)
     # Pre-materialize synchronously by running get() in a new event loop
     import asyncio as _asyncio
+
     resources = _asyncio.run(registry.get("proj-lc-test"))
     object.__setattr__(resources, "pipeline", _GatedPipeline())
 
@@ -351,6 +357,7 @@ def test_death_inflight_set_tracks_tasks_and_drains(
 # ---------------------------------------------------------------------------
 # DT-I8: ValueError from normalizer.normalize() must return 422, not 500
 # ---------------------------------------------------------------------------
+
 
 def test_death_adapter_valueerror_returns_422(tmp_secondsight_home: Path) -> None:
     """DEATH TEST: adapter.normalize() raising ValueError must produce 422.

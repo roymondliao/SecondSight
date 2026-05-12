@@ -174,14 +174,10 @@ class TestDeathPaths:
             sessions=[("S1", [BehaviorFlagType.UNNECESSARY_READ])],
         )
         with _client(home) as client:
-            r = client.get(
-                "/api/analysis/sessions/S1", params={"project_id": "B"}
-            )
+            r = client.get("/api/analysis/sessions/S1", params={"project_id": "B"})
         assert r.status_code == 404, r.text
 
-    def test_dt_3_2_missing_session_report_returns_404(
-        self, home: Path
-    ) -> None:
+    def test_dt_3_2_missing_session_report_returns_404(self, home: Path) -> None:
         """DC-6 — session has no session_reports row → 404."""
         # Seed flags but NO report for the session.
         registry = ProjectRegistry(secondsight_home=home)
@@ -205,20 +201,13 @@ class TestDeathPaths:
         )
         asyncio.run(registry.aclose())
         with _client(home) as client:
-            r = client.get(
-                "/api/analysis/sessions/orphan", params={"project_id": "P"}
-            )
+            r = client.get("/api/analysis/sessions/orphan", params={"project_id": "P"})
         assert r.status_code == 404, r.text
         assert "not analyzed" in r.text.lower()
 
-    def test_dt_3_3_trends_limit_applies_to_session_set(
-        self, home: Path
-    ) -> None:
+    def test_dt_3_3_trends_limit_applies_to_session_set(self, home: Path) -> None:
         """DC-7 — 50 sessions × 5 flags; limit=10 → 10 session buckets."""
-        sessions = [
-            (f"sess-{i:02d}", [BehaviorFlagType.UNNECESSARY_READ] * 5)
-            for i in range(50)
-        ]
+        sessions = [(f"sess-{i:02d}", [BehaviorFlagType.UNNECESSARY_READ] * 5) for i in range(50)]
         _seed(home, project_id="P", sessions=sessions)
         with _client(home) as client:
             r = client.get(
@@ -227,13 +216,9 @@ class TestDeathPaths:
             )
         assert r.status_code == 200, r.text
         body = r.json()
-        assert len(body["buckets"]) == 10, (
-            f"DC-7: expected 10 sessions, got {len(body['buckets'])}"
-        )
+        assert len(body["buckets"]) == 10, f"DC-7: expected 10 sessions, got {len(body['buckets'])}"
 
-    def test_dt_3_4_summary_etag_changes_after_flag_insert(
-        self, home: Path
-    ) -> None:
+    def test_dt_3_4_summary_etag_changes_after_flag_insert(self, home: Path) -> None:
         """DC-3 — adding a behavior_flag must invalidate the summary ETag."""
         _seed(
             home,
@@ -241,24 +226,16 @@ class TestDeathPaths:
             sessions=[("S1", [BehaviorFlagType.UNNECESSARY_READ])],
         )
         with _client(home) as client:
-            r1 = client.get(
-                "/api/analysis/summary", params={"project_id": "P"}
-            )
+            r1 = client.get("/api/analysis/summary", params={"project_id": "P"})
             etag1 = r1.headers.get("etag")
             assert etag1, "summary endpoint must emit ETag"
         _add_one_flag(home, "P", "S1")
         with _client(home) as client:
-            r2 = client.get(
-                "/api/analysis/summary", params={"project_id": "P"}
-            )
+            r2 = client.get("/api/analysis/summary", params={"project_id": "P"})
             etag2 = r2.headers.get("etag")
-        assert etag1 != etag2, (
-            f"DC-3: ETag stale after flag insert ({etag1} == {etag2})"
-        )
+        assert etag1 != etag2, f"DC-3: ETag stale after flag insert ({etag1} == {etag2})"
 
-    def test_dt_3_5_summary_etag_stable_when_unchanged(
-        self, home: Path
-    ) -> None:
+    def test_dt_3_5_summary_etag_stable_when_unchanged(self, home: Path) -> None:
         """DC-3 negative: no writes → ETag stable, If-None-Match → 304."""
         _seed(
             home,
@@ -266,9 +243,7 @@ class TestDeathPaths:
             sessions=[("S1", [BehaviorFlagType.UNNECESSARY_READ])],
         )
         with _client(home) as client:
-            r1 = client.get(
-                "/api/analysis/summary", params={"project_id": "P"}
-            )
+            r1 = client.get("/api/analysis/summary", params={"project_id": "P"})
             etag1 = r1.headers.get("etag")
             r2 = client.get(
                 "/api/analysis/summary",
@@ -277,13 +252,8 @@ class TestDeathPaths:
             )
         assert r2.status_code == 304
 
-    def test_dt_3_6_pagination_next_offset_null_on_last_page(
-        self, home: Path
-    ) -> None:
-        sessions = [
-            (f"S{i:03d}", [BehaviorFlagType.UNNECESSARY_READ])
-            for i in range(15)
-        ]
+    def test_dt_3_6_pagination_next_offset_null_on_last_page(self, home: Path) -> None:
+        sessions = [(f"S{i:03d}", [BehaviorFlagType.UNNECESSARY_READ]) for i in range(15)]
         _seed(home, project_id="P", sessions=sessions)
         with _client(home) as client:
             r1 = client.get(
@@ -309,18 +279,12 @@ class TestDeathPaths:
         # Pydantic Literal[...] renders as enum in json schema
         # — accept either 'enum' key or oneOf shape depending on version.
         assert (
-            confidence_schema.get("enum")
-            == ["high", "medium", "low"]
-            or any(
-                "high" in str(opt)
-                for opt in confidence_schema.get("oneOf", [])
-            )
+            confidence_schema.get("enum") == ["high", "medium", "low"]
+            or any("high" in str(opt) for opt in confidence_schema.get("oneOf", []))
             or "high" in str(confidence_schema)
         ), confidence_schema
 
-    def test_dt_3_8_trends_includes_zero_flag_session(
-        self, home: Path
-    ) -> None:
+    def test_dt_3_8_trends_includes_zero_flag_session(self, home: Path) -> None:
         """DC-7-adjacent: a session with a report but ZERO flags must
         appear in the trends bucket list."""
         _seed(
@@ -336,9 +300,7 @@ class TestDeathPaths:
         body = r.json()
         ids = {b["session_id"] for b in body["buckets"]}
         assert ids == {"WithFlag", "Empty"}
-        empty_bucket = next(
-            b for b in body["buckets"] if b["session_id"] == "Empty"
-        )
+        empty_bucket = next(b for b in body["buckets"] if b["session_id"] == "Empty")
         assert empty_bucket["counts_by_type"] == {}
 
 
@@ -365,9 +327,7 @@ class TestHappyPaths:
             directives_disabled=2,
         )
         with _client(home) as client:
-            r = client.get(
-                "/api/analysis/summary", params={"project_id": "P"}
-            )
+            r = client.get("/api/analysis/summary", params={"project_id": "P"})
         body = r.json()
         assert body["analyzed_session_count"] == 5
         # Total flags = 5 + 4 + 3 + 0 + 0 = 12
@@ -375,9 +335,7 @@ class TestHappyPaths:
         assert body["active_directive_count"] == 3
         assert body["last_analyzed_at"] is not None
 
-    def test_hp_3_2_session_detail_joins_report_and_flags(
-        self, home: Path
-    ) -> None:
+    def test_hp_3_2_session_detail_joins_report_and_flags(self, home: Path) -> None:
         _seed(
             home,
             project_id="P",
@@ -405,9 +363,7 @@ class TestHappyPaths:
         # Confidence surfaces on every flag (memory contract).
         assert all(f["confidence"] == "high" for f in body["flags"])
 
-    def test_hp_3_3_aggregation_matches_count_by_type(
-        self, home: Path
-    ) -> None:
+    def test_hp_3_3_aggregation_matches_count_by_type(self, home: Path) -> None:
         _seed(
             home,
             project_id="P",
@@ -424,9 +380,7 @@ class TestHappyPaths:
             ],
         )
         with _client(home) as client:
-            r = client.get(
-                "/api/analysis/aggregation", params={"project_id": "P"}
-            )
+            r = client.get("/api/analysis/aggregation", params={"project_id": "P"})
         body = r.json()
         # flag counts: UNNECESSARY_READ=3, MISSED_SHORTCUT=1
         assert body["flag_counts_by_type"]["unnecessary_read"] == 3
@@ -442,9 +396,7 @@ class TestHappyPaths:
             sessions=[("S1", [BehaviorFlagType.UNNECESSARY_READ])],
         )
         with _client(home) as client:
-            r1 = client.get(
-                "/api/analysis/summary", params={"project_id": "P"}
-            )
+            r1 = client.get("/api/analysis/summary", params={"project_id": "P"})
             etag = r1.headers.get("etag")
             r2 = client.get(
                 "/api/analysis/summary",

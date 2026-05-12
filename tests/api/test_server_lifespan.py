@@ -209,7 +209,6 @@ def test_dt_fl_3_sweeper_task_cancelled_on_shutdown(tmp_secondsight_home: Path) 
     Verifies that the lifespan shutdown properly cancels the Sweeper task
     so background tasks don't leak after the server stops.
     """
-    import asyncio
     from secondsight.api.server import create_app
 
     app = create_app(secondsight_home=tmp_secondsight_home)

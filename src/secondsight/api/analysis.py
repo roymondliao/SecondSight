@@ -195,9 +195,7 @@ def _summary_etag(db_engine, project_id: str) -> str | None:
             parts.append("none|0")
             continue
         ts, count = row
-        parts.append(
-            f"{ts.isoformat() if ts is not None else 'none'}|{int(count)}"
-        )
+        parts.append(f"{ts.isoformat() if ts is not None else 'none'}|{int(count)}")
         total += int(count)
 
     if total == 0:
@@ -209,15 +207,11 @@ def _list_etag(db_engine, project_id: str, table, ts_col) -> str | None:
     """Generic single-table ETag for listing endpoints."""
     with db_engine.engine.connect() as conn:
         row = conn.execute(
-            sa.select(sa.func.max(ts_col), sa.func.count()).where(
-                table.c.project_id == project_id
-            )
+            sa.select(sa.func.max(ts_col), sa.func.count()).where(table.c.project_id == project_id)
         ).first()
     if row is None or int(row[1]) == 0:
         return None
-    return _hash_etag(
-        f"{project_id}|{row[0].isoformat()}|{int(row[1])}"
-    )
+    return _hash_etag(f"{project_id}|{row[0].isoformat()}|{int(row[1])}")
 
 
 def _ensure_phase2_schemas(resources: ProjectResources) -> None:
@@ -233,18 +227,14 @@ def _ensure_phase2_schemas(resources: ProjectResources) -> None:
     SessionReportsRepository(resources.db_engine).create_schema()
     # analysis_runs has no public Repository.create_schema() of its own
     # in some branches — use the table's metadata directly.
-    analysis_runs_table.metadata.create_all(
-        resources.db_engine.engine, checkfirst=True
-    )
+    analysis_runs_table.metadata.create_all(resources.db_engine.engine, checkfirst=True)
 
 
 async def _aresources(request: Request, project_id: str) -> ProjectResources:
     if not is_safe_id(project_id):
         raise HTTPException(
             status_code=422,
-            detail=(
-                f"project_id {project_id!r} contains unsafe characters."
-            ),
+            detail=(f"project_id {project_id!r} contains unsafe characters."),
         )
     state: AppState = request.app.state.server_state
     return await state.registry.get(project_id)
@@ -281,9 +271,7 @@ async def analysis_summary(
     with resources.db_engine.engine.connect() as conn:
         analyzed_count = int(
             conn.execute(
-                sa.select(sa.func.count()).where(
-                    session_reports_table.c.project_id == project_id
-                )
+                sa.select(sa.func.count()).where(session_reports_table.c.project_id == project_id)
             ).scalar()
             or 0
         )
@@ -344,9 +332,7 @@ async def list_analyzed_sessions(
         return Response(status_code=304)
 
     reports_repo = SessionReportsRepository(resources.db_engine)
-    reports = reports_repo.list_for_project(
-        project_id, limit=limit, offset=offset
-    )
+    reports = reports_repo.list_for_project(project_id, limit=limit, offset=offset)
 
     # Per-session flag count via a single GROUP BY.
     items: list[SessionAnalysisItem] = []
@@ -362,9 +348,7 @@ async def list_analyzed_sessions(
                 .where(behavior_flags_table.c.session_id.in_(session_ids))
                 .group_by(behavior_flags_table.c.session_id)
             ).all()
-        count_by_session: dict[str, int] = {
-            r[0]: int(r[1]) for r in counts_rows
-        }
+        count_by_session: dict[str, int] = {r[0]: int(r[1]) for r in counts_rows}
         items = [
             SessionAnalysisItem(
                 session_id=r.session_id,
@@ -378,9 +362,7 @@ async def list_analyzed_sessions(
 
     # next_offset present if a full page came back; client decides when
     # to stop polling. Cheaper than a COUNT(*) for the typical case.
-    next_offset = (
-        offset + len(items) if len(items) == limit else None
-    )
+    next_offset = offset + len(items) if len(items) == limit else None
 
     if etag is not None:
         response.headers["ETag"] = etag
@@ -393,9 +375,7 @@ async def list_analyzed_sessions(
     )
 
 
-@router.get(
-    "/api/analysis/sessions/{session_id}", response_model=None
-)
+@router.get("/api/analysis/sessions/{session_id}", response_model=None)
 async def session_analysis_detail(
     request: Request,
     session_id: str,
@@ -460,17 +440,10 @@ async def session_flags(
     if report is None or report.project_id != project_id:
         raise HTTPException(
             status_code=404,
-            detail=(
-                f"session {session_id!r} not analyzed in project "
-                f"{project_id!r}."
-            ),
+            detail=(f"session {session_id!r} not analyzed in project {project_id!r}."),
         )
     flags_repo = BehaviorFlagsRepository(resources.db_engine)
-    flags = [
-        f
-        for f in flags_repo.get_session_flags(session_id)
-        if f.project_id == project_id
-    ]
+    flags = [f for f in flags_repo.get_session_flags(session_id) if f.project_id == project_id]
     return [BehaviorFlagOut.from_flag(f) for f in flags]
 
 
@@ -485,18 +458,14 @@ async def analysis_trends(
     resources = await _aresources(request, project_id)
     _ensure_phase2_schemas(resources)
     flags_repo = BehaviorFlagsRepository(resources.db_engine)
-    breakdowns = flags_repo.count_per_session_for_project(
-        project_id, limit=limit
-    )
+    breakdowns = flags_repo.count_per_session_for_project(project_id, limit=limit)
     return TrendsResponse(
         project_id=project_id,
         buckets=[
             TrendsBucket(
                 session_id=b.session_id,
                 analyzed_at=b.analyzed_at,
-                counts_by_type={
-                    ft.value: c for ft, c in b.counts_by_type.items()
-                },
+                counts_by_type={ft.value: c for ft, c in b.counts_by_type.items()},
             )
             for b in breakdowns
         ],

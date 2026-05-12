@@ -322,9 +322,7 @@ class TestB5DcB1AnalysisTypoFallsThroughVisibleInOutput:
     `builtin_default` in the CLI output. The B-S1 acceptance clause
     that was deferred from task-B1 lands here."""
 
-    def test_analysis_ttl_typo_surfaces_as_builtin_default_in_output(
-        self, home: Path
-    ) -> None:
+    def test_analysis_ttl_typo_surfaces_as_builtin_default_in_output(self, home: Path) -> None:
         old = datetime(2026, 5, 6, 12, 0, 0, tzinfo=UTC) - timedelta(days=400)
         _seed(home, project_id="p1", session_id="s1", last_ts=old)
 
@@ -450,9 +448,7 @@ class TestB5DryRunDoesNotInvokeAnalysisPurger:
             purge_calls.append(list(expired))
             return original_purge(self, expired)
 
-        monkeypatch.setattr(
-            ar_mod.AnalysisResultsPurger, "purge", spy_purge
-        )
+        monkeypatch.setattr(ar_mod.AnalysisResultsPurger, "purge", spy_purge)
 
         old = datetime(2026, 5, 6, 12, 0, 0, tzinfo=UTC) - timedelta(days=100)
         _seed(home, project_id="p1", session_id="s1", last_ts=old)
@@ -460,9 +456,7 @@ class TestB5DryRunDoesNotInvokeAnalysisPurger:
         result = runner.invoke(root_app, ["cleanup", "--dry-run", "--format", "json"])
         assert result.exit_code == 0, result.output
 
-        assert purge_calls == [], (
-            "AnalysisResultsPurger.purge MUST NOT be invoked under --dry-run"
-        )
+        assert purge_calls == [], "AnalysisResultsPurger.purge MUST NOT be invoked under --dry-run"
 
 
 class TestB5EmptyInstallExitsZero:
@@ -473,9 +467,7 @@ class TestB5EmptyInstallExitsZero:
     This is the death case for 'first cleanup run on a fresh DB'.
     """
 
-    def test_empty_db_real_run_exits_zero_with_zero_counts(
-        self, home: Path
-    ) -> None:
+    def test_empty_db_real_run_exits_zero_with_zero_counts(self, home: Path) -> None:
         # Project exists but has no events, no analysis rows.
         (home / "projects" / "p1").mkdir(parents=True)
 
@@ -500,9 +492,7 @@ class TestB5DcB3AnalysisDryRunMatchesRealRun:
     purged set across dry-run and real-run.
     """
 
-    def test_dry_run_and_real_report_same_analysis_session_set(
-        self, home: Path
-    ) -> None:
+    def test_dry_run_and_real_report_same_analysis_session_set(self, home: Path) -> None:
         from secondsight.analysis.schemas import (
             BehaviorFlag,
             BehaviorFlagType,
@@ -527,34 +517,40 @@ class TestB5DcB3AnalysisDryRunMatchesRealRun:
         old_ts = datetime(2026, 5, 6, 12, 0, 0, tzinfo=UTC) - timedelta(days=400)
         fresh_ts = datetime(2026, 5, 6, 12, 0, 0, tzinfo=UTC) - timedelta(days=10)
 
-        for i, (sid, ts) in enumerate([
-            ("analy-old-1", old_ts),
-            ("analy-old-2", old_ts),
-            ("analy-fresh", fresh_ts),
-        ]):
-            reports_repo.upsert(SessionReport(
-                id=f"rep-{i}",
-                project_id="p1",
-                session_id=sid,
-                analysis_run_id=f"run-{i}",
-                headline=f"hdr {sid}",
-                key_findings=["f"],
-                body=f"body {sid}",
-                created_at=ts,
-                updated_at=ts,
-            ))
-            flags_repo.insert(BehaviorFlag(
-                id=f"flag-{i}",
-                project_id="p1",
-                session_id=sid,
-                segment_index=0,
-                flag_type=BehaviorFlagType.UNNECESSARY_READ,
-                event_ids=["evt-x"],
-                intent_summary="x",
-                reason="x",
-                confidence="medium",
-                created_at=ts,
-            ))
+        for i, (sid, ts) in enumerate(
+            [
+                ("analy-old-1", old_ts),
+                ("analy-old-2", old_ts),
+                ("analy-fresh", fresh_ts),
+            ]
+        ):
+            reports_repo.upsert(
+                SessionReport(
+                    id=f"rep-{i}",
+                    project_id="p1",
+                    session_id=sid,
+                    analysis_run_id=f"run-{i}",
+                    headline=f"hdr {sid}",
+                    key_findings=["f"],
+                    body=f"body {sid}",
+                    created_at=ts,
+                    updated_at=ts,
+                )
+            )
+            flags_repo.insert(
+                BehaviorFlag(
+                    id=f"flag-{i}",
+                    project_id="p1",
+                    session_id=sid,
+                    segment_index=0,
+                    flag_type=BehaviorFlagType.UNNECESSARY_READ,
+                    event_ids=["evt-x"],
+                    intent_summary="x",
+                    reason="x",
+                    confidence="medium",
+                    created_at=ts,
+                )
+            )
         resources.db_engine.dispose()
 
         # Per-project config: analysis_ttl=30 → only old_ts rows expire.
@@ -566,7 +562,8 @@ class TestB5DcB3AnalysisDryRunMatchesRealRun:
         assert dry.exit_code == 0, dry.output
         dry_doc = json.loads(dry.output)
         dry_set = sorted(
-            sid for proj in dry_doc["projects"]
+            sid
+            for proj in dry_doc["projects"]
             for sid in (proj.get("expired_analysis_session_ids") or [])
         )
 
@@ -575,7 +572,8 @@ class TestB5DcB3AnalysisDryRunMatchesRealRun:
         assert real.exit_code == 0, real.output
         real_doc = json.loads(real.output)
         real_set = sorted(
-            sid for proj in real_doc["projects"]
+            sid
+            for proj in real_doc["projects"]
             for sid in (proj.get("analysis_purged_session_ids") or [])
         )
 
@@ -598,9 +596,7 @@ class TestB5BH5AnalysisRunsNotReaped:
     in production.
     """
 
-    def test_analysis_runs_row_is_not_touched_by_purger(
-        self, home: Path
-    ) -> None:
+    def test_analysis_runs_row_is_not_touched_by_purger(self, home: Path) -> None:
         from secondsight.analysis.schemas import (
             BehaviorFlag,
             BehaviorFlagType,
@@ -631,29 +627,33 @@ class TestB5BH5AnalysisRunsNotReaped:
         # Insert an analysis_run for the session.
         run_id = runs_repo.start_run("p1", "sess-old")
         # Insert the session_reports + behavior_flags rows.
-        reports_repo.upsert(SessionReport(
-            id="rep-old",
-            project_id="p1",
-            session_id="sess-old",
-            analysis_run_id=run_id,
-            headline="old session",
-            key_findings=["f"],
-            body="body",
-            created_at=old_ts,
-            updated_at=old_ts,
-        ))
-        flags_repo.insert(BehaviorFlag(
-            id="flag-old",
-            project_id="p1",
-            session_id="sess-old",
-            segment_index=0,
-            flag_type=BehaviorFlagType.UNNECESSARY_READ,
-            event_ids=["evt-x"],
-            intent_summary="x",
-            reason="x",
-            confidence="medium",
-            created_at=old_ts,
-        ))
+        reports_repo.upsert(
+            SessionReport(
+                id="rep-old",
+                project_id="p1",
+                session_id="sess-old",
+                analysis_run_id=run_id,
+                headline="old session",
+                key_findings=["f"],
+                body="body",
+                created_at=old_ts,
+                updated_at=old_ts,
+            )
+        )
+        flags_repo.insert(
+            BehaviorFlag(
+                id="flag-old",
+                project_id="p1",
+                session_id="sess-old",
+                segment_index=0,
+                flag_type=BehaviorFlagType.UNNECESSARY_READ,
+                event_ids=["evt-x"],
+                intent_summary="x",
+                reason="x",
+                confidence="medium",
+                created_at=old_ts,
+            )
+        )
         resources.db_engine.dispose()
 
         # Per-project config: aggressive analysis_ttl.
@@ -693,9 +693,7 @@ class TestB5StructuredLogPerProject:
         _seed(home, project_id="p1", session_id="s1", last_ts=old)
 
         with caplog.at_level("INFO", logger="secondsight.cli.cleanup"):
-            result = runner.invoke(
-                root_app, ["cleanup", "--dry-run", "--format", "json"]
-            )
+            result = runner.invoke(root_app, ["cleanup", "--dry-run", "--format", "json"])
         assert result.exit_code == 0, result.output
 
         # Find the structured log line for p1.
@@ -766,29 +764,33 @@ class TestB5OrderingPin:
         reports_repo.create_schema()
         flags_repo = BehaviorFlagsRepository(resources.db_engine)
         flags_repo.create_schema()
-        reports_repo.upsert(SessionReport(
-            id="rep-old",
-            project_id="p1",
-            session_id="s-analysis",
-            analysis_run_id="run-old",
-            headline="old session",
-            key_findings=["f"],
-            body="body",
-            created_at=old,
-            updated_at=old,
-        ))
-        flags_repo.insert(BehaviorFlag(
-            id="flag-old",
-            project_id="p1",
-            session_id="s-analysis",
-            segment_index=0,
-            flag_type=BehaviorFlagType.UNNECESSARY_READ,
-            event_ids=["evt-x"],
-            intent_summary="x",
-            reason="x",
-            confidence="medium",
-            created_at=old,
-        ))
+        reports_repo.upsert(
+            SessionReport(
+                id="rep-old",
+                project_id="p1",
+                session_id="s-analysis",
+                analysis_run_id="run-old",
+                headline="old session",
+                key_findings=["f"],
+                body="body",
+                created_at=old,
+                updated_at=old,
+            )
+        )
+        flags_repo.insert(
+            BehaviorFlag(
+                id="flag-old",
+                project_id="p1",
+                session_id="s-analysis",
+                segment_index=0,
+                flag_type=BehaviorFlagType.UNNECESSARY_READ,
+                event_ids=["evt-x"],
+                intent_summary="x",
+                reason="x",
+                confidence="medium",
+                created_at=old,
+            )
+        )
         resources.db_engine.dispose()
 
         # Per-project config: aggressive analysis_ttl so analysis side fires.
@@ -809,9 +811,7 @@ class TestB5OrderingPin:
             return real_analysis(home_arg, pid, expired)
 
         monkeypatch.setattr(cleanup_mod, "_purge_for_project", spy_raw)
-        monkeypatch.setattr(
-            cleanup_mod, "_analysis_purge_for_project", spy_analysis
-        )
+        monkeypatch.setattr(cleanup_mod, "_analysis_purge_for_project", spy_analysis)
 
         result = runner.invoke(root_app, ["cleanup", "--format", "json"])
         assert result.exit_code == 0, result.output

@@ -13,8 +13,6 @@ Execution order (Samsara framework):
 
 from __future__ import annotations
 
-import asyncio
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
@@ -23,7 +21,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from secondsight.analysis.schemas import AnalysisRunStage
 from secondsight.event import Event, EventType
 from secondsight.storage.analysis_runs_repository import AnalysisRunsRepository
 from secondsight.storage.db_engine import DBEngine
@@ -146,8 +143,10 @@ def test_dt_5_4_already_analyzed_exits_code_2(
                 app,
                 [
                     "analyze",
-                    "--session", _SESSION_ID,
-                    "--project", _PROJECT_ID,
+                    "--session",
+                    _SESSION_ID,
+                    "--project",
+                    _PROJECT_ID,
                     "--no-server",  # force in-process path
                 ],
             )
@@ -196,6 +195,7 @@ def test_dg_1_2_falls_back_to_in_process_when_server_down(
 
     with patch("secondsight.cli.analyze.httpx") as mock_httpx:
         import httpx as _real_httpx
+
         mock_httpx.ConnectError = _real_httpx.ConnectError
         mock_post = MagicMock()
         mock_post.side_effect = _real_httpx.ConnectError("connection refused")
@@ -211,8 +211,10 @@ def test_dg_1_2_falls_back_to_in_process_when_server_down(
                         app,
                         [
                             "analyze",
-                            "--session", _SESSION_ID,
-                            "--project", _PROJECT_ID,
+                            "--session",
+                            _SESSION_ID,
+                            "--project",
+                            _PROJECT_ID,
                         ],
                     )
 
@@ -261,8 +263,10 @@ def test_hp_1_1_in_process_analyze_success(
                 app,
                 [
                     "analyze",
-                    "--session", _SESSION_ID,
-                    "--project", _PROJECT_ID,
+                    "--session",
+                    _SESSION_ID,
+                    "--project",
+                    _PROJECT_ID,
                     "--no-server",
                 ],
             )
@@ -300,15 +304,15 @@ def test_hp_1_1_already_analyzed_via_dispatch_exits_2() -> None:
                 app,
                 [
                     "analyze",
-                    "--session", _SESSION_ID,
-                    "--project", _PROJECT_ID,
+                    "--session",
+                    _SESSION_ID,
+                    "--project",
+                    _PROJECT_ID,
                     "--no-server",
                 ],
             )
 
-    assert result.exit_code == 2, (
-        f"Expected exit 2 for already-analyzed. Output: {result.output!r}"
-    )
+    assert result.exit_code == 2, f"Expected exit 2 for already-analyzed. Output: {result.output!r}"
     assert "force" in result.output.lower() or "--force" in result.output, (
         f"Expected '--force' hint in output: {result.output!r}"
     )
@@ -330,8 +334,10 @@ def test_orchestrator_failure_exits_1() -> None:
                 app,
                 [
                     "analyze",
-                    "--session", _SESSION_ID,
-                    "--project", _PROJECT_ID,
+                    "--session",
+                    _SESSION_ID,
+                    "--project",
+                    _PROJECT_ID,
                     "--no-server",
                 ],
             )
@@ -383,8 +389,10 @@ def test_dt_fl_11_http_status_error_exits_1_no_fallback(
                         app,
                         [
                             "analyze",
-                            "--session", _SESSION_ID,
-                            "--project", _PROJECT_ID,
+                            "--session",
+                            _SESSION_ID,
+                            "--project",
+                            _PROJECT_ID,
                             # No --no-server: server-mode is attempted
                         ],
                     )
@@ -408,7 +416,6 @@ def test_dt_fl_11_connect_error_still_falls_back(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """DT-FL-11: ConnectError (server not running) still triggers in-process fallback."""
-    import logging
     import httpx as _real_httpx
 
     from secondsight.sdk.trigger import DispatchResult
@@ -431,8 +438,10 @@ def test_dt_fl_11_connect_error_still_falls_back(
                     app,
                     [
                         "analyze",
-                        "--session", _SESSION_ID,
-                        "--project", _PROJECT_ID,
+                        "--session",
+                        _SESSION_ID,
+                        "--project",
+                        _PROJECT_ID,
                     ],
                 )
 
@@ -475,15 +484,16 @@ def test_dt_fl_12_timeout_exits_1_not_0() -> None:
                 app,
                 [
                     "analyze",
-                    "--session", _SESSION_ID,
-                    "--project", _PROJECT_ID,
+                    "--session",
+                    _SESSION_ID,
+                    "--project",
+                    _PROJECT_ID,
                     "--no-server",
                 ],
             )
 
     assert result.exit_code == 1, (
-        f"Expected exit 1 for timed-out analysis. Got {result.exit_code}. "
-        f"Output: {result.output!r}"
+        f"Expected exit 1 for timed-out analysis. Got {result.exit_code}. Output: {result.output!r}"
     )
 
     output = result.output
@@ -493,6 +503,5 @@ def test_dt_fl_12_timeout_exits_1_not_0() -> None:
 
     # Explicitly check "Analysis complete" is NOT in output
     assert "Analysis complete" not in output, (
-        f"'Analysis complete' must NOT appear when analysis timed out. "
-        f"Output: {output!r}"
+        f"'Analysis complete' must NOT appear when analysis timed out. Output: {output!r}"
     )

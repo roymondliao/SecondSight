@@ -122,8 +122,8 @@ class AppState:
         # Per-project SessionTracker cache. Same two-level locking pattern
         # as ProjectRegistry, materialised through the shared utility — see
         # :mod:`secondsight._common.lazy_cache` for the locking contract.
-        self._tracker_cache: LazyCacheWithLocking[str, SessionTracker] = (
-            LazyCacheWithLocking(materialiser=self._materialise_tracker)
+        self._tracker_cache: LazyCacheWithLocking[str, SessionTracker] = LazyCacheWithLocking(
+            materialiser=self._materialise_tracker
         )
 
     async def _materialise_tracker(self, project_id: str) -> SessionTracker:
@@ -138,9 +138,7 @@ class AppState:
         repo = resources.events_repository
 
         async def warm_start(session_id: str) -> int | None:
-            return await asyncio.to_thread(
-                repo.get_max_segment_index, session_id
-            )
+            return await asyncio.to_thread(repo.get_max_segment_index, session_id)
 
         return SessionTracker(warm_start=warm_start)
 
@@ -333,9 +331,7 @@ def create_app(
 
     home = Path(secondsight_home)
     if not home.is_absolute():
-        raise ValueError(
-            f"secondsight_home must be an absolute path, got: {home!r}"
-        )
+        raise ValueError(f"secondsight_home must be an absolute path, got: {home!r}")
 
     cfg = config or ServerConfig()
     reg = registry or ProjectRegistry(secondsight_home=home)
@@ -345,8 +341,7 @@ def create_app(
         # --- Startup ---
         startup_time = time.monotonic()
         logger.info(
-            "SecondSight server starting up "
-            "(home={home}, host={host}, port={port})",
+            "SecondSight server starting up (home={home}, host={host}, port={port})",
             home=home,
             host=cfg.host,
             port=cfg.port,
@@ -421,8 +416,7 @@ def create_app(
         pending = list(app.state.server_state.inflight_tasks)
         if pending:
             logger.info(
-                "Draining {n} in-flight ingest task(s) "
-                "(timeout={t}s)...",
+                "Draining {n} in-flight ingest task(s) (timeout={t}s)...",
                 n=len(pending),
                 t=_SHUTDOWN_DRAIN_TIMEOUT_S,
             )
@@ -432,8 +426,7 @@ def create_app(
             )
             if still_pending:
                 logger.warning(
-                    "{n} ingest task(s) did not complete within "
-                    "{t}s; cancelling.",
+                    "{n} ingest task(s) did not complete within {t}s; cancelling.",
                     n=len(still_pending),
                     t=_SHUTDOWN_DRAIN_TIMEOUT_S,
                 )
@@ -453,10 +446,8 @@ def create_app(
         if sweeper_task is not None and not sweeper_task.done():
             sweeper_task.cancel()
             try:
-                await asyncio.wait_for(
-                    asyncio.shield(sweeper_task), timeout=5.0
-                )
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.shield(sweeper_task), timeout=5.0)
+            except asyncio.TimeoutError, asyncio.CancelledError:
                 pass
             logger.info("Sweeper coordinator stopped.")
 

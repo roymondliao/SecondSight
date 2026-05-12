@@ -46,8 +46,10 @@ SCHEMA_VERSION = "0.1.0"
 # Enums
 # ---------------------------------------------------------------------------
 
+
 class AgentType(str, Enum):
     """Supported agent types."""
+
     CLAUDE_CODE = "claude_code"
     OPENCODE = "opencode"
     CODEX = "codex"
@@ -69,6 +71,7 @@ class EventType(str, Enum):
     - subagent_end: SubagentStop (CC), (session ended + parent_id) (OC), (inferred) (Codex)
     - error: PostToolUseFailure (CC), event.session.error (OC), (inferred from output) (Codex)
     """
+
     TOOL_CALL_START = "tool_call_start"
     TOOL_CALL_END = "tool_call_end"
     SESSION_START = "session_start"
@@ -85,6 +88,7 @@ class EventType(str, Enum):
 
 class ActionClassification(str, Enum):
     """Phase 2 action classification labels (PRD section 6.1)."""
+
     ALIGNED = "aligned"
     WASTEFUL = "wasteful"
     DIVERGENT = "divergent"
@@ -96,6 +100,7 @@ class ActionClassification(str, Enum):
 # ---------------------------------------------------------------------------
 # Typed sub-structures
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class TokenUsage:
@@ -109,6 +114,7 @@ class TokenUsage:
     - False: these counts are for this specific event/message
     - True: these counts are session-cumulative (Codex total_token_usage)
     """
+
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
@@ -126,6 +132,7 @@ class AgentMetadata:
     but are still typed and documented. This avoids the DC-3 anti-pattern
     of hiding data in untyped metadata bags.
     """
+
     # Claude Code specific
     transcript_path: str | None = None
     tool_use_id: str | None = None
@@ -159,6 +166,7 @@ class AgentMetadata:
 # ---------------------------------------------------------------------------
 # Core event schema
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class SecondSightEvent:
@@ -208,6 +216,7 @@ class SecondSightEvent:
 # ---------------------------------------------------------------------------
 # Public API: field introspection
 # ---------------------------------------------------------------------------
+
 
 def get_schema_field_names() -> list[str]:
     """Return the list of typed field names on SecondSightEvent.
@@ -268,6 +277,7 @@ def compute_typed_field_percentage(event: SecondSightEvent) -> float:
 # ---------------------------------------------------------------------------
 # Normalization: agent-specific raw events -> SecondSightEvent
 # ---------------------------------------------------------------------------
+
 
 def normalize_event(agent: str, raw: dict[str, Any]) -> SecondSightEvent:
     """Normalize a raw agent event into a SecondSightEvent.
@@ -573,7 +583,7 @@ def _normalize_codex(raw: dict[str, Any]) -> SecondSightEvent:
             if isinstance(args, str):
                 try:
                     event.tool_args = json.loads(args)
-                except (json.JSONDecodeError, TypeError):
+                except json.JSONDecodeError, TypeError:
                     logger.warning(
                         "Codex hook tool_input.arguments is not valid JSON: %r. "
                         "Storing as raw_arguments. Structured tool_args parsing degraded.",
@@ -652,7 +662,7 @@ def _normalize_codex(raw: dict[str, Any]) -> SecondSightEvent:
                 if isinstance(arguments, str):
                     try:
                         event.tool_args = json.loads(arguments)
-                    except (json.JSONDecodeError, TypeError):
+                    except json.JSONDecodeError, TypeError:
                         # If it's not valid JSON (e.g., raw patch content),
                         # store as a dict with the raw string.
                         # This is a degradation signal -- log it.
@@ -712,6 +722,7 @@ def _normalize_codex(raw: dict[str, Any]) -> SecondSightEvent:
 # Serialization / deserialization
 # ---------------------------------------------------------------------------
 
+
 def event_to_dict(event: SecondSightEvent) -> dict[str, Any]:
     """Serialize a SecondSightEvent to a JSON-compatible dict.
 
@@ -747,9 +758,14 @@ def _dataclass_to_dict(obj: Any) -> dict[str, Any]:
             continue
         if isinstance(val, bool):
             result[f.name] = val
-        elif val == 0 and f.name not in ("input_tokens", "output_tokens",
-                                          "cache_read_tokens", "cache_write_tokens",
-                                          "reasoning_tokens", "duration_ms"):
+        elif val == 0 and f.name not in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "reasoning_tokens",
+            "duration_ms",
+        ):
             continue
         else:
             result[f.name] = val
@@ -784,6 +800,7 @@ def event_from_dict(data: dict[str, Any]) -> SecondSightEvent:
 # ---------------------------------------------------------------------------
 # JSON Schema export
 # ---------------------------------------------------------------------------
+
 
 def generate_json_schema() -> dict[str, Any]:
     """Generate a JSON Schema document describing the SecondSightEvent format.
@@ -958,6 +975,7 @@ def export_json_schema(path: str) -> None:
 
 if __name__ == "__main__":
     import sys
+
     if len(sys.argv) > 1:
         export_json_schema(sys.argv[1])
     else:

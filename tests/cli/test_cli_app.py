@@ -180,6 +180,54 @@ def test_init_apply_then_idempotent(tmp_path: Path) -> None:
     )
 
 
+def test_init_codex_apply_then_idempotent(tmp_path: Path) -> None:
+    fake_codex = tmp_path / "codex"
+    first = runner.invoke(
+        app,
+        ["init", "--agent", "codex", "--codex-home", str(fake_codex), "--format", "json"],
+    )
+    assert first.exit_code == 0, first.output
+    payload_first = json.loads(first.output)
+    assert payload_first["agent"] == "codex"
+    assert payload_first["registration_path"].endswith("hooks.json")
+    assert payload_first["scripts_copied"], "first Codex run should copy scripts"
+
+    hooks_json = fake_codex / "hooks.json"
+    assert hooks_json.is_file(), f"hooks.json not created at {hooks_json}"
+
+    second = runner.invoke(
+        app,
+        ["init", "--agent", "codex", "--codex-home", str(fake_codex), "--format", "json"],
+    )
+    assert second.exit_code == 0, second.output
+    payload_second = json.loads(second.output)
+    assert payload_second["scripts_copied"] == [], "second Codex run should be a no-op for scripts"
+    assert all(action == "skip" for action in payload_second["settings_actions"].values()), (
+        f"second Codex run should skip every action, got {payload_second['settings_actions']!r}"
+    )
+
+
+def test_death_init_rejects_mismatched_agent_home_flag(tmp_path: Path) -> None:
+    fake_claude = tmp_path / "claude"
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--agent",
+            "codex",
+            "--claude-home",
+            str(fake_claude),
+        ],
+    )
+    assert result.exit_code == 2, (
+        f"mismatched per-agent home flag must be a CLI usage error, got {result.exit_code}; "
+        f"output={result.output!r}"
+    )
+    assert "Invalid value for --claude-home" in result.output
+    assert "--agent" in result.output
+    assert "claude_code." in result.output
+
+
 # ---------------------------------------------------------------------------
 # Status — empty home is benign (server not running, no projects)
 # ---------------------------------------------------------------------------

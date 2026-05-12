@@ -11,7 +11,7 @@ dependency_situation:
   blocked_subset:
     - "P3A-11 analysis_ttl_days wiring"
     - "Post-analysis cleanup trigger"
-  blocked_on: GUR-100 (Phase 2 analysis tables: analysis_results, behavior_flags)
+  blocked_on: "GUR-100 (Phase 2 analysis tables: analysis_results, behavior_flags)"
   defers_to: GUR-107b (to be filed)
 
 unblocked_subset_in_scope:

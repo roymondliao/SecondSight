@@ -77,9 +77,7 @@ class TestHappyPath:
             (DirectiveStatus.EXPIRED, DirectiveStatus.ACTIVE),
         ],
     )
-    def test_valid_transitions(
-        self, current: DirectiveStatus, target: DirectiveStatus
-    ) -> None:
+    def test_valid_transitions(self, current: DirectiveStatus, target: DirectiveStatus) -> None:
         validate_transition(current, target)
         assert can_transition(current, target) is True
 
@@ -94,7 +92,5 @@ class TestHappyPath:
             (DirectiveStatus.SUPERSEDED, DirectiveStatus.DISABLED),
         ],
     )
-    def test_invalid_transitions(
-        self, current: DirectiveStatus, target: DirectiveStatus
-    ) -> None:
+    def test_invalid_transitions(self, current: DirectiveStatus, target: DirectiveStatus) -> None:
         assert can_transition(current, target) is False
