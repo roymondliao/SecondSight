@@ -4,7 +4,13 @@ import { useParams, useSearchParams } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import { formatDateTime, formatInteger, formatRelativeSpan, formatTimeOnly, truncateMiddle } from "@/lib/format";
+import {
+  formatDateTimeCompact,
+  formatInteger,
+  formatRelativeSpan,
+  formatTimeOnly,
+  truncateMiddle,
+} from "@/lib/format";
 import { useObservationSessions, useSegmentDetail, useSegments } from "@/lib/api";
 
 function eventTypeBadgeClass(eventType: string): string {
@@ -55,7 +61,7 @@ export function ObservationView() {
   const segmentDetailQuery = useSegmentDetail(projectId, selectedSessionId, selectedSegmentIndex);
 
   return (
-    <section className="grid flex-1 gap-4 xl:grid-cols-[1.05fr_0.95fr_1.3fr]">
+    <section className="grid flex-1 gap-4 xl:grid-cols-[1.05fr_0.95fr_1.3fr] [&>*]:min-w-0">
       <Card className="space-y-4">
         <div className="flex items-center justify-between">
           <div>
@@ -90,7 +96,7 @@ export function ObservationView() {
                     </div>
                     <ChevronRight className="h-4 w-4" />
                   </div>
-                  <div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-4">
+                  <div className="grid grid-cols-2 gap-3 text-xs">
                     <div>
                       <div className="opacity-70">Events</div>
                       <div className="numeric mt-1 text-sm font-medium">
@@ -105,8 +111,8 @@ export function ObservationView() {
                     </div>
                     <div>
                       <div className="opacity-70">Started</div>
-                      <div className="mt-1 text-sm font-medium">
-                        {formatDateTime(session.first_event_at)}
+                      <div className="mt-1 truncate text-sm font-medium">
+                        {formatDateTimeCompact(session.first_event_at)}
                       </div>
                     </div>
                     <div>
@@ -130,14 +136,21 @@ export function ObservationView() {
       </Card>
 
       <Card className="space-y-4">
-        <div className="flex items-center justify-between">
+        <div className="space-y-3">
           <div>
             <p className="font-mono text-xs uppercase tracking-[0.24em] text-muted-foreground">
               Level 2
             </p>
             <h2 className="text-2xl font-semibold">Segments</h2>
           </div>
-          <Badge>{selectedSessionId ? truncateMiddle(selectedSessionId, 18) : "No session"}</Badge>
+          {selectedSessionId ? (
+            <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 font-mono text-[11px] text-primary">
+              <span className="opacity-60">SESSION</span>
+              <span className="break-all leading-4">{selectedSessionId}</span>
+            </div>
+          ) : (
+            <Badge>No session</Badge>
+          )}
         </div>
         <div className="space-y-3">
           {segmentsQuery.data?.segments.length ? (
@@ -167,7 +180,7 @@ export function ObservationView() {
                       {formatInteger(segment.event_count)} events
                     </span>
                   </div>
-                  <div className="grid grid-cols-3 gap-3 text-xs">
+                  <div className="grid grid-cols-2 gap-3 text-xs">
                     <div>
                       <div className="opacity-70">Tokens</div>
                       <div className="numeric mt-1 text-sm font-medium">
@@ -180,10 +193,10 @@ export function ObservationView() {
                         {segment.duration_ms ? `${segment.duration_ms}ms` : "n/a"}
                       </div>
                     </div>
-                    <div>
+                    <div className="col-span-2">
                       <div className="opacity-70">Started</div>
-                      <div className="mt-1 text-sm font-medium">
-                        {formatDateTime(segment.first_event_at)}
+                      <div className="mt-1 truncate text-sm font-medium">
+                        {formatDateTimeCompact(segment.first_event_at)}
                       </div>
                     </div>
                   </div>
@@ -237,7 +250,7 @@ export function ObservationView() {
                 {event.data != null &&
                   typeof event.data === "object" &&
                   Object.keys(event.data).length > 0 && (
-                    <pre className="overflow-x-auto rounded-[20px] bg-slate-950/92 p-4 font-mono text-xs leading-6 text-slate-100">
+                    <pre className="overflow-x-auto rounded-[20px] bg-slate-950 p-4 font-mono text-xs leading-6 text-slate-100">
                       {JSON.stringify(event.data, null, 2)}
                     </pre>
                   )}
@@ -252,13 +265,15 @@ export function ObservationView() {
           )}
         </div>
         {segmentDetailQuery.data?.events.length ? (
-          <div className="rounded-[24px] border border-dashed border-border/80 bg-white/50 p-4 text-sm text-muted-foreground">
-            <div className="mb-1 inline-flex items-center gap-2 font-medium text-foreground">
+          <div className="rounded-[24px] border border-dashed border-border/80 bg-white/50 p-4">
+            <div className="mb-2 flex items-center gap-2 font-medium text-foreground">
               <Sparkles className="h-4 w-4 text-accent" />
               Spatial truth
             </div>
-            Nested events are indented by sub-agent depth so handoffs read like a single timeline
-            instead of flat log noise.
+            <p className="text-sm leading-6 text-muted-foreground">
+              Nested events are indented by sub-agent depth so handoffs read like a single
+              timeline instead of flat log noise.
+            </p>
           </div>
         ) : null}
       </Card>

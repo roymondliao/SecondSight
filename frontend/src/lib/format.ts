@@ -1,15 +1,31 @@
+const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
+  year: "numeric",
+  month: "short",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+const timeOnlyFormatter = new Intl.DateTimeFormat(undefined, {
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+const dateTimeCompactFormatter = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+const integerFormatter = new Intl.NumberFormat();
+
 export function formatDateTime(value: string | null | undefined): string {
   if (!value) {
     return "No data yet";
   }
 
-  return new Intl.DateTimeFormat(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
+  return dateTimeFormatter.format(new Date(value));
 }
 
 export function formatRelativeSpan(
@@ -34,17 +50,21 @@ export function formatInteger(value: number | null | undefined): string {
   if (value === null || value === undefined) {
     return "0";
   }
-  return new Intl.NumberFormat().format(value);
+  return integerFormatter.format(value);
 }
 
 export function formatTimeOnly(value: string | null | undefined): string {
   if (!value) {
     return "—";
   }
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
+  return timeOnlyFormatter.format(new Date(value));
+}
+
+export function formatDateTimeCompact(value: string | null | undefined): string {
+  if (!value) {
+    return "—";
+  }
+  return dateTimeCompactFormatter.format(new Date(value));
 }
 
 export function truncateMiddle(value: string, width = 18): string {

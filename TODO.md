@@ -141,3 +141,112 @@ This should only happen if local durable artifacts remain insufficient.
   hook-stdin capture step is required to finish the Codex fixture story.
 - If raw capture is required, add a small temporary capture script and document
   the regeneration workflow before changing the fixtures again.
+
+## SecondSight Session Storage: Re-evaluate Small-File Strategy
+
+### Why
+
+SecondSight currently persists session durability artifacts under:
+
+- `~/.secondsight/projects/<project_id>/sessions/<session_id>/events/*.json`
+- `~/.secondsight/projects/<project_id>/sessions/<session_id>/ingress/*.json`
+
+This means each logical event currently lands as at least two small files:
+
+- one normalized event file
+- one raw ingress file
+
+For the current observed local dataset, this is not yet a scale problem:
+
+- `SecondSight/sessions` is only a few MB
+- file counts are still in the hundreds, not the tens or hundreds of thousands
+- the hot server paths mostly read SQLite, not the raw session filesystem
+
+But the design question is still valid:
+
+- does one-file-per-event remain the right durability tradeoff as sessions grow?
+- would append-based storage reduce inode churn and filesystem metadata cost?
+- if append is considered, should it be JSON array, JSONL/NDJSON, or a hybrid?
+
+This needs an explicit engineering decision instead of leaving the current
+layout as an unexamined default.
+
+### What
+
+Evaluate whether the current filesystem-first session storage model should
+remain:
+
+- `one file per event` for both `events/` and `ingress/`
+
+or evolve toward one of these alternatives:
+
+- `per-session JSONL append` for ingress only
+- `per-session JSONL append` for both ingress and normalized events
+- `DB-first with reduced raw-file retention`
+- `hybrid`: keep raw normalized event files as-is, but compact ingress
+
+The goal is not "reduce file count at any cost".
+The goal is to choose the right tradeoff across:
+
+- crash safety / partial-write recovery
+- append atomicity guarantees
+- backfill and replay complexity
+- retention / cleanup behavior
+- ingestion latency
+- inode and directory growth over long-running use
+
+### How
+
+1. Document the current durability behavior.
+
+- `RawTraceStore` writes one file per event using `tmp + fsync + rename`
+- `RawIngressStore` does the same for ingress payloads
+- `ObservationPipeline` writes filesystem first, DB second
+
+2. Quantify the growth model.
+
+- estimate files per event
+- estimate bytes per event
+- estimate directory growth over time under realistic event rates
+- identify the thresholds where APFS/local SSD behavior may start to matter
+
+3. Compare candidate storage patterns.
+
+- current one-file-per-event
+- append-only JSON array per session
+- append-only JSONL per session
+- hybrid models
+
+For each option, evaluate:
+
+- atomic write story
+- corruption blast radius
+- replay/backfill ergonomics
+- retention cleanup ergonomics
+- implementation complexity
+
+4. Decide whether `ingress/` and `events/` should be treated differently.
+
+There may not be one answer for both:
+
+- ingress is more log-like and may be a better JSONL candidate
+- normalized event files may still benefit from one-file-per-event isolation
+
+5. If a design change is justified, write a proper `changes/` plan before implementation.
+
+### Action
+
+- Audit the actual local `~/.secondsight/projects/*/sessions` growth pattern
+  again once more projects and longer-running sessions exist.
+- Produce a short design note comparing:
+  - current one-file-per-event
+  - per-session JSONL append
+  - hybrid ingress-compaction approach
+- Include explicit failure-mode analysis:
+  - crash during append
+  - truncated tail record
+  - replay/backfill after partial corruption
+- Decide whether `ingress/` is the first and safest place to compact, rather
+  than changing both storage layers at once.
+- If the answer is "keep current design", record that decision explicitly with
+  the scale assumptions that justify it.

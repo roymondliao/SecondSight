@@ -1,0 +1,33 @@
+delivered_capability: "Codex observation now trusts verified hook stdin as the single source of truth, persists full user prompt text, drops raw tool/assistant output, and installs matcher-aware Codex tool hooks in the verified working shape."
+
+known_failure_modes:
+  - mode: "UserPromptSubmit fixtures cannot use prompt itself as a drop-boundary canary because prompt_text is intentionally persisted."
+    severity: degradation
+    detection: "Focused fixture and adapter tests fail if prompt_text disappears or is replaced by prompt_length/cwd-only metadata."
+  - mode: "A future Codex top-level hook field can be mishandled without detection until fixtures are refreshed to include it."
+    severity: silent_corruption
+    detection: "Fixture governance tests and README-driven refresh workflow; future live-capture refresh should change tests/fixtures/codex metadata."
+  - mode: "A malformed same-path legacy Codex hook entry is surfaced as a conflict instead of being auto-healed."
+    severity: degradation
+    detection: "CodexHooksPatcher.plan() returns conflict; installer tests assert wrong-shape tool-hook entries fail loudly."
+
+accepted_risks:
+  - risk: "Ingress validation replays verified hook payloads directly against FastAPI rather than launching a real Codex shell hook process."
+    accepted_by: "human"
+    expires: "2026-09-30"
+  - risk: "Future upstream Codex hook-entry keys beyond command path plus matcher still require manual contract refresh."
+    accepted_by: "human"
+    expires: "2026-09-30"
+  - risk: "Fixture-driven contract coverage still depends on maintainers refreshing verified captures when Codex changes its schema."
+    accepted_by: "human"
+    expires: "2026-09-30"
+
+silent_failure_surface: medium
+
+monitoring_hooks:
+  - "tests/adapters/test_codex.py asserts exact prompt_text persistence plus raw-field drop boundaries."
+  - "tests/api/test_ingress_codex.py verifies stored DB/event JSON for prompt_text, tool_use_id, turn_id, and route/payload mismatch rejection."
+  - "tests/installer/test_codex_hooks.py verifies all five Codex hooks and matcher-aware tool-hook registration shape."
+  - "tests/adapters/test_codex_fixtures.py enforces PascalCase hook names, structured provenance metadata, and canary placement."
+
+kill_switch: "Disable Codex observation by removing SecondSight Codex entries from ~/.codex/hooks.json or by stopping requests to /hook/codex/*; this immediately stops new Codex hook ingestion without touching stored historical events."

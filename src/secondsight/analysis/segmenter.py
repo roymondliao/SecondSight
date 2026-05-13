@@ -202,11 +202,19 @@ class Segmenter:
 
     @staticmethod
     def _pair_to_span(start: Event, end: Event) -> ToolUseSpan:
+        # Prefer adapter-measured duration; fall back to timestamp delta when
+        # the agent hook (e.g. Claude Code PostToolUse) does not emit duration_ms.
+        # Computing from timestamps avoids success=True + duration_ms=None which
+        # violates the ToolUseSpan invariant (schemas.py:_success_requires_duration).
+        duration_ms = end.duration_ms
+        if duration_ms is None:
+            delta_s = (end.timestamp - start.timestamp).total_seconds()
+            duration_ms = max(0, int(delta_s * 1000))
         return ToolUseSpan(
             tool_name=str(start.data.get("tool_name", "")),
             target=start.data.get("target"),
             success=bool(end.data.get("success", False)),
-            duration_ms=end.duration_ms,
+            duration_ms=duration_ms,
             start_seq=start.sequence_number,
             end_seq=end.sequence_number,
             metadata={**start.data},
@@ -229,16 +237,23 @@ class Segmenter:
         # End-only synthesis: the end event recorded a duration_ms and
         # success boolean. Trust those, but mark start_seq == end_seq
         # so the contract "we don't know when this started" is visible.
+        # When success=True but duration_ms is absent (agent hook doesn't
+        # emit timing), downgrade to success=None — we have no start event
+        # to compute a timestamp delta from, so we cannot satisfy the
+        # ToolUseSpan invariant (success=True requires duration_ms).
         recorded_success = end.data.get("success")
         if recorded_success is None:
             success: bool | None = None
         else:
             success = bool(recorded_success)
+        duration_ms = end.duration_ms
+        if success is True and duration_ms is None:
+            success = None
         return ToolUseSpan(
             tool_name=str(end.data.get("tool_name", "")),
             target=end.data.get("target"),
             success=success,
-            duration_ms=end.duration_ms,
+            duration_ms=duration_ms,
             start_seq=end.sequence_number,
             end_seq=end.sequence_number,
             metadata={**end.data},

@@ -16,9 +16,10 @@ import { Activity, ArrowRight, Binoculars, FolderKanban, Radar } from "lucide-re
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { addRecentProject, getRecentProjects } from "@/lib/recent-projects";
 import { cn } from "@/lib/utils";
 
-const LAST_PROJECT_KEY = "secondsight:last-project-id";
+
 const ObservationView = lazy(() =>
   import("@/views/observation-view").then((module) => ({
     default: module.ObservationView,
@@ -37,31 +38,32 @@ const DirectivesView = lazy(() =>
 
 function Landing() {
   const navigate = useNavigate();
-  const [projectId, setProjectId] = useState(() => localStorage.getItem(LAST_PROJECT_KEY) ?? "");
+  const [recentProjects, setRecentProjects] = useState<string[]>(() => getRecentProjects());
+  const [projectId, setProjectId] = useState(() => recentProjects[0] ?? "");
 
   return (
     <main className="flex min-h-screen items-center justify-center px-4 py-10">
       <Card className="w-full max-w-3xl overflow-hidden p-0">
         <div className="grid gap-0 md:grid-cols-[1.15fr_0.85fr]">
           <section className="space-y-6 bg-[radial-gradient(circle_at_top_left,rgba(14,165,233,0.18),transparent_40%),linear-gradient(180deg,rgba(248,250,252,0.95),rgba(255,255,255,0.82))] p-8 md:p-10">
-            <div className="inline-flex items-center gap-2 rounded-full border border-white/70 bg-white/70 px-3 py-1 font-mono text-xs uppercase tracking-[0.28em] text-muted-foreground">
+            <div className="inline-flex items-center gap-2 rounded-full border border-white/70 bg-white/70 px-3 py-1 font-mono text-xs uppercase tracking-[0.18em] text-muted-foreground">
               <Radar className="h-4 w-4" />
               SecondSight
             </div>
             <div className="space-y-3">
-              <h1 className="max-w-xl text-4xl font-semibold leading-tight md:text-5xl">
+              <h1 className="max-w-xl text-balance text-3xl font-semibold leading-[1.15] md:text-[2.5rem]">
                 Observation, analysis, and directives on one spatial surface.
               </h1>
-              <p className="max-w-lg text-sm leading-6 text-muted-foreground md:text-base">
+              <p className="max-w-lg text-pretty text-base leading-7 text-muted-foreground">
                 Pick a project and step through sessions, behavior flags, and active
                 conventions without leaving the same dashboard plane.
               </p>
             </div>
             <div className="grid gap-3 md:grid-cols-3">
               {[
-                { icon: Binoculars, label: "Observation", body: "Session → segment → event drill-down." },
+                { icon: Binoculars, label: "Observation", body: "Drill down from session to segment to event." },
                 { icon: Activity, label: "Analysis", body: "Trend lines, reports, and flag clusters." },
-                { icon: FolderKanban, label: "Directives", body: "Lifecycle, source traces, and delete flow." },
+                { icon: FolderKanban, label: "Directives", body: "Lifecycle, source traces, deletion." },
               ].map((item) => (
                 <div
                   className="rounded-[24px] border border-white/80 bg-white/60 p-4 shadow-sm"
@@ -69,7 +71,7 @@ function Landing() {
                 >
                   <item.icon className="mb-3 h-5 w-5 text-primary" />
                   <div className="mb-1 text-sm font-medium">{item.label}</div>
-                  <p className="text-xs leading-5 text-muted-foreground">{item.body}</p>
+                  <p className="hyphens-none text-[13px] leading-5 text-muted-foreground">{item.body}</p>
                 </div>
               ))}
             </div>
@@ -89,23 +91,29 @@ function Landing() {
                 if (!nextProjectId) {
                   return;
                 }
-                localStorage.setItem(LAST_PROJECT_KEY, nextProjectId);
+                setRecentProjects(addRecentProject(nextProjectId));
                 navigate(`/projects/${encodeURIComponent(nextProjectId)}/observation`);
               }}
             >
               <Input
                 autoFocus
+                list="landing-recent-projects"
                 onChange={(event) => setProjectId(event.target.value)}
                 placeholder="example-project"
                 value={projectId}
               />
+              <datalist id="landing-recent-projects">
+                {recentProjects.map((id) => (
+                  <option key={id} value={id} />
+                ))}
+              </datalist>
               <Button className="w-full justify-between" size="lg" type="submit">
                 Enter dashboard
                 <ArrowRight className="h-4 w-4" />
               </Button>
             </form>
-            <p className="text-xs leading-5 text-muted-foreground">
-              The last project id is kept locally in this browser for faster return trips.
+            <p className="text-[13px] leading-6 text-muted-foreground">
+              Recent project ids are kept locally in this browser — start typing to autocomplete.
             </p>
           </section>
         </div>
@@ -119,10 +127,13 @@ function DashboardLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const [draftProjectId, setDraftProjectId] = useState(projectId);
+  const [recentProjects, setRecentProjects] = useState<string[]>(() => getRecentProjects());
 
   useEffect(() => {
     setDraftProjectId(projectId);
-    localStorage.setItem(LAST_PROJECT_KEY, projectId);
+    if (projectId) {
+      setRecentProjects(addRecentProject(projectId));
+    }
   }, [projectId]);
 
   const navItems = [
@@ -133,7 +144,7 @@ function DashboardLayout() {
 
   return (
     <main className="min-h-screen px-4 py-4 md:px-6 md:py-6">
-      <div className="mx-auto flex min-h-[calc(100vh-2rem)] max-w-[1600px] flex-col gap-4">
+      <div className="mx-auto flex min-h-[calc(100vh-2rem)] max-w-[1920px] flex-col gap-4">
         <header className="grid gap-4 rounded-[32px] border border-white/70 bg-white/55 p-4 shadow-ambient backdrop-blur-xl md:grid-cols-[1fr_auto] md:p-5">
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
@@ -177,10 +188,18 @@ function DashboardLayout() {
           >
             <Input
               className="min-w-[220px]"
+              list="switcher-recent-projects"
               onChange={(event) => setDraftProjectId(event.target.value)}
               value={draftProjectId}
             />
-            <Button type="submit" variant="secondary">Switch project</Button>
+            <datalist id="switcher-recent-projects">
+              {recentProjects.map((id) => (
+                <option key={id} value={id} />
+              ))}
+            </datalist>
+            <Button className="whitespace-nowrap" type="submit">
+              Switch project
+            </Button>
           </form>
         </header>
         <Outlet />
