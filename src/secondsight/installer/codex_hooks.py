@@ -1,13 +1,14 @@
 """CodexHooksPatcher — idempotent merge into ``~/.codex/hooks.json``.
 
 Codex hook registration is stored in ``hooks.json`` under the agent home.
-Observed local shape (2026-05-12)::
+Observed local shape (verified 2026-05-13)::
 
     {
       "hooks": {
+        "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "..."}]}],
         "SessionStart": [{"hooks": [{"type": "command", "command": "..."}]}],
         "UserPromptSubmit": [{...}],
-        "PostToolUse": [{...}],
+        "PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "..."}]}],
         "Stop": [{...}]
       }
     }
@@ -43,6 +44,7 @@ from secondsight.installer.claude_settings import (
 )
 
 EVENT_TYPE_TO_CODEX_HOOK: dict[str, str] = {
+    "tool_use_start": "PreToolUse",
     "tool_use_end": "PostToolUse",
     "user_prompt": "UserPromptSubmit",
     "session_start": "SessionStart",
@@ -74,18 +76,18 @@ class CodexHooksPatcher:
         actions: dict[str, str] = {}
         foreign: list[str] = []
         for event_type_value, codex_event in EVENT_TYPE_TO_CODEX_HOOK.items():
-            target_command = _build_command(hook_dir, event_type_value)
+            target_entry = _build_entry(hook_dir, event_type_value)
             entries = hooks_section.get(codex_event, [])
             if not isinstance(entries, list):
                 raise InvalidSettingsError(
                     f"{self._hooks_path}: hooks['{codex_event}'] must be a list, "
                     f"got {type(entries).__name__}"
                 )
-            match, foreign_paths = _classify_entries(entries, target_command)
+            match, foreign_paths = _classify_entries(entries, target_entry)
             foreign.extend(foreign_paths)
             if match == "exact":
                 actions[codex_event] = "skip"
-            elif match == "different_path":
+            elif match in {"different_path", "different_shape"}:
                 actions[codex_event] = "conflict"
             else:
                 actions[codex_event] = "add"
@@ -110,16 +112,7 @@ class CodexHooksPatcher:
             if plan.actions.get(codex_event) != "add":
                 continue
             entries = hooks_section.setdefault(codex_event, [])
-            entries.append(
-                {
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": _build_command(hook_dir, event_type_value),
-                        }
-                    ]
-                }
-            )
+            entries.append(_build_entry(hook_dir, event_type_value))
 
         self._atomic_write(existing)
         return plan
@@ -169,6 +162,7 @@ class CodexHooksPatcher:
 
 def _event_type_to_script_name(event_type_value: str) -> str:
     return {
+        "tool_use_start": "pre-tool-use.sh",
         "tool_use_end": "post-tool-use.sh",
         "user_prompt": "user-prompt.sh",
         "session_start": "session-start.sh",
@@ -185,10 +179,34 @@ def _build_command(hook_dir: Path, event_type_value: str) -> str:
     )
 
 
-def _classify_entries(entries: list[Any], target_command: str) -> tuple[str, list[str]]:
+def _matcher_for_event_type(event_type_value: str) -> str | None:
+    if event_type_value in {"tool_use_start", "tool_use_end"}:
+        return "*"
+    return None
+
+
+def _build_entry(hook_dir: Path, event_type_value: str) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "hooks": [
+            {
+                "type": "command",
+                "command": _build_command(hook_dir, event_type_value),
+            }
+        ]
+    }
+    matcher = _matcher_for_event_type(event_type_value)
+    if matcher is not None:
+        entry["matcher"] = matcher
+    return entry
+
+
+def _classify_entries(entries: list[Any], target_entry: dict[str, Any]) -> tuple[str, list[str]]:
+    target_command = target_entry["hooks"][0]["command"]
     target_path = _strip_marker(target_command)
+    expected_matcher = target_entry.get("matcher")
     foreign: list[str] = []
     has_exact = False
+    has_shape_conflict = False
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -204,12 +222,20 @@ def _classify_entries(entries: list[Any], target_command: str) -> tuple[str, lis
             if SECONDSIGHT_MARKER not in cmd:
                 continue
             stripped = _strip_marker(cmd)
-            if stripped == target_path:
+            if stripped != target_path:
+                foreign.append(cmd)
+                continue
+
+            entry_matcher = entry.get("matcher") if "matcher" in entry else None
+            if entry_matcher == expected_matcher:
                 has_exact = True
             else:
+                has_shape_conflict = True
                 foreign.append(cmd)
     if has_exact:
         return "exact", foreign
+    if has_shape_conflict:
+        return "different_shape", foreign
     if foreign:
         return "different_path", foreign
     return "absent", foreign

@@ -1,0 +1,50 @@
+task_id: task-3
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      The installer classifies the expected tool-hook shape using command path
+      plus `matcher: "*"`. If upstream Codex later adds more required keys to
+      tool-hook entries, this classifier will not notice until tests/fixtures are
+      updated to encode the new requirement.
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: >
+      A malformed existing hook entry that keeps the same SecondSight command
+      path but stores `matcher` under a non-string type is treated as a shape
+      conflict and left for the operator to resolve. That is intentionally loud,
+      but it means auto-healing does not repair every broken legacy entry.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      The verified local working Codex configuration requires matcher-aware
+      `PreToolUse` and `PostToolUse` entries, while `SessionStart`,
+      `UserPromptSubmit`, and `Stop` should remain matcher-free.
+    verified: true
+    note: >
+      Verified from the 2026-05-13 user-provided `~/.codex/hooks.json`
+      registration used to capture real hook stdin.
+
+  - assumption: >
+      A same-path SecondSight entry with the wrong matcher shape should be
+      treated as a conflict rather than silently skipped.
+    verified: true
+    note: >
+      Verified by the new installer death test
+      `test_death_tool_hook_without_matcher_is_conflict`.
+
+debt_registered: true
+debt_location: "src/secondsight/installer/codex_hooks.py"
+
+resolved_items:
+  - original_section: "known_shortcuts"
+    original_description: >
+      Codex tool hooks were installed without matching the verified local
+      registration shape.
+    resolution: >
+      Added matcher-aware entry building for `tool_use_start` and
+      `tool_use_end`, updated planning/classification logic to treat wrong-shape
+      same-path entries as conflicts, and locked the behavior with installer
+      tests.

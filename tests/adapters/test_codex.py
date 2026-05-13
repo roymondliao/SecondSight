@@ -1,4 +1,4 @@
-"""Death tests + unit tests for CodexAdapter (P3B-8, GUR-109).
+"""Death tests + unit tests for CodexAdapter.
 
 Death tests verify the silent-failure surface:
     DT-1  supports("nonexistent", *)           -> False
@@ -10,6 +10,7 @@ Death tests verify the silent-failure surface:
     DT-7  inject_hint returns empty string
     DT-8  supports() ↔ supported_event_types() consistent
     DT-9  _DATA_BUILDERS keys match _HOOK_TO_EVENT_TYPE values
+    DT-10 prompt_text is stored from the hook payload
 """
 
 from __future__ import annotations
@@ -86,7 +87,6 @@ def test_dt2_unknown_event_type_returns_false() -> None:
     assert adapter.supports(_AGENT_NAME, "blarg") is False
     assert adapter.supports(_AGENT_NAME, "") is False
     assert adapter.supports(_AGENT_NAME, EventType.THINKING.value) is False
-    assert adapter.supports(_AGENT_NAME, EventType.TOOL_USE_START.value) is False
 
 
 @pytest.mark.parametrize("path", _fixture_paths(), ids=lambda p: p.name)
@@ -114,7 +114,7 @@ def test_dt4_envelope_missing_session_id_raises() -> None:
         event_id="evt-1",
         timestamp=datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc),
         sequence_number=0,
-        payload={"hook_event_name": "session_start"},
+        payload={"hook_event_name": "SessionStart"},
     )
     adapter = CodexAdapter()
     with pytest.raises(ValueError) as exc_info:
@@ -190,6 +190,41 @@ def test_dt9_data_builders_keys_match_hook_event_types() -> None:
     assert set(_HOOK_TO_EVENT_TYPE.values()) == set(_DATA_BUILDERS.keys())
 
 
+def test_dt10_prompt_text_stored_from_hook_payload() -> None:
+    fixture = _load_fixture(FIXTURE_DIR / "user_prompt_submit.json")
+    envelope = _envelope_from_fixture(fixture)
+
+    adapter = CodexAdapter()
+    partial = adapter.normalize(envelope, EventType.USER_PROMPT.value)
+
+    metadata = partial.data.get("action_metadata", {})
+    assert metadata.get("prompt_text") == fixture["payload"]["prompt"]
+    assert "prompt_length" not in metadata
+
+
+def test_dt11_lowercase_or_nested_hook_payload_regressions_fail_loudly() -> None:
+    fixture = _load_fixture(FIXTURE_DIR / "user_prompt_submit.json")
+    payload = dict(fixture["payload"])
+    payload["hook_event_name"] = "user_prompt_submit"
+    payload["hook_event"] = {"prompt": payload["prompt"]}
+    payload.pop("prompt")
+
+    envelope = HookEnvelope(
+        project_id="test-proj",
+        session_id=str(payload["session_id"]),
+        agent=_AGENT_NAME,
+        event_id="evt-1",
+        timestamp=datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc),
+        sequence_number=0,
+        payload=payload,
+    )
+
+    adapter = CodexAdapter()
+    with pytest.raises(ValueError) as exc_info:
+        adapter.normalize(envelope, EventType.USER_PROMPT.value)
+    assert "UserPromptSubmit" in str(exc_info.value)
+
+
 # ---------------------------------------------------------------------------
 # UNIT TESTS
 # ---------------------------------------------------------------------------
@@ -224,12 +259,22 @@ def test_normalize_envelope_fields_forwarded() -> None:
     assert partial.sequence_number == envelope.sequence_number
 
 
-def test_post_tool_use_duration_ms_forwarded() -> None:
-    fixture = _load_fixture(FIXTURE_DIR / "post_tool_use.json")
-    envelope = _envelope_from_fixture(fixture)
+def test_tool_use_ids_forwarded_for_pre_and_post() -> None:
     adapter = CodexAdapter()
-    partial = adapter.normalize(envelope, EventType.TOOL_USE_END.value)
-    assert partial.duration_ms == 42
+
+    pre_fixture = _load_fixture(FIXTURE_DIR / "pre_tool_use.json")
+    pre_partial = adapter.normalize(
+        _envelope_from_fixture(pre_fixture), EventType.TOOL_USE_START.value
+    )
+    assert pre_partial.data["turn_id"] == "019e20bc-07d6-76a2-989b-1a536e6b61b0"
+    assert pre_partial.data["tool_use_id"] == "call_wsvNx1yIEZczeuKwEfEe2Tat"
+
+    post_fixture = _load_fixture(FIXTURE_DIR / "post_tool_use.json")
+    post_partial = adapter.normalize(
+        _envelope_from_fixture(post_fixture), EventType.TOOL_USE_END.value
+    )
+    assert post_partial.data["turn_id"] == "019e20bc-07d6-76a2-989b-1a536e6b61b0"
+    assert post_partial.data["tool_use_id"] == "call_wsvNx1yIEZczeuKwEfEe2Tat"
 
 
 def test_unsupported_event_type_raises_value_error() -> None:
@@ -240,7 +285,7 @@ def test_unsupported_event_type_raises_value_error() -> None:
         event_id="evt-1",
         timestamp=datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc),
         sequence_number=0,
-        payload={"hook_event_name": "session_start"},
+        payload={"hook_event_name": "SessionStart"},
     )
     adapter = CodexAdapter()
     with pytest.raises(ValueError):
@@ -255,13 +300,13 @@ def test_hook_event_name_mismatch_raises() -> None:
         event_id="evt-1",
         timestamp=datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc),
         sequence_number=0,
-        payload={"hook_event_name": "stop", "cwd": "/tmp"},
+        payload={"hook_event_name": "Stop", "cwd": "/tmp"},
     )
     adapter = CodexAdapter()
     with pytest.raises(ValueError) as exc_info:
         adapter.normalize(envelope, EventType.SESSION_START.value)
     msg = str(exc_info.value)
-    assert "stop" in msg or "session_start" in msg
+    assert "Stop" in msg or "SessionStart" in msg
 
 
 def test_inject_convention_formats_correctly() -> None:

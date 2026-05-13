@@ -1,0 +1,54 @@
+feature: codex-user-prompt-observation
+coverage_type: verified
+
+scenarios:
+  - name: "Silent failure - UserPromptSubmit stores anything other than the full prompt text"
+    type: death_path
+    given: "a verified Codex UserPromptSubmit hook payload with top-level prompt text"
+    when: "CodexAdapter.normalize() or the thin ingress route processes the payload"
+    then:
+      - "the resulting Event.data.action_metadata.prompt_text must exactly equal the original prompt string"
+      - "prompt_length, empty string, cwd-only metadata, or rollout-derived text must never silently replace prompt_text"
+
+  - name: "Silent failure - Codex fixtures drift back to invented payload shapes"
+    type: death_path
+    given: "the Codex fixture set under tests/fixtures/codex"
+    when: "fixture contract tests run"
+    then:
+      - "each fixture must declare verified/documented provenance and the real Codex PascalCase hook_event_name"
+      - "nested hook_event wrappers or lower-case hook names must fail the contract tests instead of silently retraining the adapter"
+
+  - name: "Silent failure - raw tool_response or last_assistant_message leaks into Event.data"
+    type: death_path
+    given: "verified PostToolUse and Stop hook payloads carrying raw output strings"
+    when: "adapter and ingress tests serialize Event.data"
+    then:
+      - "tool_response and last_assistant_message must not appear anywhere in Event.data"
+      - "the privacy canary must fail loudly if either raw field crosses the drop boundary"
+
+  - name: "Degradation - Codex tool hooks are registered in a shape that does not actually fire"
+    type: degradation
+    given: "a fresh ~/.codex/hooks.json installation via CodexHooksPatcher"
+    when: "SecondSight writes PreToolUse and PostToolUse registrations"
+    then:
+      - "the installer output must include all five Codex observation hooks"
+      - "tool-hook registrations must match the verified working shape rather than silently relying on undocumented defaults"
+      - "preserving user hooks must not silently drop SecondSight tool-hook coverage"
+
+  - name: "Unknown outcome - adapter unit tests pass but the thin ingress path loses Codex fields"
+    type: death_path
+    given: "a POST /hook/codex/{event_type} request built from verified Codex hook payloads"
+    when: "the request is accepted and persisted"
+    then:
+      - "stored event rows and event JSON must preserve prompt_text, tool_use_id, and turn_id where applicable"
+      - "route/payload mismatch or persistence loss must surface as an explicit test failure, never silent 200-only success"
+
+  - name: "Success - verified Codex hook payloads survive the observation path with evidence"
+    type: happy_path
+    given: "the verified 2026-05-13 Codex hook captures for SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, and Stop"
+    when: "SecondSight runs the Codex adapter, ingress contract tests, and installer tests"
+    then:
+      - "CodexAdapter and CodexHooksPatcher pass against the verified fixtures"
+      - "thin ingress persists the normalized Codex fields expected by observation consumers"
+      - "any future audit can reconstruct the Codex hook contract from fixture provenance, adapter tests, and installer tests alone"
+

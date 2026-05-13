@@ -2,36 +2,35 @@
   "_meta": {
     "_source": "verified",
     "_capture_date": "2026-05-13",
-    "_capture_file": "PostToolUse-20260513T094740Z-93398.json",
-    "_capture_origin": "Captured from ~/.codex/hook-captures/PostToolUse-20260513T094740Z-93398.json on 2026-05-13. Real Codex hook payload uses PascalCase hook_event_name and a top-level string tool_response.",
+    "_capture_file": "PreToolUse-20260513T094740Z-93394.json",
+    "_capture_origin": "Captured from ~/.codex/hook-captures/PreToolUse-20260513T094740Z-93394.json on 2026-05-13. The live capture used tool_input.command='pwd'; this fixture keeps the verified top-level shape but substitutes the raw command with a privacy canary to assert drop behavior.",
     "_raw_fields_substituted": [
-      "tool_response"
+      "tool_input.command"
     ],
-    "_codex_hook_event_name": "PostToolUse",
-    "_secondsight_event_type": "tool_use_end",
-    "_privacy_canary_field": "tool_response"
+    "_codex_hook_event_name": "PreToolUse",
+    "_secondsight_event_type": "tool_use_start",
+    "_privacy_canary_field": "tool_input.command"
   },
   "payload": {
     "session_id": "019e20bb-dd4a-7ad2-b68f-7bb2fa6721a2",
     "turn_id": "019e20bc-07d6-76a2-989b-1a536e6b61b0",
     "transcript_path": "/Users/yuyu_liao/.codex/sessions/2026/05/13/rollout-2026-05-13T17-47-23-019e20bb-dd4a-7ad2-b68f-7bb2fa6721a2.jsonl",
     "cwd": "/Users/yuyu_liao/vicone/SecondSight",
-    "hook_event_name": "PostToolUse",
+    "hook_event_name": "PreToolUse",
     "model": "gpt-5.4",
     "permission_mode": "default",
     "tool_name": "Bash",
     "tool_use_id": "call_wsvNx1yIEZczeuKwEfEe2Tat",
     "tool_input": {
-      "command": "pwd"
-    },
-    "tool_response": "PRIVACY_CANARY_DO_NOT_STORE"
+      "command": "PRIVACY_CANARY_DO_NOT_STORE"
+    }
   },
   "expected_partial_event_data": {
     "tool_name": "Bash",
     "turn_id": "019e20bc-07d6-76a2-989b-1a536e6b61b0",
     "tool_use_id": "call_wsvNx1yIEZczeuKwEfEe2Tat",
     "action_metadata": {
-      "command_length": 3,
+      "command_length": 27,
       "cwd": "/Users/yuyu_liao/vicone/SecondSight",
       "transcript_path": "/Users/yuyu_liao/.codex/sessions/2026/05/13/rollout-2026-05-13T17-47-23-019e20bb-dd4a-7ad2-b68f-7bb2fa6721a2.jsonl"
     }

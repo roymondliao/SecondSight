@@ -1,0 +1,59 @@
+task_id: task-1
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      Fixture provenance is still recorded as free-form `_capture_origin` prose.
+      Tests verify that verified fixtures carry the field, but they do not parse
+      the referenced capture filename or date. A future edit could keep tests
+      green while weakening the evidence quality.
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: >
+      `user_prompt_submit.json` uses `session_id` as the privacy canary because
+      the expected normalized payload must contain the real prompt text. Prompt
+      leakage back into `Event.data` is still covered by adapter assertions, but
+      the fixture-governance test cannot treat `prompt` itself as a drop-boundary
+      canary.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      The verified 2026-05-13 captures are the correct source of truth for the
+      current Codex hook contract and supersede older inferred fixture shapes.
+    verified: true
+    note: >
+      Verified from the user-provided live capture output covering SessionStart,
+      UserPromptSubmit, PreToolUse, PostToolUse, and Stop.
+
+  - assumption: >
+      Preserving the verified payload shape while substituting raw privacy fields
+      with canaries is acceptable, as long as the substitution is documented in
+      `_capture_origin` and the README.
+    verified: true
+    note: >
+      Verified by the updated fixture README and the explicit substitution note in
+      `tests/fixtures/codex/pre_tool_use.json`.
+
+debt_registered: true
+debt_location: "tests/fixtures/codex/_README.md; tests/fixtures/codex/*.json metadata"
+
+resolved_items:
+  - original_section: "known_shortcuts"
+    original_description: >
+      Captured payload values could be copied into fixtures without documenting
+      provenance and drift rules.
+    resolution: >
+      Added `tests/fixtures/codex/_README.md` describing the verified capture
+      date, supported Codex hook events, privacy canary policy, and fixture
+      refresh rules.
+
+  - original_section: "assumptions_made"
+    original_description: >
+      PascalCase hook names and top-level payload shape must stay enforced rather
+      than being implied by fixture contents.
+    resolution: >
+      Added adapter death coverage for lowercase/nested regressions and fixture
+      governance checks that require the verified contract README plus
+      `_capture_origin` on every verified fixture.

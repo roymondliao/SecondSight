@@ -32,6 +32,20 @@ def _hooks_json(tmp_path: Path) -> Path:
     return tmp_path / "hooks.json"
 
 
+def _secondsight_entry(entries: list[dict[str, object]]) -> dict[str, object]:
+    for entry in entries:
+        hooks = entry.get("hooks")
+        if not isinstance(hooks, list) or not hooks:
+            continue
+        first = hooks[0]
+        if not isinstance(first, dict):
+            continue
+        command = first.get("command")
+        if isinstance(command, str) and SECONDSIGHT_MARKER in command:
+            return entry
+    raise AssertionError(f"missing SecondSight entry in {entries!r}")
+
+
 def test_death_existing_user_hooks_preserved(tmp_path: Path) -> None:
     hooks_path = _hooks_json(tmp_path)
     hooks_path.write_text(
@@ -136,5 +150,46 @@ def test_apply_creates_fresh_hooks_json_when_missing(tmp_path: Path) -> None:
 
     assert plan.file_existed is False
     written = json.loads(hooks_path.read_text(encoding="utf-8"))
-    for event in ("PostToolUse", "SessionStart", "Stop", "UserPromptSubmit"):
+    for event in ("PreToolUse", "PostToolUse", "SessionStart", "Stop", "UserPromptSubmit"):
         assert event in written["hooks"], f"missing event {event}"
+    for event in ("PreToolUse", "PostToolUse"):
+        entry = _secondsight_entry(written["hooks"][event])
+        assert entry.get("matcher") == "*", f"{event} must install matcher-aware hook entry"
+    for event in ("SessionStart", "Stop", "UserPromptSubmit"):
+        entry = _secondsight_entry(written["hooks"][event])
+        assert "matcher" not in entry, f"{event} should not install matcher"
+
+
+def test_death_tool_hook_without_matcher_is_conflict(tmp_path: Path) -> None:
+    hook_dir = _hook_dir(tmp_path)
+    hooks_path = _hooks_json(tmp_path)
+    hooks_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": (
+                                        "SECONDSIGHT_AGENT=codex "
+                                        f"{hook_dir / 'pre-tool-use.sh'} "
+                                        f"{SECONDSIGHT_MARKER} agent=codex event=tool_use_start"
+                                    ),
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    patcher = CodexHooksPatcher(hooks_path)
+    plan = patcher.plan(hook_dir)
+
+    assert plan.actions["PreToolUse"] == "conflict", (
+        f"tool hook without matcher must be treated as conflict, got {plan.actions!r}"
+    )

@@ -1,28 +1,22 @@
 """CodexAdapter — Codex CLI hook payload → SecondSight PartialEvent.
 
-Per SD §4.3 + Phase 0 investigation (P0-2). Translates Codex CLI hook
-stdin payloads (wrapped in HookEnvelope by a config.toml hook script)
-into PartialEvents that SessionTracker.bind() finalises into Events.
+Translates Codex CLI hook stdin payloads (wrapped in HookEnvelope by the
+shared bash hook scripts) into PartialEvents that SessionTracker.bind()
+finalises into Events.
 
-Codex CLI hook surface (codex-rs/hooks/src/types.rs):
-    post_tool_use, session_start, user_prompt_submit, stop
-    — registered via ~/.codex/config.toml [hooks] section.
+Codex CLI hook surface (checked against codex-cli 0.130.0 and upstream
+`openai/codex` hook event source):
+    PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, Stop
 
-The adapter normalises these four hook event types. JSONL rollout file
-parsing (Tier 1 in Phase 0 report) is out of scope — that would be a
-file-watcher, not an adapter for the hook API.
+JSONL rollout file parsing is out of scope here — that would be a
+separate file-watcher path, not an adapter for the hook API.
 
-Privacy contract (mirrors ClaudeCodeAdapter, SD §3.7.4):
-    Raw tool_input params, tool output content, and user prompt text are
-    NEVER stored in Event.data. Only metadata (sizes, types, names) flows
-    through. The DROP_LIST is declarative.
-
-Assumptions:
-    - Codex CLI hook payloads arrive wrapped in HookEnvelope by a bash
-      hook script (same pattern as Claude Code).
-    - The hook_event_name field in payload maps to the Codex hook event
-      type: "post_tool_use", "session_start", "user_prompt_submit", "stop".
-    - Codex CLI agent name is "codex" (snake_case per plan §7 G3).
+Privacy contract:
+    Raw tool_input content and raw tool_response content are NEVER stored
+    in Event.data. Only derived metadata (for example command_length) is
+    preserved. User prompt text is intentionally stored completely at
+    `data.action_metadata.prompt_text` because the hook payload is the
+    observation source of truth for intent analysis.
 """
 
 from __future__ import annotations
@@ -41,70 +35,77 @@ from secondsight.observation.tracker import PartialEvent
 _AGENT_NAME = "codex"
 
 _HOOK_TO_EVENT_TYPE: dict[str, EventType] = {
-    "post_tool_use": EventType.TOOL_USE_END,
-    "session_start": EventType.SESSION_START,
-    "user_prompt_submit": EventType.USER_PROMPT,
-    "stop": EventType.SESSION_END,
+    "PreToolUse": EventType.TOOL_USE_START,
+    "PostToolUse": EventType.TOOL_USE_END,
+    "SessionStart": EventType.SESSION_START,
+    "UserPromptSubmit": EventType.USER_PROMPT,
+    "Stop": EventType.SESSION_END,
 }
 
 _EVENT_TYPE_TO_HOOK: dict[EventType, str] = {et: hook for hook, et in _HOOK_TO_EVENT_TYPE.items()}
 
 DROP_LIST: frozenset[str] = frozenset(
     {
-        "hook_event.tool_input",
-        "hook_event.output_preview",
+        "tool_input.command",
+        "tool_response",
+        "last_assistant_message",
     }
 )
 
 
 def _action_metadata(payload: Mapping[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    if "cwd" in payload:
-        out["cwd"] = payload["cwd"]
+    for key in ("cwd", "transcript_path"):
+        if key in payload:
+            out[key] = payload[key]
     return out
 
 
-def _normalize_post_tool_use(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """post_tool_use → tool_use_end.
+def _tool_input_metadata(tool_input: Mapping[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    if "command" in tool_input:
+        out["command_length"] = len(str(tool_input["command"]))
+    return out
 
-    Codex post_tool_use hook payload (confirmed in codex-rs/hooks/src/types.rs):
-        hook_event.tool_name, hook_event.tool_kind, hook_event.executed,
-        hook_event.success, hook_event.duration_ms, hook_event.mutating,
-        hook_event.output_preview (truncated — dropped).
-    """
-    hook_event = payload.get("hook_event") or {}
-    if not isinstance(hook_event, Mapping):
-        raise ValueError("CodexAdapter: post_tool_use payload missing 'hook_event' object")
 
-    tool_name = hook_event.get("tool_name")
+def _normalize_pre_tool_use(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """PreToolUse → tool_use_start. Raw tool_input stays dropped."""
+    tool_name = payload.get("tool_name")
     if not tool_name:
-        raise ValueError(
-            "CodexAdapter: post_tool_use hook_event missing required field 'tool_name'"
-        )
+        raise ValueError("CodexAdapter: PreToolUse payload missing required field 'tool_name'")
 
     metadata = _action_metadata(payload)
+    tool_input = payload.get("tool_input") or {}
+    if isinstance(tool_input, Mapping):
+        metadata.update(_tool_input_metadata(tool_input))
+
     data: dict[str, Any] = {"tool_name": tool_name}
+    if "turn_id" in payload:
+        data["turn_id"] = payload["turn_id"]
+    if "tool_use_id" in payload:
+        data["tool_use_id"] = payload["tool_use_id"]
 
-    if "tool_kind" in hook_event:
-        data["tool_kind"] = hook_event["tool_kind"]
+    if metadata:
+        data["action_metadata"] = metadata
+    return data
 
-    if "executed" in hook_event:
-        data["executed"] = bool(hook_event["executed"])
 
-    if "success" in hook_event:
-        data["success"] = bool(hook_event["success"])
+def _normalize_post_tool_use(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """PostToolUse → tool_use_end. Raw tool_input/tool_response stay dropped."""
+    tool_name = payload.get("tool_name")
+    if not tool_name:
+        raise ValueError("CodexAdapter: PostToolUse payload missing required field 'tool_name'")
 
-    if "duration_ms" in hook_event:
-        data["duration_ms"] = hook_event["duration_ms"]
+    metadata = _action_metadata(payload)
+    tool_input = payload.get("tool_input") or {}
+    if isinstance(tool_input, Mapping):
+        metadata.update(_tool_input_metadata(tool_input))
 
-    if "mutating" in hook_event:
-        data["mutating"] = bool(hook_event["mutating"])
-
-    if "turn_id" in hook_event:
-        data["turn_id"] = hook_event["turn_id"]
-
-    if "call_id" in hook_event:
-        data["call_id"] = hook_event["call_id"]
+    data: dict[str, Any] = {"tool_name": tool_name}
+    if "turn_id" in payload:
+        data["turn_id"] = payload["turn_id"]
+    if "tool_use_id" in payload:
+        data["tool_use_id"] = payload["tool_use_id"]
 
     if metadata:
         data["action_metadata"] = metadata
@@ -112,24 +113,29 @@ def _normalize_post_tool_use(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_session_start(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """session_start → session_start. Carries cwd only (hook payload is minimal)."""
+    """SessionStart → session_start."""
     metadata = _action_metadata(payload)
+    if "source" in payload:
+        metadata["source"] = payload["source"]
     return {"action_metadata": metadata} if metadata else {}
 
 
 def _normalize_user_prompt_submit(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """user_prompt_submit → user_prompt. No prompt text in hook payload (per P0-2)."""
+    """UserPromptSubmit → user_prompt. Prompt text is preserved completely."""
     metadata = _action_metadata(payload)
+    if "prompt" in payload:
+        metadata["prompt_text"] = str(payload["prompt"])
     return {"action_metadata": metadata} if metadata else {}
 
 
 def _normalize_stop(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """stop → session_end. Carries cwd and triggered_at only."""
+    """Stop → session_end."""
     metadata = _action_metadata(payload)
     return {"action_metadata": metadata} if metadata else {}
 
 
 _DATA_BUILDERS: dict[EventType, Callable[[Mapping[str, Any]], dict[str, Any]]] = {
+    EventType.TOOL_USE_START: _normalize_pre_tool_use,
     EventType.TOOL_USE_END: _normalize_post_tool_use,
     EventType.SESSION_START: _normalize_session_start,
     EventType.USER_PROMPT: _normalize_user_prompt_submit,
@@ -147,13 +153,8 @@ assert set(_HOOK_TO_EVENT_TYPE.values()) == set(_DATA_BUILDERS.keys()), (
 class CodexAdapter(AgentAdapter):
     """Codex CLI hook payload → SecondSight PartialEvent.
 
-    Supports 4 event types from the Codex CLI hook callback surface:
-    post_tool_use, session_start, user_prompt_submit, stop.
-
-    Note: Codex CLI hooks do NOT provide a pre_tool_use equivalent with
-    enough data for tool_use_start — the pre_tool_use hook is for blocking/
-    approval, not observation. Tool use start events require JSONL parsing
-    (out of adapter scope).
+    Supports the currently exposed Codex hook event surface:
+    PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, Stop.
     """
 
     def supports(self, agent: str, event_type: str) -> bool:

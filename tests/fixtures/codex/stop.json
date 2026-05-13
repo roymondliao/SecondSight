@@ -1,19 +1,32 @@
 {
   "_meta": {
     "_source": "verified",
-    "_capture_origin": "Concrete values aligned to the local Codex rollout at ~/.codex/sessions/2026/05/12/rollout-2026-05-12T11-04-27-019e1a24-9e4b-7570-90dd-a406dc9b8ba8.jsonl plus the hook registration in ~/.codex/hooks.json (observed 2026-05-12).",
-    "_codex_hook_event_name": "stop",
-    "_secondsight_event_type": "session_end"
+    "_capture_date": "2026-05-13",
+    "_capture_file": "Stop-20260513T094741Z-93402.json",
+    "_capture_origin": "Captured from ~/.codex/hook-captures/Stop-20260513T094741Z-93402.json on 2026-05-13. Real Codex Stop payload includes last_assistant_message, which must not leak into Event.data.",
+    "_raw_fields_substituted": [
+      "last_assistant_message"
+    ],
+    "_codex_hook_event_name": "Stop",
+    "_secondsight_event_type": "session_end",
+    "_privacy_canary_field": "last_assistant_message"
   },
   "payload": {
-    "session_id": "019e1a24-9e4b-7570-90dd-a406dc9b8ba8",
+    "session_id": "019e20bb-dd4a-7ad2-b68f-7bb2fa6721a2",
+    "turn_id": "019e20bc-07d6-76a2-989b-1a536e6b61b0",
+    "transcript_path": "/Users/yuyu_liao/.codex/sessions/2026/05/13/rollout-2026-05-13T17-47-23-019e20bb-dd4a-7ad2-b68f-7bb2fa6721a2.jsonl",
     "cwd": "/Users/yuyu_liao/vicone/SecondSight",
-    "triggered_at": "2026-05-12T04:05:19Z",
-    "hook_event_name": "stop"
+    "hook_event_name": "Stop",
+    "model": "gpt-5.4",
+    "permission_mode": "default",
+    "stop_hook_active": false,
+    "last_assistant_message": "PRIVACY_CANARY_DO_NOT_STORE"
   },
   "expected_partial_event_data": {
     "action_metadata": {
-      "cwd": "/Users/yuyu_liao/vicone/SecondSight"
+      "cwd": "/Users/yuyu_liao/vicone/SecondSight",
+      "transcript_path": "/Users/yuyu_liao/.codex/sessions/2026/05/13/rollout-2026-05-13T17-47-23-019e20bb-dd4a-7ad2-b68f-7bb2fa6721a2.jsonl"
     }
-  }
+  },
+  "privacy_canary": "PRIVACY_CANARY_DO_NOT_STORE"
 }

@@ -1,19 +1,32 @@
 {
   "_meta": {
     "_source": "verified",
-    "_capture_origin": "Concrete values aligned to the local Codex rollout at ~/.codex/sessions/2026/05/12/rollout-2026-05-12T11-04-27-019e1a24-9e4b-7570-90dd-a406dc9b8ba8.jsonl plus the hook registration in ~/.codex/hooks.json (observed 2026-05-12). Codex does not expose raw prompt text in this hook payload.",
-    "_codex_hook_event_name": "user_prompt_submit",
-    "_secondsight_event_type": "user_prompt"
+    "_capture_date": "2026-05-13",
+    "_capture_file": "UserPromptSubmit-20260513T094734Z-93382.json",
+    "_capture_origin": "Captured from ~/.codex/hook-captures/UserPromptSubmit-20260513T094734Z-93382.json on 2026-05-13. Real Codex UserPromptSubmit payload includes prompt at the top level.",
+    "_raw_fields_substituted": [
+      "session_id"
+    ],
+    "_codex_hook_event_name": "UserPromptSubmit",
+    "_secondsight_event_type": "user_prompt",
+    "_privacy_canary_field": "session_id"
   },
   "payload": {
-    "session_id": "019e1a24-9e4b-7570-90dd-a406dc9b8ba8",
+    "session_id": "PRIVACY_CANARY_DO_NOT_STORE",
+    "turn_id": "019e20bc-07d6-76a2-989b-1a536e6b61b0",
+    "transcript_path": "/Users/yuyu_liao/.codex/sessions/2026/05/13/rollout-2026-05-13T17-47-23-019e20bb-dd4a-7ad2-b68f-7bb2fa6721a2.jsonl",
     "cwd": "/Users/yuyu_liao/vicone/SecondSight",
-    "triggered_at": "2026-05-12T03:34:33.177Z",
-    "hook_event_name": "user_prompt_submit"
+    "hook_event_name": "UserPromptSubmit",
+    "model": "gpt-5.4",
+    "permission_mode": "default",
+    "prompt": "SECOND_SIGHT_CANARY_20260513 請先執行 pwd，再只回覆 OK"
   },
   "expected_partial_event_data": {
     "action_metadata": {
-      "cwd": "/Users/yuyu_liao/vicone/SecondSight"
+      "cwd": "/Users/yuyu_liao/vicone/SecondSight",
+      "transcript_path": "/Users/yuyu_liao/.codex/sessions/2026/05/13/rollout-2026-05-13T17-47-23-019e20bb-dd4a-7ad2-b68f-7bb2fa6721a2.jsonl",
+      "prompt_text": "SECOND_SIGHT_CANARY_20260513 請先執行 pwd，再只回覆 OK"
     }
-  }
+  },
+  "privacy_canary": "PRIVACY_CANARY_DO_NOT_STORE"
 }

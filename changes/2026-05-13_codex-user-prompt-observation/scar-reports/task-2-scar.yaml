@@ -1,0 +1,47 @@
+task_id: task-2
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      The ingress tests replay verified fixture payloads directly against
+      FastAPI. They do not launch a real Codex hook process end-to-end, so
+      transport-level shell mistakes outside the HTTP contract remain covered by
+      fixture capture and installer tests rather than this task.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      The persistence assertions cover exact `prompt_text`, privacy-drop
+      boundaries for `tool_response` and `last_assistant_message`, and one
+      explicit route/payload mismatch. If Codex later adds a new top-level field
+      that the adapter mishandles, this task will stay green until a fixture is
+      refreshed to include that field.
+    deferred_to_feature_iteration: true
+
+assumptions_made:
+  - assumption: >
+      The generic `/hook/codex/{event_type}` path should persist the same
+      normalized `data` into both the DB row and the filesystem event JSON.
+    verified: true
+    note: >
+      Verified by `tests/api/test_ingress_codex.py` for `user_prompt`,
+      `tool_use_end`, and `session_end`.
+
+  - assumption: >
+      Route/payload mismatch must fail before project storage is materialized.
+    verified: true
+    note: >
+      Verified by posting a `UserPromptSubmit` fixture to
+      `/hook/codex/tool_use_end` and asserting 422 plus no project directory.
+
+debt_registered: true
+debt_location: "tests/api/test_ingress_codex.py"
+
+resolved_items:
+  - original_section: "known_shortcuts"
+    original_description: >
+      It would be easy to assert only HTTP 200 and never inspect what was
+      actually persisted.
+    resolution: >
+      Added direct DB-row and filesystem event-file assertions against verified
+      Codex fixtures, including exact `prompt_text` and raw-field drop checks.

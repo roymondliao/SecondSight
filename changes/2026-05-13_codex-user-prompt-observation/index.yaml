@@ -1,0 +1,27 @@
+feature: codex-user-prompt-observation
+status: done
+
+tasks:
+  - id: task-1
+    title: "Lock verified Codex adapter and fixture contract"
+    status: done
+    scar_count: 2
+    unresolved_assumptions:
+      - "Fixture provenance remains prose-only; tests do not parse _capture_origin."
+    depends_on: []
+  - id: task-2
+    title: "Prove Codex thin ingress persistence with verified payloads"
+    status: done
+    scar_count: 2
+    unresolved_assumptions:
+      - "New Codex top-level fields still require fixture refresh before ingress tests can exercise them."
+    depends_on:
+      - task-1
+  - id: task-3
+    title: "Harden Codex hook installation shape and fixture regeneration rules"
+    status: done
+    scar_count: 2
+    unresolved_assumptions:
+      - "Installer shape checks only enforce command path plus matcher; future upstream entry keys still require manual contract refresh."
+    depends_on:
+      - task-1

@@ -1,0 +1,85 @@
+feature: "codex-user-prompt-observation"
+signal_lost_initial: 6
+
+budget:
+  max_rounds: 3
+  reviewer_retry_limit: 2
+
+rounds:
+  - round: 1
+    signal_lost_before: 6
+    budget_context:
+      remaining_rounds_at_start: 2
+      stagnation_count_at_start: 0
+      net_rot_previous_round: 0
+      strategy_hint: explore
+    items_triaged: 6
+    triage_result:
+      fix:
+        - "Fixture provenance is still recorded as free-form `_capture_origin` prose."
+      accept:
+        - description: >
+            `user_prompt_submit.json` cannot use `prompt` itself as a drop-boundary
+            canary because `prompt_text` is intentionally persisted.
+          expiry_date: "2026-09-30"
+          rationale: >
+            This is a testing-boundary truth, not a code defect. Adapter and
+            ingress assertions already verify exact `prompt_text` persistence.
+        - description: >
+            The ingress tests replay verified fixture payloads directly against
+            FastAPI rather than launching a real Codex hook process end-to-end.
+          expiry_date: "2026-09-30"
+          rationale: >
+            Live hook transport is already covered by the verified capture
+            workflow and installer-shape tests; duplicating shell execution
+            inside pytest would add cost without materially improving signal.
+        - description: >
+            If Codex later adds a new top-level field, ingress coverage remains
+            green until fixtures are refreshed to include it.
+          expiry_date: "2026-09-30"
+          rationale: >
+            This is normal contract-drift risk for fixture-driven tests and is
+            bounded by the fixture refresh process documented in the README.
+        - description: >
+            The installer only enforces command path plus `matcher`, so future
+            upstream hook-entry keys still require manual contract refresh.
+          expiry_date: "2026-09-30"
+          rationale: >
+            The currently verified local working shape is locked. Additional
+            upstream-required keys would be a new contract change, not a hidden
+            bug in the current implementation.
+        - description: >
+            A malformed same-path legacy hook entry is surfaced as a loud
+            conflict rather than auto-healed in place.
+          expiry_date: "2026-09-30"
+          rationale: >
+            This is an intentional safety choice to avoid silently rewriting
+            user hook state when the stored shape is ambiguous.
+      defer: []
+    fixes_applied: 1
+    fixes_scar_count: 0
+    budget_spent:
+      implementer_dispatches: 0
+      reviewer_dispatches: 0
+      reviewer_retries: 0
+      validation_runs: 2
+    evidence_gained:
+      - >
+        New fixture-governance death test failed until verified fixtures carried
+        `_capture_date`, `_capture_file`, and `_raw_fields_substituted`.
+      - >
+        `uv run pytest tests/adapters/test_codex_fixtures.py tests/adapters/test_codex.py
+        tests/api/test_ingress_codex.py tests/installer/test_codex_hooks.py`
+        passed with 66 tests after the structured metadata update.
+    residual_risk:
+      - >
+        Accepted fixture-driven contract drift still depends on maintainers
+        refreshing fixtures when Codex changes its hook schema.
+      - >
+        Real-shell hook execution remains outside pytest and depends on the
+        documented capture workflow for re-verification.
+    signal_lost_after: 5
+    decision: stop
+    decision_reason: >
+      One actionable feature-level scar item was fixed; the remaining five were
+      accepted as bounded contract-refresh or testing-boundary risks.
