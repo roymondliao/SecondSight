@@ -31,7 +31,7 @@ endpoint broken — do NOT mask with in-process).
 from __future__ import annotations
 
 import json
-import logging
+from loguru import logger
 from pathlib import Path
 from typing import Optional
 
@@ -42,8 +42,6 @@ from rich.table import Table
 
 from secondsight.api.directives import DirectiveOut
 from secondsight.cli._home import secondsight_home as resolve_secondsight_home
-
-_logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     name="directive",
@@ -268,7 +266,7 @@ def _handle_list_active(
             _render_directives(directives, output_format=output_format)
             raise typer.Exit(code=0)
         except httpx.ConnectError:
-            _logger.info(
+            logger.info(
                 f"directive: server at {server_url} not reachable; falling back to in-process"
             )
             typer.echo(
@@ -276,7 +274,7 @@ def _handle_list_active(
                 err=True,
             )
         except httpx.HTTPStatusError as exc:
-            _logger.error(
+            logger.error(
                 f"directive: server at {server_url} returned "
                 f"HTTP {exc.response.status_code} for GET /api/directives — "
                 f"NOT falling back to in-process (server is up but endpoint failed). "
@@ -378,7 +376,7 @@ def _render_directives(
         return
 
     if output_format != "table":
-        _logger.warning(
+        logger.warning(
             f"directive: unknown --format {output_format!r}; "
             f"falling back to 'table'. Supported formats: json, table."
         )
@@ -441,7 +439,7 @@ def _handle_disable(
             )
             raise typer.Exit(code=0)
         except httpx.ConnectError:
-            _logger.info(
+            logger.info(
                 f"directive: server at {server_url} not reachable; "
                 f"falling back to in-process for --disable"
             )
@@ -450,7 +448,7 @@ def _handle_disable(
                 err=True,
             )
         except httpx.HTTPStatusError as exc:
-            _logger.error(
+            logger.error(
                 f"directive: server at {server_url} returned "
                 f"HTTP {exc.response.status_code} for "
                 f"PATCH /api/directives/{directive_id}"
@@ -510,7 +508,7 @@ def _handle_enable(
                 )
             raise typer.Exit(code=0)
         except httpx.ConnectError:
-            _logger.info(
+            logger.info(
                 f"directive: server at {server_url} not reachable; "
                 f"falling back to in-process for --enable"
             )
@@ -519,7 +517,7 @@ def _handle_enable(
                 err=True,
             )
         except httpx.HTTPStatusError as exc:
-            _logger.error(
+            logger.error(
                 f"directive: server at {server_url} returned "
                 f"HTTP {exc.response.status_code} for "
                 f"PATCH /api/directives/{directive_id}"

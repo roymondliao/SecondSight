@@ -1,0 +1,108 @@
+type: fast_track
+description: >
+  Stage 2 of the two-stage logging migration. Swaps stdlib `logging` to
+  `loguru` across the 6 files modified in Stage 1
+  (changes/2026-05-13_logging-fstring-stage1/, commit cd11a2c) and adds a
+  loguru→stdlib bridge in tests/conftest.py so existing caplog assertions
+  continue to pass without test-side rewrites. Also adds a logging
+  convention rule to AGENTS.md.
+
+stage1_prerequisite: |
+  Stage 1 (cd11a2c) converted all 48 `_logger.X("... %r/%s/%d ...", args)`
+  call sites to f-string. With the format-string layer already in the
+  framework-neutral form, Stage 2 is reduced to a near-mechanical import
+  swap + `_logger` → `logger` rename. Caplog assertions will continue
+  matching because f-string-rendered text passes through unchanged.
+
+gate_override:
+  why_failed_again: |
+    Same as Stage 1 baseline — research-confirmed fast-track. Stage 2 is
+    the second half of a single research-validated work, not a new
+    independent task. Re-running Phase 0 interrogation here would be
+    ceremony. Reference: changes/2026-05-13_logging-fstring-stage1/
+    fast-track.yaml gate_override section + samsara:research Phase 0 Q1-Q4
+    interrogation already conducted in the same session.
+  why_proceeding: |
+    User explicit instruction "先做 1，然後再來做 Stage 2" after Stage 1
+    shipped successfully. The two-stage decomposition was user-proposed
+    (f-string idea) and validated by Stage 1's clean ship. Stage 2's
+    incremental risk is bounded: import swap + conftest fixture + AGENTS.md.
+
+death_clause: |
+  If ANY existing caplog assertion that matches on r.message text fails
+  after the loguru swap, the conftest.py bridge is broken — likely
+  because:
+    (a) loguru record's `name` field doesn't match the `logger=`
+        selector used by caplog.at_level (e.g., record.name is "loguru"
+        instead of "secondsight.sdk.router")
+    (b) the PropagateHandler sink format string drops or alters the
+        rendered message text
+    (c) loguru's default stderr sink interferes with pytest's capture
+
+  Stage 2's correctness claim is "test suite text expectations unchanged".
+  Failure of this claim means the bridge fixture needs revision before
+  proceeding with any further file migrations.
+
+acceptance:
+  - "6 files: `import logging` replaced with `from loguru import logger`"
+  - "6 files: `_logger = logging.getLogger(__name__)` lines deleted"
+  - "All `_logger` references renamed to `logger` (48 call sites + any docstring refs)"
+  - "tests/conftest.py: caplog fixture overridden to add loguru→stdlib sink via PropagateHandler pattern"
+  - "AGENTS.md: new convention rule '使用 loguru 為 logging framework；禁用 stdlib logging.getLogger'"
+  - "All caplog-based assertions (9 in test_router.py + others) continue to pass without test-file edits"
+  - "ruff-check + ruff-format clean"
+  - "pytest full suite: pass count unchanged from Stage 1 baseline (1456 passed, 5 pre-existing fails)"
+  - "ty-check diagnostic count unchanged from 220 baseline"
+
+scar_tag: 0
+scar_items: []
+
+verification_results:
+  caplog_bridge_validation:
+    note: "Before any source-file change, added the conftest fixture and ran tests/sdk/test_router.py + tests/cli/test_cleanup.py + tests/cli/test_analyze.py (43 tests). All passed. This established that the bridge doesn't break existing stdlib-logging tests."
+    pass_count: 43
+  per_file_tests_after_swap:
+    "router.py (immediately after swap)": "14 passed (incl. 9 caplog assertions)"
+    "sdk/ + cli/ (after all 6 files swapped)": "180 passed"
+  full_suite:
+    passed: 1456
+    failed: 5
+    skipped: 3
+    note: "All 5 failures in tests/integration/test_phase1_e2e.py are pre-existing, verified during Stage 1 baseline. Identical pass count to Stage 1 (1456 = 1456). Zero regression introduced by loguru swap."
+  static_checks:
+    ruff-check: "Passed"
+    ruff-format: "Passed (auto-formatted on first run; idempotent on second run)"
+    ty-check: "220 diagnostics — IDENTICAL to pre-Stage1 baseline AND post-Stage1. Zero new diagnostics from Stage 2."
+  death_clause_status: "PASSED — all 9 caplog.records / r.message assertions in tests/sdk/test_router.py + other caplog assertions in cli/ tests continue to pass. The PropagateHandler-via-add(caplog.handler) sink correctly forwards loguru records with the originating module name (record.name = 'secondsight.sdk.router' etc.), so caplog.at_level selectors match."
+
+stage1_to_stage2_chain_validation: |
+  Stage 1 commit cd11a2c shipped with all 9 caplog assertions passing on
+  stdlib-logging + f-string. Stage 2 swaps stdlib→loguru and re-validates
+  the same 9 caplog assertions pass — proving the bridge is correct AND
+  the message text rendering is identical between stdlib and loguru for
+  the format types in use. Two independent confirmations of "text-
+  preserving migration."
+
+files_changed:
+  - src/secondsight/sdk/router.py
+  - src/secondsight/sdk/agent.py
+  - src/secondsight/sdk/trigger.py
+  - src/secondsight/cli/cleanup.py
+  - src/secondsight/cli/directive.py
+  - src/secondsight/cli/analyze.py
+  - tests/conftest.py
+  - AGENTS.md
+
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: "Bridge fixture written ONCE in tests/conftest.py (root). Verified no sub-conftest (api/, integration/, poc/, scripts/, storage/) redefines caplog. Pytest conftest hierarchy auto-applies it to all 6 test dirs."
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: "Bridge fixture sits in tests/conftest.py — canonical pytest infrastructure location. Six per-dir conftest.py files exist (api, integration, poc, scripts, storage, +root) but none define a caplog fixture; the override is unambiguous."
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: "Used loguru's canonical 4-line PropagateHandler pattern via `logger.add(caplog.handler, format='{message}', level=0, filter=lambda r: r['level'].no >= caplog.handler.level)`. No additional logic, no extra abstraction. The filter lambda is the minimum required to make caplog.at_level() dynamically respected — anything less would over-capture or under-capture."
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: "AGENTS.md addition is one sentence (rule #6). It restates a fact now encoded in the code (all 6 files use `from loguru import logger`), but the redundancy is intentional: future contributors will read AGENTS.md before reading source. The rule's purpose is to make the implicit convention explicit at the onboarding surface."

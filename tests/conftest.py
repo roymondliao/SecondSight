@@ -4,10 +4,34 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterator
 
 import pytest
+from _pytest.logging import LogCaptureFixture
+from loguru import logger as _loguru_logger
 
 from secondsight.event import Event, EventType
+
+
+@pytest.fixture
+def caplog(caplog: LogCaptureFixture) -> Iterator[LogCaptureFixture]:
+    """Bridge loguru output into pytest's stdlib-only caplog fixture.
+
+    Without this, `from loguru import logger; logger.info(...)` bypasses
+    caplog because loguru does not route through stdlib's root logger.
+    Adds caplog's stdlib Handler as a loguru sink for the test's duration,
+    so existing `caplog.at_level(...) / r.message` assertions continue
+    to work uniformly across both legacy stdlib-logging code and
+    loguru-emitting code.
+    """
+    handler_id = _loguru_logger.add(
+        caplog.handler,
+        format="{message}",
+        level=0,
+        filter=lambda record: record["level"].no >= caplog.handler.level,
+    )
+    yield caplog
+    _loguru_logger.remove(handler_id)
 
 
 @pytest.fixture

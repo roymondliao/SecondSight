@@ -47,7 +47,7 @@ Exception chain walking:
 from __future__ import annotations
 
 import asyncio
-import logging
+from loguru import logger
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -62,8 +62,6 @@ from pydantic_ai import Agent
 
 from secondsight.analysis.agent import AnalysisAgentError
 from secondsight.sdk._specs import ModelSpec
-
-_logger = logging.getLogger(__name__)
 
 # Maximum depth for walking __cause__ / __context__ chains in _classify().
 # Prevents infinite-loop on pathological exception graphs.
@@ -208,7 +206,7 @@ class LLMRouter:
         self._agent_factory = agent_factory or _default_agent_factory
 
         if len(fallbacks) == 0:
-            _logger.warning(
+            logger.warning(
                 f"LLMRouter constructed with empty fallback chain "
                 f"(fallback_models is empty). "
                 f"A transport error on the primary will raise immediately "
@@ -268,7 +266,7 @@ class LLMRouter:
             if remaining_budget <= 0 and attempt_idx > 0:
                 # Budget exhausted before this attempt (not on first attempt
                 # — if budget is already 0 at start, try at least the primary).
-                _logger.warning(
+                logger.warning(
                     f"chain_total_timeout_exceeded before attempt {attempt_idx + 1}/{total_models} "
                     f"provider={spec.provider!r} model={spec.name!r} "
                     f"elapsed_s={elapsed:.3f} budget_s={self._chain_total_timeout_s:.3f}"
@@ -284,7 +282,7 @@ class LLMRouter:
             except Exception as factory_exc:
                 # agent_factory itself raised (e.g., unknown provider name).
                 # This is a configuration error — terminal, not transient.
-                _logger.error(
+                logger.error(
                     f"agent_factory raised during construction "
                     f"provider={spec.provider!r} model={spec.name!r} attempt={attempt_idx + 1} "
                     f"exc_type={type(factory_exc).__name__!r} exc={factory_exc}"
@@ -313,7 +311,7 @@ class LLMRouter:
                 tokens_in = usage.request_tokens if usage is not None else None
                 tokens_out = usage.response_tokens if usage is not None else None
 
-                _logger.info(
+                logger.info(
                     f"llm_attempt provider={spec.provider!r} model={spec.name!r} "
                     f"tokens_in={tokens_in} tokens_out={tokens_out} "
                     f"duration_ms={duration_ms:.1f} attempt={attempt_idx + 1} "
@@ -330,7 +328,7 @@ class LLMRouter:
                         duration_ms=duration_ms,
                     )
                 )
-                _logger.info(
+                logger.info(
                     f"llm_attempt provider={spec.provider!r} model={spec.name!r} "
                     f"tokens_in={None} tokens_out={None} "
                     f"duration_ms={duration_ms:.1f} attempt={attempt_idx + 1} "
@@ -347,7 +345,7 @@ class LLMRouter:
                     # Find and log the root ValidationError if present (DC-3 diagnosis).
                     root_validation = _find_validation_error(exc)
                     if root_validation is not None:
-                        _logger.warning(
+                        logger.warning(
                             f"llm_attempt provider={spec.provider!r} model={spec.name!r} "
                             f"duration_ms={duration_ms:.1f} attempt={attempt_idx + 1} "
                             f"total_attempts={total_models} outcome=terminal_error "
@@ -362,7 +360,7 @@ class LLMRouter:
                             f"model={spec.name!r} attempt={attempt_idx + 1}/{total_models}"
                         ) from exc
                     else:
-                        _logger.warning(
+                        logger.warning(
                             f"llm_attempt provider={spec.provider!r} model={spec.name!r} "
                             f"duration_ms={duration_ms:.1f} attempt={attempt_idx + 1} "
                             f"total_attempts={total_models} outcome=terminal_error "
@@ -377,7 +375,7 @@ class LLMRouter:
                     auth_key = (spec.provider, type(exc).__name__)
                     if auth_key in _seen_auth_errors:
                         # Second auth error in this chain → terminal.
-                        _logger.warning(
+                        logger.warning(
                             f"llm_attempt provider={spec.provider!r} model={spec.name!r} "
                             f"duration_ms={duration_ms:.1f} attempt={attempt_idx + 1} "
                             f"total_attempts={total_models} outcome=terminal_error "
@@ -407,7 +405,7 @@ class LLMRouter:
                                 duration_ms=duration_ms,
                             )
                         )
-                        _logger.info(
+                        logger.info(
                             f"llm_attempt provider={spec.provider!r} model={spec.name!r} "
                             f"tokens_in={None} tokens_out={None} "
                             f"duration_ms={duration_ms:.1f} attempt={attempt_idx + 1} "
@@ -424,7 +422,7 @@ class LLMRouter:
                             duration_ms=duration_ms,
                         )
                     )
-                    _logger.info(
+                    logger.info(
                         f"llm_attempt provider={spec.provider!r} model={spec.name!r} "
                         f"tokens_in={None} tokens_out={None} "
                         f"duration_ms={duration_ms:.1f} attempt={attempt_idx + 1} "
@@ -435,7 +433,7 @@ class LLMRouter:
             # Check chain total budget AFTER this attempt.
             elapsed_after = time.monotonic() - chain_start
             if elapsed_after >= self._chain_total_timeout_s and attempt_idx < len(chain) - 1:
-                _logger.warning(
+                logger.warning(
                     f"chain_total_timeout_exceeded after attempt {attempt_idx + 1}/{total_models} "
                     f"provider={spec.provider!r} model={spec.name!r} "
                     f"elapsed_s={elapsed_after:.3f} budget_s={self._chain_total_timeout_s:.3f}"

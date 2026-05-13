@@ -54,7 +54,7 @@ JSON shape (task-B5 changes):
 from __future__ import annotations
 
 import json
-import logging
+from loguru import logger
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -93,7 +93,6 @@ app = typer.Typer(
     ),
 )
 _console = Console()
-_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -332,7 +331,7 @@ def cleanup(
         # errors (cfg is None on RetentionConfigError).
         if outcome.config is not None:
             cfg = outcome.config
-            _logger.info(
+            logger.info(
                 f"retention resolved: project_id={pid} "
                 f"raw_traces_ttl_days={cfg.raw_traces_ttl_days} "
                 f"raw_traces_source={cfg.raw_traces_source} "

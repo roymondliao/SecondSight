@@ -49,7 +49,7 @@ Silent failure conditions (documented in scar report):
 from __future__ import annotations
 
 import asyncio
-import logging
+from loguru import logger
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -63,8 +63,6 @@ if TYPE_CHECKING:
     from secondsight.observation.pipeline import ObservationPipeline
     from secondsight.storage.analysis_runs_repository import AnalysisRunsRepository
     from secondsight.storage.events_repository import EventsRepository
-
-_logger = logging.getLogger(__name__)
 
 
 def _ensure_utc(dt: datetime) -> datetime:
@@ -270,7 +268,7 @@ class Trigger:
         """
         async with self._lock_registry.acquire(session_id) as acquired:
             if not acquired:
-                _logger.debug(
+                logger.debug(
                     f"dispatch: lock-held for session_id={session_id!r} source={source!r} — skipping"
                 )
                 return DispatchResult(dispatched=False, reason="lock-held", run_id=None)
@@ -295,7 +293,7 @@ class Trigger:
             if last_dispatch_ts is not None and not force:
                 age_s = now_mono - last_dispatch_ts
                 if age_s < self._trigger_lock_seconds:
-                    _logger.info(
+                    logger.info(
                         f"dispatch: in-memory-in-flight session_id={session_id!r} "
                         f"age_s={age_s:.1f} < trigger_lock_seconds={self._trigger_lock_seconds} "
                         f"— skipping"
@@ -316,7 +314,7 @@ class Trigger:
                 # Uses _BLOCK_REDISPATCH_STAGES (derived from TERMINAL_STAGES minus "failed")
                 # so "failed" runs remain re-dispatchable without --force.
                 if stage_val in _BLOCK_REDISPATCH_STAGES and not force:
-                    _logger.info(
+                    logger.info(
                         f"dispatch: already-analyzed session_id={session_id!r} "
                         f"stage={stage_val!r} source={source!r} "
                         f"— returning dispatched=False"
@@ -337,7 +335,7 @@ class Trigger:
                     updated_at_utc = _ensure_utc(latest.updated_at)
                     age_seconds = (now - updated_at_utc).total_seconds()
                     if age_seconds < self._trigger_lock_seconds:
-                        _logger.info(
+                        logger.info(
                             f"dispatch: another-run-in-flight session_id={session_id!r} "
                             f"stage={stage_val!r} age_seconds={age_seconds:.1f} "
                             f"< trigger_lock_seconds={self._trigger_lock_seconds} — skipping"
@@ -368,7 +366,7 @@ class Trigger:
                 # Remove the in-memory entry so the next dispatch attempt is not
                 # blocked by this ghost entry (it was recorded before create_task).
                 self._in_memory_dispatched.pop(session_id, None)
-                _logger.error(
+                logger.error(
                     f"dispatch: create_task failed for session_id={session_id!r} "
                     f"source={source!r}: {exc}"
                 )
@@ -378,7 +376,7 @@ class Trigger:
                     run_id=None,
                 )
 
-            _logger.info(
+            logger.info(
                 f"dispatch: scheduled analysis source={source!r} "
                 f"session_id={session_id!r} project_id={project_id!r}"
             )
@@ -392,12 +390,12 @@ class Trigger:
     ) -> None:
         """Done callback: log if the background analysis task raised."""
         if task.cancelled():
-            _logger.warning(
+            logger.warning(
                 f"dispatch: analysis task cancelled for session_id={session_id!r} source={source!r}"
             )
         elif task.exception() is not None:
             exc = task.exception()
-            _logger.error(
+            logger.error(
                 f"dispatch: analysis task raised for session_id={session_id!r} "
                 f"source={source!r}: {type(exc).__name__}: {exc}"
             )
@@ -416,14 +414,14 @@ class Trigger:
         """
         pipeline_id = id(pipeline)
         if pipeline_id in self._registered_pipeline_ids:
-            _logger.debug(
+            logger.debug(
                 f"register_pipeline_callback: pipeline_id={pipeline_id!r} "
                 f"already registered; skipping"
             )
             return
         pipeline.add_post_ingest_callback(self._pipeline_callback)
         self._registered_pipeline_ids.add(pipeline_id)
-        _logger.info(
+        logger.info(
             f"register_pipeline_callback: registered SESSION_END callback "
             f"for pipeline_id={pipeline_id!r}"
         )
@@ -437,7 +435,7 @@ class Trigger:
         if event.event_type != EventType.SESSION_END:
             return
 
-        _logger.debug(
+        logger.debug(
             f"_pipeline_callback: SESSION_END received for "
             f"session_id={event.session_id!r} project_id={event.project_id!r}"
         )
@@ -446,7 +444,7 @@ class Trigger:
             event.session_id,
             source="event",
         )
-        _logger.info(
+        logger.info(
             f"_pipeline_callback: source='event' session_id={event.session_id!r} "
             f"project_id={event.project_id!r} outcome={result.reason!r}"
         )
@@ -516,7 +514,7 @@ class Sweeper:
         """
         # Self-register: store the current task so cancel() can await it.
         self._task = asyncio.current_task()
-        _logger.info(
+        logger.info(
             f"Sweeper started: interval={self._interval_seconds}s, "
             f"timeout={self._session_timeout_minutes}min"
         )
@@ -525,17 +523,15 @@ class Sweeper:
                 now = datetime.now(tz=timezone.utc)
                 await self.sweep_stale_sessions(now)
             except asyncio.CancelledError:
-                _logger.info("Sweeper cancelled during sweep.")
+                logger.info("Sweeper cancelled during sweep.")
                 raise
             except Exception as exc:
-                _logger.error(
-                    f"Sweeper sweep loop error (non-session): {type(exc).__name__}: {exc}"
-                )
+                logger.error(f"Sweeper sweep loop error (non-session): {type(exc).__name__}: {exc}")
 
             try:
                 await asyncio.sleep(self._interval_seconds)
             except asyncio.CancelledError:
-                _logger.info("Sweeper cancelled during sleep.")
+                logger.info("Sweeper cancelled during sleep.")
                 raise
 
     async def sweep_stale_sessions(self, now: datetime) -> None:
@@ -548,7 +544,7 @@ class Sweeper:
             now: The current UTC datetime (passed in so tests can freeze time).
         """
         stale = self._find_stale_sessions(now)
-        _logger.debug(f"Sweeper: found {len(stale)} stale session(s) at {now.isoformat()}")
+        logger.debug(f"Sweeper: found {len(stale)} stale session(s) at {now.isoformat()}")
 
         for project_id, session_id in stale:
             try:
@@ -558,16 +554,16 @@ class Sweeper:
                     source="timeout",
                 )
                 if result.dispatched:
-                    _logger.info(
+                    logger.info(
                         f"Sweeper dispatched session_id={session_id!r} project_id={project_id!r}"
                     )
                 else:
-                    _logger.debug(
+                    logger.debug(
                         f"Sweeper skipped session_id={session_id!r} reason={result.reason!r}"
                     )
             except Exception as exc:
                 # Per-session exception isolation: log and continue.
-                _logger.error(
+                logger.error(
                     f"Sweeper error for session_id={session_id!r} "
                     f"project_id={project_id!r}: {type(exc).__name__}: {exc}"
                 )
@@ -600,7 +596,7 @@ class Sweeper:
         for project_id, session_id, _last_event_ts in candidates:
             latest = self._analysis_runs_repo.get_latest_for_session(session_id)
             if latest is not None and latest.stage.value in TERMINAL_STAGES:
-                _logger.debug(
+                logger.debug(
                     f"_find_stale_sessions: session_id={session_id!r} "
                     f"already has terminal run stage={latest.stage.value!r} — skipping"
                 )

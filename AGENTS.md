@@ -8,3 +8,4 @@
    - `terraform validate`
    - `terraform plan --var-file="<var_file>" -out="tfplan.binary"`
    - `terraform apply "tfplan.binary"`
+6. Use `loguru` as the logging framework (`from loguru import logger`). Do NOT introduce stdlib `logging.getLogger(__name__)` in `src/secondsight/`. For pytest `caplog` compatibility, see the bridge fixture in `tests/conftest.py`.

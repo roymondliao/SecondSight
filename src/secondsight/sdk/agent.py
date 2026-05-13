@@ -50,7 +50,7 @@ Assumptions:
 
 from __future__ import annotations
 
-import logging
+from loguru import logger
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -65,8 +65,6 @@ from secondsight.sdk.router import LLMRouter
 
 if TYPE_CHECKING:
     from secondsight.analysis.tools import AnalysisTools
-
-_logger = logging.getLogger(__name__)
 
 # Type alias for a PydanticAI agent factory.
 AgentFactory = Callable[[ModelSpec], Any]
@@ -196,7 +194,7 @@ class PydanticAIAnalysisAgent:
         self._aggregate_router = aggregate_router
         self._summary_router = summary_router
 
-        _logger.debug(
+        logger.debug(
             f"PydanticAIAnalysisAgent constructed. "
             f"segment_tools={[fn.__name__ for fn in self._scoped_tools['segment']]!r} "
             f"aggregate_tools={[fn.__name__ for fn in self._scoped_tools['aggregate']]!r} "
@@ -277,7 +275,7 @@ class PydanticAIAnalysisAgent:
         if override_factory is not None:
             # Test double path: caller provided an explicit factory.
             # Log a warning so it's visible if this path appears in production.
-            _logger.warning(
+            logger.warning(
                 "PydanticAIAnalysisAgent: override agent_factory provided — "
                 "using it for all three method sub-routers. End-to-end tool "
                 "scoping (D4) is NOT enforced via PydanticAI for this path. "
@@ -353,7 +351,7 @@ class PydanticAIAnalysisAgent:
                 )
                 results.append(result)
             except AnalysisAgentError as exc:
-                _logger.warning(f"analyze_segments: batch failed at prompt index {i}: {exc}")
+                logger.warning(f"analyze_segments: batch failed at prompt index {i}: {exc}")
                 # Preserve the original exception type and its __cause__ chain.
                 # add_note() (Python 3.11+) attaches context without wrapping.
                 # This lets callers distinguish RouterChainExhaustedError from

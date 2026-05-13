@@ -44,7 +44,7 @@ In-process path:
 from __future__ import annotations
 
 import asyncio
-import logging
+from loguru import logger
 from pathlib import Path
 from typing import Optional
 
@@ -54,8 +54,6 @@ import httpx
 
 from secondsight.cli._home import secondsight_home as resolve_secondsight_home
 from secondsight.sdk.trigger import DispatchResult, Trigger
-
-_logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     name="analyze",
@@ -159,7 +157,7 @@ def analyze(
             raise typer.Exit(code=0)
         except httpx.ConnectError:
             # Server is not running — in-process fallback is the correct path.
-            _logger.info(
+            logger.info(
                 f"analyze: server at {server_url} not reachable; "
                 f"falling back to in-process dispatch"
             )
@@ -172,7 +170,7 @@ def analyze(
             # Do NOT silently fall back to in-process: the server endpoint exists
             # but is broken. Silent fallback hides real server-side failures from
             # the operator. Log at ERROR and exit with code 1.
-            _logger.error(
+            logger.error(
                 f"analyze: server at {server_url} returned "
                 f"HTTP {exc.response.status_code} for /api/analyze — "
                 f"NOT falling back to in-process (server is up but endpoint failed). "
@@ -199,7 +197,7 @@ def analyze(
             force=force,
         )
     except Exception as exc:
-        _logger.error(
+        logger.error(
             f"analyze: in-process dispatch failed for session_id={session!r}: "
             f"{type(exc).__name__}: {exc}"
         )
@@ -429,7 +427,7 @@ def _run_in_process_dispatch(
                     timeout=300.0,  # 5-minute timeout for in-process analysis
                 )
                 if still_pending:
-                    _logger.warning(
+                    logger.warning(
                         f"analyze: {len(still_pending)} task(s) did not complete "
                         f"within 300s — cancelling and reporting timeout"
                     )
@@ -449,7 +447,7 @@ def _run_in_process_dispatch(
                 failed = [t for t in done if not t.cancelled() and t.exception() is not None]
                 if failed:
                     exc = failed[0].exception()
-                    _logger.error(
+                    logger.error(
                         f"analyze: analysis task completed with exception "
                         f"session_id={session_id!r}: {type(exc).__name__}: {exc}"
                     )
