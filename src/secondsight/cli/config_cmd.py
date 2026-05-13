@@ -566,10 +566,19 @@ def show(
     home = resolve_secondsight_home(secondsight_home_override)
     project_id = project.strip() or None
 
+    if project_id:
+        from secondsight.api._id_safety import is_safe_id
+
+        if not is_safe_id(project_id):
+            raise typer.BadParameter(
+                f"project {project_id!r} contains unsafe path characters.",
+                param_hint="--project",
+            )
+
     try:
         sourced = _collect_sourced_values(home, project_id)
     except SecondSightConfigError as exc:
-        _console.print(f"[red]config error:[/red] {exc}")
+        typer.echo(f"config error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
     # --- Render ---
@@ -678,6 +687,15 @@ def validate(
     """
     home = resolve_secondsight_home(secondsight_home_override)
     project_id = project.strip() or None
+
+    if project_id:
+        from secondsight.api._id_safety import is_safe_id
+
+        if not is_safe_id(project_id):
+            raise typer.BadParameter(
+                f"project {project_id!r} contains unsafe path characters.",
+                param_hint="--project",
+            )
 
     errors: list[str] = []
     warnings: list[str] = []

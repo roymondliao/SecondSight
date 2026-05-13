@@ -628,3 +628,50 @@ class TestUTShowEnvVarInterpolation:
         assert "[env_var_interpolation]" in result.output, (
             f"[env_var_interpolation] label missing:\n{result.output}"
         )
+
+
+# ---------------------------------------------------------------------------
+# DT-sec-1: path traversal rejection for --project in config show + validate
+# ---------------------------------------------------------------------------
+
+
+class TestDTSec1ConfigProjectTraversal:
+    """DT-sec-1: config show and config validate must reject unsafe project IDs.
+
+    sync.py and analyze.py both call is_safe_id() before constructing the
+    project directory path. config_cmd.py must apply the same guard — without
+    it, `--project ../../etc` would read TOML from outside ~/.secondsight/projects/.
+    (Security review finding, 2026-05-13.)
+    """
+
+    @pytest.mark.parametrize(
+        "bad_id",
+        ["../../etc", "../passwd", "foo/bar", "..", "foo\x00inject"],
+        ids=["dotdot-etc", "parent-passwd", "slash", "bare-dotdot", "null-byte"],
+    )
+    def test_show_rejects_unsafe_project_id(self, tmp_path: Path, bad_id: str) -> None:
+        ss_home = tmp_path / ".secondsight"
+        result = runner.invoke(
+            app,
+            ["config", "show", "--secondsight-home", str(ss_home), "--project", bad_id],
+        )
+        assert result.exit_code != 0, (
+            f"config show must reject unsafe project id {bad_id!r}, "
+            f"got exit_code={result.exit_code}; output={result.output!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "bad_id",
+        ["../../etc", "../passwd", "foo/bar", "..", "foo\x00inject"],
+        ids=["dotdot-etc", "parent-passwd", "slash", "bare-dotdot", "null-byte"],
+    )
+    def test_validate_rejects_unsafe_project_id(self, tmp_path: Path, bad_id: str) -> None:
+        ss_home = tmp_path / ".secondsight"
+        result = runner.invoke(
+            app,
+            ["config", "validate", "--secondsight-home", str(ss_home), "--project", bad_id],
+        )
+        assert result.exit_code != 0, (
+            f"config validate must reject unsafe project id {bad_id!r}, "
+            f"got exit_code={result.exit_code}; output={result.output!r}"
+        )
