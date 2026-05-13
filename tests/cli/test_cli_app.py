@@ -640,3 +640,24 @@ def test_sync_accepts_safe_project_id(tmp_path: Path) -> None:
         f"safe project-id 'my-project' must be accepted, "
         f"got exit_code={result.exit_code}, output={result.output}"
     )
+
+
+# ---------------------------------------------------------------------------
+# DT-u1: _build_orchestrator() must not exist in analyze.py after U-1 deletion
+# ---------------------------------------------------------------------------
+
+
+class TestDTU1BuildOrchestratorDeleted:
+    """_build_orchestrator() was dead code — never called from any live path.
+    Deleting it removes a maintenance burden: every build pipeline change
+    (RunConfig, RuntimeAnalyzer) had to be tracked to a function with zero callers.
+    """
+
+    def test_build_orchestrator_not_accessible(self) -> None:
+        import secondsight.cli.analyze as analyze_module
+
+        assert not hasattr(analyze_module, "_build_orchestrator"), (
+            "analyze.py must not define _build_orchestrator() — dead code "
+            "creates maintenance burden on every build pipeline change (U-1 fix). "
+            "If this fails, the function was re-added and must be deleted again."
+        )

@@ -1,0 +1,67 @@
+task_id: iteration-fix-u1
+feature: 2026-05-13_config-unification
+title: "Iteration fix U-1: delete _build_orchestrator() dead code from analyze.py"
+completion_status: done
+
+known_shortcuts: []
+
+silent_failure_conditions:
+  - description: >
+      _build_orchestrator() was deleted. If a caller is ever written that
+      references it by name (e.g., a future CLI subcommand), Python will raise
+      AttributeError at runtime rather than at import time, since there is no
+      type annotation requiring the function to exist.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      _build_orchestrator() had zero callers. Verified by grep — only one match
+      in the entire codebase: the function definition itself. No test, no CLI
+      path, no hook, and no dynamic import referenced the symbol.
+    verified: true
+    note: >
+      Confirmed by: `grep -r '_build_orchestrator' src/ tests/` — single match
+      at analyze.py definition line only. Death test
+      TestDTU1BuildOrchestratorDeleted additionally pins this by asserting
+      `not hasattr(analyze_module, '_build_orchestrator')`.
+
+debt_registered: false
+debt_location: null
+
+narrative: |
+  _build_orchestrator() was an 87-line function in analyze.py that assembled
+  the Orchestrator dependency graph (LLMRouter, PydanticAIAnalysisAgent,
+  all five repositories). It was never called from any live code path.
+
+  The maintenance burden: every structural change to the build pipeline
+  (RunConfig shape, RuntimeAnalyzer constructor, AnalysisTools parameters)
+  created an implicit obligation to keep _build_orchestrator() in sync —
+  even though no caller would ever surface a divergence. The function
+  accumulated several internal comments referencing design decisions from
+  runtime.py that it shadowed.
+
+  The fix: single-pass deletion. Death test first — RED confirms the function
+  existed before. Delete the function body — GREEN confirms it's gone.
+  316 unit tests pass with zero regressions.
+
+resolved_items:
+  - original_section: known_shortcuts
+    original_description: >
+      task-8/shortcut-U1: _build_orchestrator() exists in analyze.py but
+      has no callers. This is dead code that creates a maintenance liability
+      — every future change to RunConfig, RuntimeAnalyzer, or AnalysisTools
+      must be checked against it unnecessarily.
+    resolution: >
+      Deleted _build_orchestrator() entirely from analyze.py. Death test
+      TestDTU1BuildOrchestratorDeleted.test_build_orchestrator_not_accessible
+      was RED before deletion, GREEN after. 316 unit tests pass, 0 regressions.
+
+budget_spent:
+  validation_runs: 2
+  reviewer_retries_consumed: 0
+evidence_gained:
+  - "grep -r '_build_orchestrator' src/ tests/ — single match (definition only) confirmed before deletion"
+  - "TestDTU1BuildOrchestratorDeleted.test_build_orchestrator_not_accessible: RED before deletion, GREEN after"
+  - "316 unit tests passed after deletion (tests/cli, tests/config, tests/api, tests/sdk)"
+residual_risk:
+  - "None — dead code deletion has no runtime effect and the death test permanently pins the symbol's absence"
