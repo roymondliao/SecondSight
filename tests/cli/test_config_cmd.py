@@ -536,6 +536,43 @@ class TestDTDotEnvLoadedBeforeValidate:
         )
 
 
+class TestDTShowBoolTtlWarned:
+    """DT-show-bool-ttl: config show with bool TTL must print WARNING, NOT exit 1.
+
+    Death test for sfc-4-partial (iteration fix U-2):
+    Before fix: config show renders `True` for raw_traces_ttl_days silently.
+    config validate exits 1 for the same input but show has no warning.
+    Silent failure: operator runs show, sees nothing wrong, skips validate,
+    deploys config that crashes at runtime with SecondSightConfigError.
+    """
+
+    def test_bool_ttl_warns_in_show(self, tmp_path: Path) -> None:
+        ss_home = tmp_path / ".secondsight"
+        _write_toml(
+            ss_home / "config.toml",
+            "[retention]\nraw_traces_ttl_days = true\n",
+        )
+
+        result = runner.invoke(
+            app,
+            ["config", "show", "--secondsight-home", str(ss_home)],
+        )
+
+        # show must still exit 0 — type validation is validate's job, not show's
+        assert result.exit_code == 0, (
+            f"config show must exit 0 for bool TTL (informational only), "
+            f"got {result.exit_code}\n{result.output}"
+        )
+        # BUT must print a WARNING so the operator knows something is wrong
+        assert "WARNING" in result.output, (
+            f"config show must print a WARNING for bool TTL (True is not a valid int TTL), "
+            f"got:\n{result.output}"
+        )
+        assert "raw_traces_ttl_days" in result.output.split("WARNING", 1)[-1], (
+            f"WARNING must mention the offending field name:\n{result.output}"
+        )
+
+
 class TestUTShowEnvVarInterpolation:
     """UT-show-interpolation: ${VAR} TOML value that resolves → [env_var_interpolation] label."""
 

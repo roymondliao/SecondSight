@@ -444,6 +444,27 @@ def _collect_sourced_values(
 
 
 # ---------------------------------------------------------------------------
+# TTL field registry — shared between show() and validate()
+# ---------------------------------------------------------------------------
+
+# All config keys that must hold integer values (days). Both show() and validate()
+# reference this constant so adding a new TTL field requires updating only one site.
+_TTL_INT_KEYS: tuple[str, ...] = (
+    "retention.raw_traces_ttl_days",
+    "retention.analysis_ttl_days",
+)
+
+
+def _is_invalid_ttl(sv: SourcedValue) -> bool:
+    """Return True if the SourcedValue holds a non-integer TTL.
+
+    bool is a subclass of int in Python, so isinstance(True, int) is True.
+    The bool pre-check is mandatory to reject TOML `= true` explicitly.
+    """
+    return isinstance(sv.value, bool) or not isinstance(sv.value, int)
+
+
+# ---------------------------------------------------------------------------
 # Model name format validation
 # ---------------------------------------------------------------------------
 
@@ -624,6 +645,18 @@ def show(
             ],
         )
 
+    # Warn about TTL type issues. validate exits 1 for these; show warns only so the
+    # operator knows to run validate — without this, show silently displays `True` with
+    # no indication that the runtime loader would reject the same config.
+    for ttl_key in _TTL_INT_KEYS:
+        sv = sourced.get(ttl_key)
+        if sv is not None and _is_invalid_ttl(sv):
+            typer.echo(
+                f"WARNING: {ttl_key}: expected integer (days), "
+                f"got {type(sv.value).__name__!r} ({sv.value!r}). "
+                f"Run 'secondsight config validate' for details."
+            )
+
     now_iso = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
     typer.echo(f"Config last loaded at: {now_iso}")
 
@@ -703,11 +736,9 @@ def validate(
     # We add a lightweight type check here to catch the most common misconfiguration
     # (string or boolean where int is expected) that would otherwise pass validate silently
     # but fail at runtime.
-    for ttl_key in ("retention.raw_traces_ttl_days", "retention.analysis_ttl_days"):
+    for ttl_key in _TTL_INT_KEYS:
         sv = sourced.get(ttl_key)
-        # isinstance(bool, int) is True in Python — bool must be rejected explicitly
-        # before the int check, otherwise `raw_traces_ttl_days = true` passes silently.
-        if sv is not None and (isinstance(sv.value, bool) or not isinstance(sv.value, int)):
+        if sv is not None and _is_invalid_ttl(sv):
             err_msg = (
                 f"{ttl_key}: expected integer (days), got {type(sv.value).__name__!r} "
                 f"({sv.value!r})"
@@ -741,4 +772,4 @@ def _print_summary(files_checked: int, errors: list[str], warnings: list[str]) -
     typer.echo(", ".join(parts))
 
 
-__all__ = ["app", "SourcedValue"]
+__all__ = ["app", "SourcedValue", "_TTL_INT_KEYS", "_is_invalid_ttl"]

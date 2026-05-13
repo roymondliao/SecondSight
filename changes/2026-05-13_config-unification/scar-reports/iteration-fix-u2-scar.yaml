@@ -1,0 +1,61 @@
+task_id: iteration-fix-u2
+feature: 2026-05-13_config-unification
+title: "Iteration fix U-2: config show TTL type warning (sfc-4-partial resolution)"
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      The TTL type check (`isinstance(sv.value, bool) or not isinstance(sv.value, int)`)
+      is now duplicated between show() and validate(). A shared helper would be cleaner
+      if a third caller ever appears, but for two callers with different output behaviors
+      (warning vs. exit 1), minimal duplication is acceptable.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      show() warning loop iterates the same hardcoded TTL key list as validate(). If a new
+      TTL field is added to _collect_sourced_values() without updating both loops, the new
+      field will be type-checked in validate but silently display invalid values in show.
+      This is the same co-update coupling as the env var co-update contract (env.py → config_cmd.py).
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      show() must exit 0 even when TTL is a bool/non-int. The WARNING output is sufficient
+      to alert the operator without changing the command's informational contract.
+    verified: true
+    note: >
+      Confirmed by death test TestDTShowBoolTtlWarned: exit_code == 0 asserted first,
+      then WARNING presence asserted. Test passes GREEN after fix.
+
+debt_registered: true
+debt_location: "src/secondsight/cli/config_cmd.py:show() — duplicated TTL key list with validate()"
+
+narrative: |
+  The fix adds a post-render WARNING loop to show() that matches the TTL type guard in
+  validate(): `isinstance(sv.value, bool) or not isinstance(sv.value, int)`. The bool
+  pre-check is essential because bool is a subclass of int in Python — without it,
+  `raw_traces_ttl_days = true` silently passes.
+
+  The warning message explicitly redirects the operator to `secondsight config validate`
+  for the definitive check, preserving the contract that show() is informational (exit 0)
+  and validate() is the authority (exit 1 on errors).
+
+resolved_items:
+  - original_section: silent_failure_conditions
+    original_description: >
+      sfc-4-partial from task-5: config show displays invalid TTL types without flagging them.
+      validate was fixed (cr2-fix-2-bool-as-int-ttl) but show remained silent.
+    resolution: >
+      Added WARNING loop after section rendering in show(). Death test TestDTShowBoolTtlWarned
+      was RED before fix, GREEN after. 18 total tests in test_config_cmd.py pass.
+
+budget_spent:
+  validation_runs: 2
+  reviewer_retries_consumed: 0
+evidence_gained:
+  - "Death test TestDTShowBoolTtlWarned was RED (no WARNING in output) before fix"
+  - "Death test GREEN after adding 8-line warning loop to show()"
+  - "Full test_config_cmd.py suite: 18 passed, 0 failed"
+residual_risk:
+  - "TTL key list in show() warning loop is hardcoded and not shared with validate()"
