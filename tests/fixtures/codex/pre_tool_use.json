@@ -14,8 +14,8 @@
   "payload": {
     "session_id": "019e20bb-dd4a-7ad2-b68f-7bb2fa6721a2",
     "turn_id": "019e20bc-07d6-76a2-989b-1a536e6b61b0",
-    "transcript_path": "/Users/yuyu_liao/.codex/sessions/2026/05/13/rollout-2026-05-13T17-47-23-019e20bb-dd4a-7ad2-b68f-7bb2fa6721a2.jsonl",
-    "cwd": "/Users/yuyu_liao/vicone/SecondSight",
+    "transcript_path": "/home/codex/.codex/sessions/2026/05/13/rollout-2026-05-13T17-47-23-019e20bb-dd4a-7ad2-b68f-7bb2fa6721a2.jsonl",
+    "cwd": "/workspace/SecondSight",
     "hook_event_name": "PreToolUse",
     "model": "gpt-5.4",
     "permission_mode": "default",
@@ -31,8 +31,8 @@
     "tool_use_id": "call_wsvNx1yIEZczeuKwEfEe2Tat",
     "action_metadata": {
       "command_length": 27,
-      "cwd": "/Users/yuyu_liao/vicone/SecondSight",
-      "transcript_path": "/Users/yuyu_liao/.codex/sessions/2026/05/13/rollout-2026-05-13T17-47-23-019e20bb-dd4a-7ad2-b68f-7bb2fa6721a2.jsonl"
+      "cwd": "/workspace/SecondSight",
+      "transcript_path": "/home/codex/.codex/sessions/2026/05/13/rollout-2026-05-13T17-47-23-019e20bb-dd4a-7ad2-b68f-7bb2fa6721a2.jsonl"
     }
   },
   "privacy_canary": "PRIVACY_CANARY_DO_NOT_STORE"

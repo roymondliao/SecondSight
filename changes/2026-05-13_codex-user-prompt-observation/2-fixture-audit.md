@@ -27,9 +27,9 @@ Observed local Codex state:
 
 Observed local Superset wrapper:
 
-- `/Users/yuyu_liao/.superset/bin/codex` starts Codex with `--enable codex_hooks -c 'notify=["bash","/Users/yuyu_liao/.superset/hooks/notify.sh"]'`.
+- `~/.superset/bin/codex` starts Codex with `--enable codex_hooks -c 'notify=["bash","~/.superset/hooks/notify.sh"]'`.
 - The wrapper also watches the TUI session log and emits synthetic `Start` / `PermissionRequest` notifications to Superset.
-- `/Users/yuyu_liao/.superset/hooks/notify.sh` treats Codex `type` values like `task_started`, `task_complete`, and approval requests as notification events, not as SecondSight observation payloads.
+- `~/.superset/hooks/notify.sh` treats Codex `type` values like `task_started`, `task_complete`, and approval requests as notification events, not as SecondSight observation payloads.
 
 Observed upstream Codex source state:
 

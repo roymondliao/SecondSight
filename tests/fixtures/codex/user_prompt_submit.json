@@ -14,8 +14,8 @@
   "payload": {
     "session_id": "PRIVACY_CANARY_DO_NOT_STORE",
     "turn_id": "019e20bc-07d6-76a2-989b-1a536e6b61b0",
-    "transcript_path": "/Users/yuyu_liao/.codex/sessions/2026/05/13/rollout-2026-05-13T17-47-23-019e20bb-dd4a-7ad2-b68f-7bb2fa6721a2.jsonl",
-    "cwd": "/Users/yuyu_liao/vicone/SecondSight",
+    "transcript_path": "/home/codex/.codex/sessions/2026/05/13/rollout-2026-05-13T17-47-23-019e20bb-dd4a-7ad2-b68f-7bb2fa6721a2.jsonl",
+    "cwd": "/workspace/SecondSight",
     "hook_event_name": "UserPromptSubmit",
     "model": "gpt-5.4",
     "permission_mode": "default",
@@ -23,8 +23,8 @@
   },
   "expected_partial_event_data": {
     "action_metadata": {
-      "cwd": "/Users/yuyu_liao/vicone/SecondSight",
-      "transcript_path": "/Users/yuyu_liao/.codex/sessions/2026/05/13/rollout-2026-05-13T17-47-23-019e20bb-dd4a-7ad2-b68f-7bb2fa6721a2.jsonl",
+      "cwd": "/workspace/SecondSight",
+      "transcript_path": "/home/codex/.codex/sessions/2026/05/13/rollout-2026-05-13T17-47-23-019e20bb-dd4a-7ad2-b68f-7bb2fa6721a2.jsonl",
       "prompt_text": "SECOND_SIGHT_CANARY_20260513 請先執行 pwd，再只回覆 OK"
     }
   },

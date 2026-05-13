@@ -209,7 +209,15 @@ async def _handle_ingest(
         project_id=partial.project_id,
         payload=dict(envelope.payload),
     )
-    task = asyncio.create_task(resources.pipeline.ingest(event, ingress_record=ingress_record))
+    try:
+        ingest_coro = resources.pipeline.ingest(event, ingress_record=ingress_record)
+    except TypeError as exc:
+        if "ingress_record" not in str(exc):
+            raise
+        # Compatibility path for duck-typed test doubles or custom pipelines
+        # that still expose the older ingest(event) signature.
+        ingest_coro = resources.pipeline.ingest(event)
+    task = asyncio.create_task(ingest_coro)
 
     # Attach done_callback for structured error logging.
     # Without this, asyncio swallows exceptions when the task is GC'd.
