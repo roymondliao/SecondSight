@@ -380,18 +380,29 @@ def _collect_sourced_values(
     else:
         fallback_val = list(BUILTIN_FALLBACK_MODELS)
 
-    fallback_source: ConfigSourceLabel
-    if isinstance(raw_global_fallback, dict) and isinstance(
-        raw_global_fallback.get("fallback_models"), list
+    # Route source detection through _determine_source() — same as every other field —
+    # so any future env var added for fallback_models will be attributed correctly.
+    # Sanitize first: _determine_source() treats any non-None/non-empty value as
+    # configured, but we need to honour the list-type contract (anything not a list
+    # falls through to builtin_default). The sanitized raw_global below presents the
+    # field as "absent" when it has the wrong type, so the source cascades cleanly.
+    raw_global_for_fallback: dict[str, Any] | None = None
+    if (
+        isinstance(raw_global_models, dict)
+        and isinstance(raw_global_fallback, dict)
+        and isinstance(raw_global_fallback.get("fallback_models"), list)
     ):
-        # Check for interpolation in any list element
-        raw_fallback_list = raw_global_fallback.get("fallback_models", [])
-        if _has_var_interpolation(raw_fallback_list):
-            fallback_source = "env_var_interpolation"
-        else:
-            fallback_source = "global_config"
-    else:
-        fallback_source = "builtin_default"
+        raw_global_for_fallback = {
+            "fallback": {"fallback_models": raw_global_fallback.get("fallback_models")}
+        }
+
+    fallback_source = _determine_source(
+        raw_global=raw_global_for_fallback,
+        raw_project=None,  # no per-project layer for fallback_models
+        global_keys=("fallback", "fallback_models"),
+        project_keys=None,
+        env_var_name=None,  # no env var override for fallback_models today
+    )
     result["analysis.models.fallback.fallback_models"] = SourcedValue(
         value=fallback_val, source=fallback_source
     )

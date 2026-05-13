@@ -35,7 +35,6 @@ config-unification note (task-1):
 
 from __future__ import annotations
 
-import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -99,19 +98,38 @@ class AnalysisConfig:
 
         Raises:
             AnalysisConfigError: File IS present but cannot be parsed,
-                or contains values of the wrong type or invalid range.
+                or contains values of the wrong type or invalid range,
+                or a ``${VAR}`` reference in the file is unresolvable.
+
+        Note:
+            ``${VAR}`` interpolation is applied to all string leaves before
+            type checks. Without this, ``[analysis.read_project_file].denylist``
+            entries containing ``${HOME}`` would silently pass through as
+            literal strings — diverging from the rest of the unified config
+            which interpolates uniformly. Routes through the unified loader's
+            ``_parse_toml()`` to keep one single parse-and-interpolate path.
         """
+        # Defer import to break a potential circular dependency:
+        # loader.py imports from analysis/config.py at module level for re-exports,
+        # so importing _parse_toml at module level here would create a cycle.
+        from secondsight.config.loader import _parse_toml
+        from secondsight.config.schema import SecondSightConfigError
+
         config_path = Path(config_path)
         if not config_path.is_file():
             return cls()
 
         try:
-            with config_path.open("rb") as fh:
-                doc = tomllib.load(fh)
-        except tomllib.TOMLDecodeError as exc:
-            raise AnalysisConfigError(
-                f"malformed TOML in analysis config ({config_path}): {exc}"
-            ) from exc
+            doc = _parse_toml(config_path)
+        except SecondSightConfigError as exc:
+            # Translate the unified loader's error into AnalysisConfig's contract.
+            # The contract (AnalysisConfigError on any parse failure) is preserved;
+            # only the underlying mechanism changed. Callers that already catch
+            # AnalysisConfigError continue to work without modification.
+            raise AnalysisConfigError(str(exc)) from exc
+
+        if doc is None:
+            return cls()
 
         section = _get_read_project_file_section(doc)
         if section is None:

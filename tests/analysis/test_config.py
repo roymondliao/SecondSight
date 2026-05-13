@@ -137,3 +137,57 @@ class TestHPSizeCapOverride:
         config = AnalysisConfig.load(config_path=config_file)
 
         assert config.size_cap_kb == 1
+
+
+# ---------------------------------------------------------------------------
+# DT-c1 (code review C-1): AnalysisConfig.load() must apply ${VAR} interpolation
+# to [analysis.read_project_file] string values. Without this, the per-project
+# config.toml is parsed by TWO independent paths (AnalysisConfig.load() and
+# load_project_config()) — one interpolates ${VAR}, the other does not — and
+# silently diverges on every ${VAR} reference in the read_project_file section.
+# ---------------------------------------------------------------------------
+
+
+class TestDTC1AnalysisConfigInterpolation:
+    """DT-c1: ${VAR} in [analysis.read_project_file] must expand consistently
+    with the unified loader. Before the fix, AnalysisConfig.load() used
+    tomllib.load() directly and skipped interpolation, so a denylist entry
+    like "${SECRETS_DIR}/keys.txt" arrived at AnalysisTools as a literal
+    string — the deny intent silently failed.
+    """
+
+    def test_denylist_var_interpolated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SECRETS_DIR", "/var/lib/secrets")
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            "[analysis.read_project_file]\n"
+            'denylist = ["${SECRETS_DIR}/keys.txt", "/etc/passwd"]\n',
+            encoding="utf-8",
+        )
+
+        config = AnalysisConfig.load(config_path=config_file)
+
+        assert config.extra_denylist == [
+            "/var/lib/secrets/keys.txt",
+            "/etc/passwd",
+        ], (
+            f"denylist entry containing ${{SECRETS_DIR}} MUST be expanded — "
+            f"the unified loader interpolates the same file, so this path "
+            f"must match. Got: {config.extra_denylist!r}"
+        )
+
+    def test_missing_var_raises_analysis_config_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("DEFINITELY_NOT_SET_VAR", raising=False)
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            "[analysis.read_project_file]\n"
+            'denylist = ["${DEFINITELY_NOT_SET_VAR}/keys.txt"]\n',
+            encoding="utf-8",
+        )
+
+        with pytest.raises(AnalysisConfigError, match="DEFINITELY_NOT_SET_VAR"):
+            AnalysisConfig.load(config_path=config_file)

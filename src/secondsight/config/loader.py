@@ -547,8 +547,21 @@ def load_project_config(home: Path, project_id: str) -> SecondSightConfig:
 
     Raises:
         SecondSightConfigError: A TOML file is present but malformed, or a ${VAR}
-            reference cannot be resolved, or a retention field has an invalid value.
+            reference cannot be resolved, or a retention field has an invalid value,
+            or ``project_id`` contains unsafe path characters.
     """
+    # API-boundary path-traversal guard. CLI entry points (config show, config validate,
+    # analyze, sync) all validate project_id before reaching here, but this function is
+    # also a promoted public API (`from secondsight.config import load_project_config`).
+    # Programmatic callers must not be able to escape the projects/ directory by passing
+    # `../../etc` or similar.
+    from secondsight.api._id_safety import is_safe_id
+
+    if not is_safe_id(project_id):
+        raise SecondSightConfigError(
+            f"project_id {project_id!r} contains unsafe path characters"
+        )
+
     home = Path(home)
 
     # Load .env first (side effect on os.environ, override=False)

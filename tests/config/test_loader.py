@@ -721,3 +721,34 @@ class TestUTBuildConfigFromDocsInAll:
 
         # If it can be imported, it's accessible for testing regardless of __all__
         assert callable(_build_config_from_docs)
+
+
+# ---------------------------------------------------------------------------
+# DT-sec-2 (I-1): load_project_config() rejects unsafe project_id at API boundary
+# ---------------------------------------------------------------------------
+
+
+class TestDTSec2LoaderTraversal:
+    """DT-sec-2: load_project_config() is a promoted public API. Programmatic
+    callers (not just CLI entry points) must be unable to escape the projects/
+    directory by passing path-traversal characters in project_id.
+    (Code review finding I-1, 2026-05-13.)
+    """
+
+    @pytest.mark.parametrize(
+        "bad_id",
+        ["../../etc", "../passwd", "foo/bar", "..", "foo\x00inject", ""],
+        ids=["dotdot-etc", "parent-passwd", "slash", "bare-dotdot", "null-byte", "empty"],
+    )
+    def test_rejects_unsafe_project_id(self, tmp_path: Path, bad_id: str) -> None:
+        from secondsight.config.loader import load_project_config
+        from secondsight.config.schema import SecondSightConfigError
+
+        with pytest.raises(SecondSightConfigError, match="unsafe path characters"):
+            load_project_config(home=tmp_path, project_id=bad_id)
+
+    def test_accepts_safe_project_id(self, tmp_path: Path) -> None:
+        from secondsight.config.loader import load_project_config
+
+        cfg = load_project_config(home=tmp_path, project_id="my-project")
+        assert cfg is not None
