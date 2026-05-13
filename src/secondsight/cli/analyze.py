@@ -160,8 +160,8 @@ def analyze(
         except httpx.ConnectError:
             # Server is not running — in-process fallback is the correct path.
             _logger.info(
-                "analyze: server at %s not reachable; falling back to in-process dispatch",
-                server_url,
+                f"analyze: server at {server_url} not reachable; "
+                f"falling back to in-process dispatch"
             )
             typer.echo(
                 f"Server at {server_url} not reachable — running in-process.",
@@ -173,12 +173,10 @@ def analyze(
             # but is broken. Silent fallback hides real server-side failures from
             # the operator. Log at ERROR and exit with code 1.
             _logger.error(
-                "analyze: server at %s returned HTTP %d for /api/analyze — "
-                "NOT falling back to in-process (server is up but endpoint failed). "
-                "Error: %s",
-                server_url,
-                exc.response.status_code,
-                exc,
+                f"analyze: server at {server_url} returned "
+                f"HTTP {exc.response.status_code} for /api/analyze — "
+                f"NOT falling back to in-process (server is up but endpoint failed). "
+                f"Error: {exc}"
             )
             typer.echo(
                 f"Server at {server_url} returned HTTP {exc.response.status_code} "
@@ -202,10 +200,8 @@ def analyze(
         )
     except Exception as exc:
         _logger.error(
-            "analyze: in-process dispatch failed for session_id=%r: %s: %s",
-            session,
-            type(exc).__name__,
-            exc,
+            f"analyze: in-process dispatch failed for session_id={session!r}: "
+            f"{type(exc).__name__}: {exc}"
         )
         typer.echo(
             f"Analysis failed: {type(exc).__name__}: {exc}",
@@ -434,9 +430,8 @@ def _run_in_process_dispatch(
                 )
                 if still_pending:
                     _logger.warning(
-                        "analyze: %d task(s) did not complete within 300s — "
-                        "cancelling and reporting timeout",
-                        len(still_pending),
+                        f"analyze: {len(still_pending)} task(s) did not complete "
+                        f"within 300s — cancelling and reporting timeout"
                     )
                     for t in still_pending:
                         t.cancel()
@@ -455,10 +450,8 @@ def _run_in_process_dispatch(
                 if failed:
                     exc = failed[0].exception()
                     _logger.error(
-                        "analyze: analysis task completed with exception session_id=%r: %s: %s",
-                        session_id,
-                        type(exc).__name__,
-                        exc,
+                        f"analyze: analysis task completed with exception "
+                        f"session_id={session_id!r}: {type(exc).__name__}: {exc}"
                     )
                     return DispatchResult(
                         dispatched=True,

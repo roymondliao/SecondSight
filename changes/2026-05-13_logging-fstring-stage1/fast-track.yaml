@@ -1,0 +1,104 @@
+type: fast_track
+description: >
+  Stage 1 of two-stage logging migration: convert all stdlib `_logger.X("msg %s",
+  arg)` call sites in src/secondsight/{sdk,cli} to Python f-strings. `import
+  logging` + `_logger = logging.getLogger(__name__)` stay untouched. Stage 2
+  (import swap to loguru + conftest PropagateHandler + AGENTS.md convention)
+  is a separate, future task.
+
+gate_override:
+  standard_gate: "< 100 lines + no consumers depend on removed behavior"
+  why_failed: |
+    - ~48 format-string call sites across 6 files. Total diff expected to land
+      in 80-120 LOC range — at or over the 100-line bar.
+    - Test suite IS a consumer of stdlib log behavior: tests/sdk/test_router.py
+      has 9 caplog.at_level + r.message assertions that depend on the EXACT
+      text emitted by _logger.X(). Same in tests/cli/test_analyze.py and
+      tests/cli/test_cleanup.py.
+  why_proceeding_anyway: |
+    Ran full samsara:research interrogation (Phase 0 Q1-Q4) with the user.
+    All 6 candidate kill conditions (K1 sdk/ spin-out, K2 loguru replacement,
+    K3 single-person team, K4 router.py rewrite, K5 test-cost explosion, K6
+    loguru runtime issue) were evaluated. Result: K6 conditionally accepted
+    ("loguru self-issue possible but not large"); other 5 rejected. The user
+    explicitly signed off on exceeding fast-track boundary after seeing real
+    scope (caplog handling + format-string syntax). This is a research-
+    confirmed fast-track, not a default opt-in.
+
+  staged_migration_finding: |
+    User proposed f-string conversion as an alternative to direct {}-style.
+    Verified: this decouples format-string change from import swap, enabling
+    Stage 1 to ship independently (still stdlib logging, caplog intact) and
+    Stage 2 to ship later (import swap + bridge). This is genuinely safer
+    than the original single-shot plan — Stage 1 cannot break tests because
+    the logging framework is unchanged.
+
+death_clause: |
+  If ANY existing caplog assertion that matches on r.message text (e.g.,
+  `"outcome=success" in r.message`, `"fallback" in caplog.text.lower()`)
+  FAILS after format-string conversion, Stage 1 has failed. This is the
+  signal that the f-string conversion silently changed message content
+  (most likely cause: %r → {!r} mismatch on a value whose repr() output
+  differs subtly, or stringification of None / dataclass / Enum types).
+
+  Stage 1's correctness claim is exactly "test suite text expectations
+  unchanged". Any caplog regression invalidates that claim and forces
+  per-site review.
+
+acceptance:
+  - "All 48 _logger.X(\"... %s/%r/%d/...\", args) call sites in 6 files converted to f-string"
+  - "Format specifier mapping: %r→{!r}, %s→{!s} or {}, %d→{} or {:d}, %.1f→{:.1f}, %.3f→{:.3f}"
+  - "`import logging` and `_logger = logging.getLogger(__name__)` lines unchanged"
+  - "All existing caplog-based assertions pass without test edits"
+  - "ruff-check + ruff-format + mypy clean"
+  - "pytest -q full suite green (no skips added, no xfails introduced)"
+  - "Stage 2 NOT in scope — no new dependencies, no conftest changes, no AGENTS.md edit"
+
+scar_tag: 0
+scar_items: []
+
+verification_results:
+  conversion_count:
+    grepped_call_sites: 48
+    converted_to_fstring: 45
+    left_as_is_plain_text: 3
+    plain_text_sites:
+      - "sdk/agent.py L283-288: override agent_factory warning (no format args)"
+      - "sdk/trigger.py L550: 'Sweeper cancelled during sweep.' (no format args)"
+      - "sdk/trigger.py L562: 'Sweeper cancelled during sleep.' (no format args)"
+  per_file_test_pass:
+    tests/sdk/test_router.py: "14 passed (incl. 9 caplog.message assertions)"
+    tests/sdk/test_trigger.py + tests/sdk/test_agent.py + tests/cli/test_cleanup.py: "59 passed"
+    "+ tests/cli/test_analyze.py + tests/cli/test_directive.py": "90 passed total"
+  full_suite:
+    passed: 1456
+    failed: 5
+    skipped: 3
+    note: "All 5 failures in tests/integration/test_phase1_e2e.py confirmed pre-existing via git-stash baseline comparison. Zero regressions introduced by Stage 1."
+  static_checks:
+    ruff-check: "Passed"
+    ruff-format: "Passed (auto-formatted some files — whitespace only, no semantic change)"
+    ty-check: "220 diagnostics — IDENTICAL to pre-Stage1 baseline. Zero new diagnostics introduced. All errors relate to LLMRouter(**common, agent_factory=...) typing, unrelated to logging."
+  death_clause_status: "PASSED — no caplog assertion regressed after conversion. f-string output is byte-identical to %-style for the value types used here (str repr, int decimal, float .Nf, type(__name__))."
+
+files_changed:
+  - src/secondsight/sdk/router.py
+  - src/secondsight/sdk/agent.py
+  - src/secondsight/sdk/trigger.py
+  - src/secondsight/cli/cleanup.py
+  - src/secondsight/cli/directive.py
+  - src/secondsight/cli/analyze.py
+
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: "No callsite hoisted args to a local var. Reviewed each of the 45 conversions: argument expressions are inlined directly into f-string slots (e.g., {spec.provider!r}, {type(exc).__name__!r}). No arg appears multiple times within a single f-string, so no reuse pressure was created. Zero new helpers introduced."
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: "Diff is purely per-line rewrite, file-internal. No new functions, no extracted constants, no symbol moves across modules. The 6 module boundaries are unchanged."
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: "No new variables or wrappers introduced. The f-string slot ({x!r}, {x:.1f}) is the same expression locus as the original positional arg, just inlined. Resisted the temptation to extract a 'log_attempt(provider, model, ...)' helper for the 6 sibling lines in router.py — preserving raw line topology lets reviewers diff old↔new in-place, which is the higher-priority property for this stage."
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: "Six 'llm_attempt provider=... model=...' prefix sites in router.py share the same literal prefix. INTENTIONALLY preserved as 6 separate f-string literals rather than DRY'd into a constant. Reason: this redundancy IS the test contract — each caplog assertion (`'outcome=success' in r.message`) relies on the literal string appearing in the emitted message. A shared prefix constant would couple all 6 sites and make accidental format drift silent. Stage 2 (loguru migration) is a better place to consider structured emission if needed."

@@ -209,12 +209,11 @@ class LLMRouter:
 
         if len(fallbacks) == 0:
             _logger.warning(
-                "LLMRouter constructed with empty fallback chain "
-                "(fallback_models is empty). "
-                "A transport error on the primary will raise immediately "
-                "with no retry. "
-                "primary=%r",
-                primary.name,
+                f"LLMRouter constructed with empty fallback chain "
+                f"(fallback_models is empty). "
+                f"A transport error on the primary will raise immediately "
+                f"with no retry. "
+                f"primary={primary.name!r}"
             )
 
     @property
@@ -270,14 +269,9 @@ class LLMRouter:
                 # Budget exhausted before this attempt (not on first attempt
                 # — if budget is already 0 at start, try at least the primary).
                 _logger.warning(
-                    "chain_total_timeout_exceeded before attempt %d/%d "
-                    "provider=%r model=%r elapsed_s=%.3f budget_s=%.3f",
-                    attempt_idx + 1,
-                    total_models,
-                    spec.provider,
-                    spec.name,
-                    elapsed,
-                    self._chain_total_timeout_s,
+                    f"chain_total_timeout_exceeded before attempt {attempt_idx + 1}/{total_models} "
+                    f"provider={spec.provider!r} model={spec.name!r} "
+                    f"elapsed_s={elapsed:.3f} budget_s={self._chain_total_timeout_s:.3f}"
                 )
                 raise RouterChainTimeoutError(
                     f"chain_total_timeout_exceeded: {elapsed:.3f}s elapsed, "
@@ -291,13 +285,9 @@ class LLMRouter:
                 # agent_factory itself raised (e.g., unknown provider name).
                 # This is a configuration error — terminal, not transient.
                 _logger.error(
-                    "agent_factory raised during construction "
-                    "provider=%r model=%r attempt=%d exc_type=%r exc=%s",
-                    spec.provider,
-                    spec.name,
-                    attempt_idx + 1,
-                    type(factory_exc).__name__,
-                    factory_exc,
+                    f"agent_factory raised during construction "
+                    f"provider={spec.provider!r} model={spec.name!r} attempt={attempt_idx + 1} "
+                    f"exc_type={type(factory_exc).__name__!r} exc={factory_exc}"
                 )
                 raise RouterTerminalError(
                     f"terminal_error: agent_factory raised for model={spec.name!r} "
@@ -324,15 +314,10 @@ class LLMRouter:
                 tokens_out = usage.response_tokens if usage is not None else None
 
                 _logger.info(
-                    "llm_attempt provider=%r model=%r tokens_in=%s tokens_out=%s "
-                    "duration_ms=%.1f attempt=%d total_attempts=%d outcome=success",
-                    spec.provider,
-                    spec.name,
-                    tokens_in,
-                    tokens_out,
-                    duration_ms,
-                    attempt_idx + 1,
-                    total_models,
+                    f"llm_attempt provider={spec.provider!r} model={spec.name!r} "
+                    f"tokens_in={tokens_in} tokens_out={tokens_out} "
+                    f"duration_ms={duration_ms:.1f} attempt={attempt_idx + 1} "
+                    f"total_attempts={total_models} outcome=success"
                 )
                 return result.output
 
@@ -346,16 +331,11 @@ class LLMRouter:
                     )
                 )
                 _logger.info(
-                    "llm_attempt provider=%r model=%r tokens_in=%s tokens_out=%s "
-                    "duration_ms=%.1f attempt=%d total_attempts=%d outcome=fallback_triggered "
-                    "reason=per_call_timeout",
-                    spec.provider,
-                    spec.name,
-                    None,
-                    None,
-                    duration_ms,
-                    attempt_idx + 1,
-                    total_models,
+                    f"llm_attempt provider={spec.provider!r} model={spec.name!r} "
+                    f"tokens_in={None} tokens_out={None} "
+                    f"duration_ms={duration_ms:.1f} attempt={attempt_idx + 1} "
+                    f"total_attempts={total_models} outcome=fallback_triggered "
+                    f"reason=per_call_timeout"
                 )
                 # asyncio.TimeoutError is a transport error — continue fallback.
 
@@ -368,17 +348,11 @@ class LLMRouter:
                     root_validation = _find_validation_error(exc)
                     if root_validation is not None:
                         _logger.warning(
-                            "llm_attempt provider=%r model=%r duration_ms=%.1f "
-                            "attempt=%d total_attempts=%d outcome=terminal_error "
-                            "exc_type=%r reason=ValidationError_in_chain "
-                            "validation_error=%s",
-                            spec.provider,
-                            spec.name,
-                            duration_ms,
-                            attempt_idx + 1,
-                            total_models,
-                            type(exc).__name__,
-                            root_validation,
+                            f"llm_attempt provider={spec.provider!r} model={spec.name!r} "
+                            f"duration_ms={duration_ms:.1f} attempt={attempt_idx + 1} "
+                            f"total_attempts={total_models} outcome=terminal_error "
+                            f"exc_type={type(exc).__name__!r} reason=ValidationError_in_chain "
+                            f"validation_error={root_validation}"
                         )
                         raise RouterTerminalError(
                             f"terminal_error: ValidationError found in exception chain "
@@ -389,16 +363,10 @@ class LLMRouter:
                         ) from exc
                     else:
                         _logger.warning(
-                            "llm_attempt provider=%r model=%r duration_ms=%.1f "
-                            "attempt=%d total_attempts=%d outcome=terminal_error "
-                            "exc_type=%r exc=%s",
-                            spec.provider,
-                            spec.name,
-                            duration_ms,
-                            attempt_idx + 1,
-                            total_models,
-                            type(exc).__name__,
-                            exc,
+                            f"llm_attempt provider={spec.provider!r} model={spec.name!r} "
+                            f"duration_ms={duration_ms:.1f} attempt={attempt_idx + 1} "
+                            f"total_attempts={total_models} outcome=terminal_error "
+                            f"exc_type={type(exc).__name__!r} exc={exc}"
                         )
                         raise RouterTerminalError(
                             f"terminal_error: {type(exc).__name__}: {exc}. "
@@ -410,15 +378,10 @@ class LLMRouter:
                     if auth_key in _seen_auth_errors:
                         # Second auth error in this chain → terminal.
                         _logger.warning(
-                            "llm_attempt provider=%r model=%r duration_ms=%.1f "
-                            "attempt=%d total_attempts=%d outcome=terminal_error "
-                            "reason=repeated_auth_error exc_type=%r",
-                            spec.provider,
-                            spec.name,
-                            duration_ms,
-                            attempt_idx + 1,
-                            total_models,
-                            type(exc).__name__,
+                            f"llm_attempt provider={spec.provider!r} model={spec.name!r} "
+                            f"duration_ms={duration_ms:.1f} attempt={attempt_idx + 1} "
+                            f"total_attempts={total_models} outcome=terminal_error "
+                            f"reason=repeated_auth_error exc_type={type(exc).__name__!r}"
                         )
                         attempts.append(
                             AttemptRecord(
@@ -445,16 +408,11 @@ class LLMRouter:
                             )
                         )
                         _logger.info(
-                            "llm_attempt provider=%r model=%r tokens_in=%s tokens_out=%s "
-                            "duration_ms=%.1f attempt=%d total_attempts=%d outcome=fallback_triggered "
-                            "reason=auth_error_once",
-                            spec.provider,
-                            spec.name,
-                            None,
-                            None,
-                            duration_ms,
-                            attempt_idx + 1,
-                            total_models,
+                            f"llm_attempt provider={spec.provider!r} model={spec.name!r} "
+                            f"tokens_in={None} tokens_out={None} "
+                            f"duration_ms={duration_ms:.1f} attempt={attempt_idx + 1} "
+                            f"total_attempts={total_models} outcome=fallback_triggered "
+                            f"reason=auth_error_once"
                         )
 
                 else:
@@ -467,31 +425,20 @@ class LLMRouter:
                         )
                     )
                     _logger.info(
-                        "llm_attempt provider=%r model=%r tokens_in=%s tokens_out=%s "
-                        "duration_ms=%.1f attempt=%d total_attempts=%d outcome=fallback_triggered "
-                        "reason=%r",
-                        spec.provider,
-                        spec.name,
-                        None,
-                        None,
-                        duration_ms,
-                        attempt_idx + 1,
-                        total_models,
-                        type(exc).__name__,
+                        f"llm_attempt provider={spec.provider!r} model={spec.name!r} "
+                        f"tokens_in={None} tokens_out={None} "
+                        f"duration_ms={duration_ms:.1f} attempt={attempt_idx + 1} "
+                        f"total_attempts={total_models} outcome=fallback_triggered "
+                        f"reason={type(exc).__name__!r}"
                     )
 
             # Check chain total budget AFTER this attempt.
             elapsed_after = time.monotonic() - chain_start
             if elapsed_after >= self._chain_total_timeout_s and attempt_idx < len(chain) - 1:
                 _logger.warning(
-                    "chain_total_timeout_exceeded after attempt %d/%d "
-                    "provider=%r model=%r elapsed_s=%.3f budget_s=%.3f",
-                    attempt_idx + 1,
-                    total_models,
-                    spec.provider,
-                    spec.name,
-                    elapsed_after,
-                    self._chain_total_timeout_s,
+                    f"chain_total_timeout_exceeded after attempt {attempt_idx + 1}/{total_models} "
+                    f"provider={spec.provider!r} model={spec.name!r} "
+                    f"elapsed_s={elapsed_after:.3f} budget_s={self._chain_total_timeout_s:.3f}"
                 )
                 raise RouterChainTimeoutError(
                     f"chain_total_timeout_exceeded: {elapsed_after:.3f}s elapsed after "

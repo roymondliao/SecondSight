@@ -333,14 +333,11 @@ def cleanup(
         if outcome.config is not None:
             cfg = outcome.config
             _logger.info(
-                "retention resolved: project_id=%s "
-                "raw_traces_ttl_days=%d raw_traces_source=%s "
-                "analysis_ttl_days=%d analysis_ttl_source=%s",
-                pid,
-                cfg.raw_traces_ttl_days,
-                cfg.raw_traces_source,
-                cfg.analysis_ttl_days,
-                cfg.analysis_ttl_source,
+                f"retention resolved: project_id={pid} "
+                f"raw_traces_ttl_days={cfg.raw_traces_ttl_days} "
+                f"raw_traces_source={cfg.raw_traces_source} "
+                f"analysis_ttl_days={cfg.analysis_ttl_days} "
+                f"analysis_ttl_source={cfg.analysis_ttl_source}"
             )
 
         # Yin review B5 Quality D fix: if outcome.error is set, the

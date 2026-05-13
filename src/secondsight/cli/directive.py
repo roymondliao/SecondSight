@@ -269,8 +269,7 @@ def _handle_list_active(
             raise typer.Exit(code=0)
         except httpx.ConnectError:
             _logger.info(
-                "directive: server at %s not reachable; falling back to in-process",
-                server_url,
+                f"directive: server at {server_url} not reachable; falling back to in-process"
             )
             typer.echo(
                 f"Server at {server_url} not reachable — running in-process.",
@@ -278,12 +277,10 @@ def _handle_list_active(
             )
         except httpx.HTTPStatusError as exc:
             _logger.error(
-                "directive: server at %s returned HTTP %d for GET /api/directives — "
-                "NOT falling back to in-process (server is up but endpoint failed). "
-                "Error: %s",
-                server_url,
-                exc.response.status_code,
-                exc,
+                f"directive: server at {server_url} returned "
+                f"HTTP {exc.response.status_code} for GET /api/directives — "
+                f"NOT falling back to in-process (server is up but endpoint failed). "
+                f"Error: {exc}"
             )
             typer.echo(
                 f"Server at {server_url} returned HTTP {exc.response.status_code} "
@@ -382,9 +379,8 @@ def _render_directives(
 
     if output_format != "table":
         _logger.warning(
-            "directive: unknown --format %r; falling back to 'table'. "
-            "Supported formats: json, table.",
-            output_format,
+            f"directive: unknown --format {output_format!r}; "
+            f"falling back to 'table'. Supported formats: json, table."
         )
         typer.echo(
             f"Warning: unknown --format {output_format!r}; using 'table'. Supported: json, table.",
@@ -446,8 +442,8 @@ def _handle_disable(
             raise typer.Exit(code=0)
         except httpx.ConnectError:
             _logger.info(
-                "directive: server at %s not reachable; falling back to in-process for --disable",
-                server_url,
+                f"directive: server at {server_url} not reachable; "
+                f"falling back to in-process for --disable"
             )
             typer.echo(
                 f"Server at {server_url} not reachable — running in-process.",
@@ -455,10 +451,9 @@ def _handle_disable(
             )
         except httpx.HTTPStatusError as exc:
             _logger.error(
-                "directive: server at %s returned HTTP %d for PATCH /api/directives/%s",
-                server_url,
-                exc.response.status_code,
-                directive_id,
+                f"directive: server at {server_url} returned "
+                f"HTTP {exc.response.status_code} for "
+                f"PATCH /api/directives/{directive_id}"
             )
             typer.echo(
                 f"Server at {server_url} returned HTTP {exc.response.status_code} "
@@ -516,8 +511,8 @@ def _handle_enable(
             raise typer.Exit(code=0)
         except httpx.ConnectError:
             _logger.info(
-                "directive: server at %s not reachable; falling back to in-process for --enable",
-                server_url,
+                f"directive: server at {server_url} not reachable; "
+                f"falling back to in-process for --enable"
             )
             typer.echo(
                 f"Server at {server_url} not reachable — running in-process.",
@@ -525,10 +520,9 @@ def _handle_enable(
             )
         except httpx.HTTPStatusError as exc:
             _logger.error(
-                "directive: server at %s returned HTTP %d for PATCH /api/directives/%s",
-                server_url,
-                exc.response.status_code,
-                directive_id,
+                f"directive: server at {server_url} returned "
+                f"HTTP {exc.response.status_code} for "
+                f"PATCH /api/directives/{directive_id}"
             )
             typer.echo(
                 f"Server at {server_url} returned HTTP {exc.response.status_code} "

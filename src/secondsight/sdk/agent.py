@@ -197,15 +197,12 @@ class PydanticAIAnalysisAgent:
         self._summary_router = summary_router
 
         _logger.debug(
-            "PydanticAIAnalysisAgent constructed. "
-            "segment_tools=%r aggregate_tools=%r summary_tools=%r "
-            "primary=%r fallback_count=%d override_factory=%s",
-            [fn.__name__ for fn in self._scoped_tools["segment"]],
-            [fn.__name__ for fn in self._scoped_tools["aggregate"]],
-            [fn.__name__ for fn in self._scoped_tools["summary"]],
-            cfg.primary.name,
-            len(cfg.fallbacks),
-            "yes" if agent_factory is not None else "no",
+            f"PydanticAIAnalysisAgent constructed. "
+            f"segment_tools={[fn.__name__ for fn in self._scoped_tools['segment']]!r} "
+            f"aggregate_tools={[fn.__name__ for fn in self._scoped_tools['aggregate']]!r} "
+            f"summary_tools={[fn.__name__ for fn in self._scoped_tools['summary']]!r} "
+            f"primary={cfg.primary.name!r} fallback_count={len(cfg.fallbacks)} "
+            f"override_factory={'yes' if agent_factory is not None else 'no'}"
         )
 
     # ------------------------------------------------------------------
@@ -356,11 +353,7 @@ class PydanticAIAnalysisAgent:
                 )
                 results.append(result)
             except AnalysisAgentError as exc:
-                _logger.warning(
-                    "analyze_segments: batch failed at prompt index %d: %s",
-                    i,
-                    exc,
-                )
+                _logger.warning(f"analyze_segments: batch failed at prompt index {i}: {exc}")
                 # Preserve the original exception type and its __cause__ chain.
                 # add_note() (Python 3.11+) attaches context without wrapping.
                 # This lets callers distinguish RouterChainExhaustedError from

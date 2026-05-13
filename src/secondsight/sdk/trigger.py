@@ -271,9 +271,7 @@ class Trigger:
         async with self._lock_registry.acquire(session_id) as acquired:
             if not acquired:
                 _logger.debug(
-                    "dispatch: lock-held for session_id=%r source=%r — skipping",
-                    session_id,
-                    source,
+                    f"dispatch: lock-held for session_id={session_id!r} source={source!r} — skipping"
                 )
                 return DispatchResult(dispatched=False, reason="lock-held", run_id=None)
 
@@ -298,11 +296,9 @@ class Trigger:
                 age_s = now_mono - last_dispatch_ts
                 if age_s < self._trigger_lock_seconds:
                     _logger.info(
-                        "dispatch: in-memory-in-flight session_id=%r "
-                        "age_s=%.1f < trigger_lock_seconds=%d — skipping",
-                        session_id,
-                        age_s,
-                        self._trigger_lock_seconds,
+                        f"dispatch: in-memory-in-flight session_id={session_id!r} "
+                        f"age_s={age_s:.1f} < trigger_lock_seconds={self._trigger_lock_seconds} "
+                        f"— skipping"
                     )
                     return DispatchResult(
                         dispatched=False,
@@ -321,11 +317,9 @@ class Trigger:
                 # so "failed" runs remain re-dispatchable without --force.
                 if stage_val in _BLOCK_REDISPATCH_STAGES and not force:
                     _logger.info(
-                        "dispatch: already-analyzed session_id=%r stage=%r "
-                        "source=%r — returning dispatched=False",
-                        session_id,
-                        stage_val,
-                        source,
+                        f"dispatch: already-analyzed session_id={session_id!r} "
+                        f"stage={stage_val!r} source={source!r} "
+                        f"— returning dispatched=False"
                     )
                     return DispatchResult(
                         dispatched=False,
@@ -344,12 +338,9 @@ class Trigger:
                     age_seconds = (now - updated_at_utc).total_seconds()
                     if age_seconds < self._trigger_lock_seconds:
                         _logger.info(
-                            "dispatch: another-run-in-flight session_id=%r "
-                            "stage=%r age_seconds=%.1f < trigger_lock_seconds=%d — skipping",
-                            session_id,
-                            stage_val,
-                            age_seconds,
-                            self._trigger_lock_seconds,
+                            f"dispatch: another-run-in-flight session_id={session_id!r} "
+                            f"stage={stage_val!r} age_seconds={age_seconds:.1f} "
+                            f"< trigger_lock_seconds={self._trigger_lock_seconds} — skipping"
                         )
                         return DispatchResult(
                             dispatched=False,
@@ -378,10 +369,8 @@ class Trigger:
                 # blocked by this ghost entry (it was recorded before create_task).
                 self._in_memory_dispatched.pop(session_id, None)
                 _logger.error(
-                    "dispatch: create_task failed for session_id=%r source=%r: %s",
-                    session_id,
-                    source,
-                    exc,
+                    f"dispatch: create_task failed for session_id={session_id!r} "
+                    f"source={source!r}: {exc}"
                 )
                 return DispatchResult(
                     dispatched=False,
@@ -390,10 +379,8 @@ class Trigger:
                 )
 
             _logger.info(
-                "dispatch: scheduled analysis source=%r session_id=%r project_id=%r",
-                source,
-                session_id,
-                project_id,
+                f"dispatch: scheduled analysis source={source!r} "
+                f"session_id={session_id!r} project_id={project_id!r}"
             )
             return DispatchResult(dispatched=True, reason="dispatched", run_id=None)
 
@@ -406,18 +393,13 @@ class Trigger:
         """Done callback: log if the background analysis task raised."""
         if task.cancelled():
             _logger.warning(
-                "dispatch: analysis task cancelled for session_id=%r source=%r",
-                session_id,
-                source,
+                f"dispatch: analysis task cancelled for session_id={session_id!r} source={source!r}"
             )
         elif task.exception() is not None:
             exc = task.exception()
             _logger.error(
-                "dispatch: analysis task raised for session_id=%r source=%r: %s: %s",
-                session_id,
-                source,
-                type(exc).__name__,
-                exc,
+                f"dispatch: analysis task raised for session_id={session_id!r} "
+                f"source={source!r}: {type(exc).__name__}: {exc}"
             )
 
     def register_pipeline_callback(self, pipeline: "ObservationPipeline") -> None:
@@ -435,15 +417,15 @@ class Trigger:
         pipeline_id = id(pipeline)
         if pipeline_id in self._registered_pipeline_ids:
             _logger.debug(
-                "register_pipeline_callback: pipeline_id=%r already registered; skipping",
-                pipeline_id,
+                f"register_pipeline_callback: pipeline_id={pipeline_id!r} "
+                f"already registered; skipping"
             )
             return
         pipeline.add_post_ingest_callback(self._pipeline_callback)
         self._registered_pipeline_ids.add(pipeline_id)
         _logger.info(
-            "register_pipeline_callback: registered SESSION_END callback for pipeline_id=%r",
-            pipeline_id,
+            f"register_pipeline_callback: registered SESSION_END callback "
+            f"for pipeline_id={pipeline_id!r}"
         )
 
     async def _pipeline_callback(self, event: Event) -> None:
@@ -456,9 +438,8 @@ class Trigger:
             return
 
         _logger.debug(
-            "_pipeline_callback: SESSION_END received for session_id=%r project_id=%r",
-            event.session_id,
-            event.project_id,
+            f"_pipeline_callback: SESSION_END received for "
+            f"session_id={event.session_id!r} project_id={event.project_id!r}"
         )
         result = await self.dispatch(
             event.project_id,
@@ -466,10 +447,8 @@ class Trigger:
             source="event",
         )
         _logger.info(
-            "_pipeline_callback: source='event' session_id=%r project_id=%r outcome=%r",
-            event.session_id,
-            event.project_id,
-            result.reason,
+            f"_pipeline_callback: source='event' session_id={event.session_id!r} "
+            f"project_id={event.project_id!r} outcome={result.reason!r}"
         )
 
 
@@ -538,9 +517,8 @@ class Sweeper:
         # Self-register: store the current task so cancel() can await it.
         self._task = asyncio.current_task()
         _logger.info(
-            "Sweeper started: interval=%ds, timeout=%dmin",
-            self._interval_seconds,
-            self._session_timeout_minutes,
+            f"Sweeper started: interval={self._interval_seconds}s, "
+            f"timeout={self._session_timeout_minutes}min"
         )
         while True:
             try:
@@ -551,9 +529,7 @@ class Sweeper:
                 raise
             except Exception as exc:
                 _logger.error(
-                    "Sweeper sweep loop error (non-session): %s: %s",
-                    type(exc).__name__,
-                    exc,
+                    f"Sweeper sweep loop error (non-session): {type(exc).__name__}: {exc}"
                 )
 
             try:
@@ -572,7 +548,7 @@ class Sweeper:
             now: The current UTC datetime (passed in so tests can freeze time).
         """
         stale = self._find_stale_sessions(now)
-        _logger.debug("Sweeper: found %d stale session(s) at %s", len(stale), now.isoformat())
+        _logger.debug(f"Sweeper: found {len(stale)} stale session(s) at {now.isoformat()}")
 
         for project_id, session_id in stale:
             try:
@@ -583,24 +559,17 @@ class Sweeper:
                 )
                 if result.dispatched:
                     _logger.info(
-                        "Sweeper dispatched session_id=%r project_id=%r",
-                        session_id,
-                        project_id,
+                        f"Sweeper dispatched session_id={session_id!r} project_id={project_id!r}"
                     )
                 else:
                     _logger.debug(
-                        "Sweeper skipped session_id=%r reason=%r",
-                        session_id,
-                        result.reason,
+                        f"Sweeper skipped session_id={session_id!r} reason={result.reason!r}"
                     )
             except Exception as exc:
                 # Per-session exception isolation: log and continue.
                 _logger.error(
-                    "Sweeper error for session_id=%r project_id=%r: %s: %s",
-                    session_id,
-                    project_id,
-                    type(exc).__name__,
-                    exc,
+                    f"Sweeper error for session_id={session_id!r} "
+                    f"project_id={project_id!r}: {type(exc).__name__}: {exc}"
                 )
 
     def _find_stale_sessions(self, now: datetime) -> list[tuple[str, str]]:
@@ -632,10 +601,8 @@ class Sweeper:
             latest = self._analysis_runs_repo.get_latest_for_session(session_id)
             if latest is not None and latest.stage.value in TERMINAL_STAGES:
                 _logger.debug(
-                    "_find_stale_sessions: session_id=%r already has terminal run "
-                    "stage=%r — skipping",
-                    session_id,
-                    latest.stage.value,
+                    f"_find_stale_sessions: session_id={session_id!r} "
+                    f"already has terminal run stage={latest.stage.value!r} — skipping"
                 )
                 continue
             result.append((project_id, session_id))
