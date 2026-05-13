@@ -1,6 +1,6 @@
 """`secondsight init` — install hook scripts + register them with an agent.
 
-Three-stage operation (the pre-check exists *because* stages 1 and 2 are
+Four-stage operation (the pre-check exists *because* stages 1 and 2 are
 not jointly transactional — see review-response in changes/...):
 
     0. Pre-check: parse the target agent's registration file. Aborts on malformed
@@ -9,6 +9,9 @@ not jointly transactional — see review-response in changes/...):
     1. Copy bundled hook scripts into ``<agent-home>/hooks/``.
     2. Patch the agent's registration file to register each script under
        the matching hook events.
+    3. Generate (or diff-check) ``~/.secondsight/config.toml`` with default
+       settings. This stage never raises — parse errors are printed and ignored
+       so hook install can succeed independently of config generation.
 
 The pre-check closes a silent-failure mode where registration-file validation
 would otherwise happen *after* hook scripts had already landed on disk
@@ -30,6 +33,7 @@ CLI surface (per SD §9.1 — supports both human + agent personas):
     secondsight init --claude-home DIR      # Claude-specific compatibility flag
     secondsight init --codex-home DIR       # Codex-specific flag
     secondsight init --hook-source DIR      # override hook bundle (tests)
+    secondsight init --secondsight-home DIR # override ~/.secondsight location
 
 Exit codes:
     0 on success (or clean dry-run);
@@ -47,6 +51,12 @@ from rich.console import Console
 
 from secondsight.cli._home import claude_home as resolve_claude_home
 from secondsight.cli._home import codex_home as resolve_codex_home
+from secondsight.cli._home import secondsight_home as resolve_secondsight_home
+from secondsight.config.template import (
+    MSG_MALFORMED,
+    MSG_NEW_KEYS,
+    write_config_if_needed,
+)
 from secondsight.installer import (
     ClaudeSettingsPatcher,
     CodexHooksPatcher,
@@ -89,6 +99,11 @@ def init(
         "--hook-source",
         help="Override the bundled hook directory (used by tests; auto-discovered otherwise).",
     ),
+    secondsight_home_override: str = typer.Option(
+        "",
+        "--secondsight-home",
+        help="Override the SecondSight home directory (~/.secondsight by default).",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -116,6 +131,7 @@ def init(
     )
     hook_dir = target_agent_home / "hooks"
     registration_path, patcher = _registration_target(canonical_agent, target_agent_home)
+    ss_home = resolve_secondsight_home(secondsight_home_override)
 
     installer = HookInstaller(
         source_dir=Path(hook_source).expanduser() if hook_source else None,
@@ -162,6 +178,12 @@ def init(
             )
             raise typer.Exit(code=1) from exc
 
+    # ----- Stage 3: generate (or diff-check) ~/.secondsight/config.toml -----
+    # Never aborts on failure: config.toml issues are advisory (hook install
+    # already succeeded). write_config_if_needed() returns a message string
+    # rather than raising, so we can always print it and continue.
+    config_status = write_config_if_needed(ss_home, dry_run=dry_run)
+
     summary = {
         "agent": canonical_agent,
         "agent_home": str(target_agent_home),
@@ -169,6 +191,8 @@ def init(
         "hook_dir": str(hook_dir),
         "registration_path": str(registration_path),
         "settings_path": str(registration_path),
+        "secondsight_home": str(ss_home),
+        "config_status": config_status,
         "scripts_copied": install_plan.copied,
         "scripts_skipped_identical": install_plan.skipped_identical,
         "scripts_source": str(install_plan.source_dir),
@@ -235,6 +259,28 @@ def _render_text(summary: dict[str, object]) -> None:
                 f"  [yellow]settings conflict (different install path):[/yellow] "
                 f"{', '.join(sorted(confs))}"
             )
+
+    # Stage 3: config.toml status.
+    # MSG_MALFORMED and MSG_NEW_KEYS are imported from template.py so that
+    # pattern-matching here stays in sync with the strings write_config_if_needed()
+    # actually returns. A rename of either constant will cause an ImportError
+    # immediately rather than silently losing coloring at runtime.
+    config_status = summary.get("config_status", "")
+    if isinstance(config_status, str) and config_status:
+        # Use yellow for malformed or diff messages, normal for the rest
+        if MSG_MALFORMED in config_status.lower():
+            _console.print(f"  [yellow]config:[/yellow] {config_status.splitlines()[0]}")
+        elif MSG_NEW_KEYS in config_status.lower():
+            for line in config_status.splitlines():
+                _console.print(
+                    f"  [yellow]config:[/yellow] {line}"
+                    if line.startswith(
+                        summary.get("secondsight_home", "__no_match__")  # type: ignore[arg-type]
+                    )
+                    else f"  {line}"
+                )
+        else:
+            _console.print(f"  config:        {config_status}")
 
 
 def _normalize_agent(agent: str) -> str:

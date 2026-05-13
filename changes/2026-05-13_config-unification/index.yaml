@@ -1,0 +1,38 @@
+feature: config-unification
+status: done
+
+tasks:
+  - id: task-1
+    title: "建立 src/secondsight/config/ package：schema + env + 遷移舊 config classes"
+    status: done
+    scar_count: 5
+    unresolved_assumptions: 0
+    depends_on: []
+
+  - id: task-2
+    title: "實作統一 loader：SecondSightConfig, load_global_config, load_project_config（含 env var overlay）"
+    status: done
+    scar_count: 7
+    unresolved_assumptions: 1
+    depends_on: [task-1]
+
+  - id: task-3
+    title: "接上 runtime.py + analyze.py：以 load_project_config() 取代 hardcoded GlobalAnalysisConfig()"
+    status: done
+    scar_count: 5
+    unresolved_assumptions: 0
+    depends_on: [task-2]
+
+  - id: task-4
+    title: "更新 secondsight init：生成 ~/.secondsight/config.toml with defaults（含 diff 保護）"
+    status: done
+    scar_count: 4
+    unresolved_assumptions: 0
+    depends_on: [task-1]
+
+  - id: task-5
+    title: "新增 secondsight config subcommand：show（含來源標示）、validate（含 model format check）"
+    status: done
+    scar_count: 10
+    unresolved_assumptions: 1
+    depends_on: [task-2]

@@ -22,6 +22,15 @@ Design assumption:
 
 If this assumption stops holding (hot-reload scenario), the first thing
 to rot is config changes taking effect mid-session without restart.
+
+config-unification note (task-1):
+    The model-selection config classes (ModelsConfig, GlobalAnalysisConfig,
+    ProjectAnalysisConfig, FallbackModelsConfig) are now defined in
+    secondsight.config.schema and re-exported here for backward compatibility.
+    AnalysisConfig and AnalysisConfigError remain defined in this module
+    because AnalysisConfig.load() is a TOML-reading classmethod that belongs
+    in the analysis layer, not in the schema-only config package.
+    Task-2 will integrate load() into the unified loader.
 """
 
 from __future__ import annotations
@@ -29,6 +38,20 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# Re-export model-selection schema classes from config/schema.py.
+# These are now defined there as the single source of truth.
+# _verify_adapter_registry_consistency() (sdk/model_selection.py) imports
+# ModelsConfig from this module — the re-export ensures it gets the same
+# class object as config/schema.py, preventing isinstance() split.
+from secondsight.config.schema import (
+    BUILTIN_DEFAULT_AGENT,
+    BUILTIN_FALLBACK_MODELS,
+    FallbackModelsConfig,
+    GlobalAnalysisConfig,
+    ModelsConfig,
+    ProjectAnalysisConfig,
+)
 
 # ---- Built-in defaults ----
 
@@ -54,6 +77,9 @@ class AnalysisConfig:
         extra_denylist: Additional denylist patterns from project config.
             These are ADDITIVE on top of the built-in denylist.
             Default: [] (empty — no additions).
+
+    Note: Task-2 will integrate this TOML loader into the unified
+    load_project_config() function in secondsight.config.loader.
     """
 
     read_project_file_enabled: bool = BUILTIN_READ_PROJECT_FILE_ENABLED
@@ -183,89 +209,15 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# GUR-103 task-3 additions: model-selection config schema
+# GUR-103 task-3 model-selection config schema — re-exported from config/schema.py
 # ---------------------------------------------------------------------------
-# These dataclasses mirror the TOML section structure from 2-plan.md §6:
+# These dataclasses are now defined in secondsight.config.schema (config-unification
+# task-1) and re-exported here for backward compatibility. External callers that
+# import from secondsight.analysis.config continue to work without changes.
 #
-#   [analysis]
-#   default_agent = "claude_code"
-#
-#   [analysis.models.fallback]
-#   fallback_models = ["gpt-4o-mini", "gemini-2.0-flash"]
-#
-#   [analysis.models]
-#   claude_code = ""      # empty = use adapter default (SD §5.7.1)
-#   codex = ""            # empty = raises ModelSelectionError
-#   opencode = ""         # empty = raises ModelSelectionError
-#
-# These are ADDITIVE to the existing AnalysisConfig (read_project_file).
-# Callers using only read_project_file do not need to instantiate these.
-#
-# NOTE: These config classes define the schema but do NOT load from TOML
-# directly — loading is deferred to a future GlobalConfig loader that merges
-# all sections. For now, callers construct these dataclasses from parsed TOML
-# or from test fixtures.
+# Do NOT redefine FallbackModelsConfig, ModelsConfig, GlobalAnalysisConfig, or
+# ProjectAnalysisConfig in this file — the imports at the top of this module
+# bring them in from config/schema.py. Redefining them here would shadow those
+# imports and create a class identity split (two different ModelsConfig objects),
+# which breaks _verify_adapter_registry_consistency() in sdk/model_selection.py.
 # ---------------------------------------------------------------------------
-
-BUILTIN_DEFAULT_AGENT: str = "claude_code"
-BUILTIN_FALLBACK_MODELS: list[str] = ["gpt-4o-mini", "gemini-2.0-flash"]
-
-
-@dataclass(frozen=True)
-class FallbackModelsConfig:
-    """Config for [analysis.models.fallback] section.
-
-    Attributes:
-        fallback_models: Ordered list of fallback model name strings.
-            Empty list is valid (D13: strict-mode — no fallback).
-            Default: ["gpt-4o-mini", "gemini-2.0-flash"] (SD §5.7.2 / D11).
-    """
-
-    fallback_models: list[str] = field(default_factory=lambda: list(BUILTIN_FALLBACK_MODELS))
-
-
-@dataclass(frozen=True)
-class ModelsConfig:
-    """Config for [analysis.models] section.
-
-    Attributes:
-        claude_code: Model name for claude_code adapter. Empty = use SD §5.7.1 default.
-        codex: Model name for codex adapter. Empty = raises ModelSelectionError.
-        opencode: Model name for opencode adapter. Empty = raises ModelSelectionError.
-        fallback: Fallback chain config.
-    """
-
-    claude_code: str = ""
-    codex: str = ""
-    opencode: str = ""
-    fallback: FallbackModelsConfig = field(default_factory=FallbackModelsConfig)
-
-
-@dataclass(frozen=True)
-class GlobalAnalysisConfig:
-    """Config for the [analysis] section in global config.toml.
-
-    Combines model-selection keys (D7, D11) with the read_project_file
-    settings already in AnalysisConfig.
-
-    Attributes:
-        default_agent: Which agent type to use by default. "auto" is opt-in (D7).
-            Default: "claude_code".
-        model: Empty for GlobalAnalysisConfig (model override lives at project scope).
-        models: Per-adapter model name overrides and fallback chain.
-    """
-
-    default_agent: str = BUILTIN_DEFAULT_AGENT
-    models: ModelsConfig = field(default_factory=ModelsConfig)
-
-
-@dataclass(frozen=True)
-class ProjectAnalysisConfig:
-    """Config for the [analysis] section in per-project config.toml.
-
-    Attributes:
-        model: Per-project model override. Non-empty beats global default_agent
-            entirely (DT-3.3 / HP-1.3). Empty = use global resolution.
-    """
-
-    model: str = ""

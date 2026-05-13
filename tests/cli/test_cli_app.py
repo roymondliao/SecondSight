@@ -138,6 +138,7 @@ def test_version_subcommand() -> None:
 
 def test_death_init_dry_run_does_not_touch_disk(tmp_path: Path) -> None:
     fake_claude = tmp_path / "claude"
+    fake_ss_home = tmp_path / "secondsight"  # isolated from real ~/.secondsight
     result = runner.invoke(
         app,
         [
@@ -147,6 +148,8 @@ def test_death_init_dry_run_does_not_touch_disk(tmp_path: Path) -> None:
             "json",
             "--claude-home",
             str(fake_claude),
+            "--secondsight-home",
+            str(fake_ss_home),
         ],
     )
     assert result.exit_code == 0, f"got {result.exit_code}, output={result.output}"
@@ -156,13 +159,28 @@ def test_death_init_dry_run_does_not_touch_disk(tmp_path: Path) -> None:
     # let a regression succeed at the filesystem level.
     assert not (fake_claude / "settings.json").exists(), "dry-run must NOT create settings.json"
     assert not (fake_claude / "hooks").exists(), "dry-run must NOT create the hooks/ dir"
+    # Stage 3: config.toml must NOT be created in dry-run mode
+    assert not (fake_ss_home / "config.toml").exists(), (
+        "dry-run must NOT create config.toml in secondsight home"
+    )
+    # But config_status must reflect what would happen
+    assert "config_status" in payload, "JSON output must include config_status key"
 
 
 def test_init_apply_then_idempotent(tmp_path: Path) -> None:
     fake_claude = tmp_path / "claude"
+    fake_ss_home = tmp_path / "secondsight"  # isolated from real ~/.secondsight
     first = runner.invoke(
         app,
-        ["init", "--claude-home", str(fake_claude), "--format", "json"],
+        [
+            "init",
+            "--claude-home",
+            str(fake_claude),
+            "--secondsight-home",
+            str(fake_ss_home),
+            "--format",
+            "json",
+        ],
     )
     assert first.exit_code == 0, first.output
     payload_first = json.loads(first.output)
@@ -170,7 +188,15 @@ def test_init_apply_then_idempotent(tmp_path: Path) -> None:
 
     second = runner.invoke(
         app,
-        ["init", "--claude-home", str(fake_claude), "--format", "json"],
+        [
+            "init",
+            "--claude-home",
+            str(fake_claude),
+            "--secondsight-home",
+            str(fake_ss_home),
+            "--format",
+            "json",
+        ],
     )
     assert second.exit_code == 0, second.output
     payload_second = json.loads(second.output)
@@ -182,9 +208,20 @@ def test_init_apply_then_idempotent(tmp_path: Path) -> None:
 
 def test_init_codex_apply_then_idempotent(tmp_path: Path) -> None:
     fake_codex = tmp_path / "codex"
+    fake_ss_home = tmp_path / "secondsight"  # isolated from real ~/.secondsight
     first = runner.invoke(
         app,
-        ["init", "--agent", "codex", "--codex-home", str(fake_codex), "--format", "json"],
+        [
+            "init",
+            "--agent",
+            "codex",
+            "--codex-home",
+            str(fake_codex),
+            "--secondsight-home",
+            str(fake_ss_home),
+            "--format",
+            "json",
+        ],
     )
     assert first.exit_code == 0, first.output
     payload_first = json.loads(first.output)
@@ -197,7 +234,17 @@ def test_init_codex_apply_then_idempotent(tmp_path: Path) -> None:
 
     second = runner.invoke(
         app,
-        ["init", "--agent", "codex", "--codex-home", str(fake_codex), "--format", "json"],
+        [
+            "init",
+            "--agent",
+            "codex",
+            "--codex-home",
+            str(fake_codex),
+            "--secondsight-home",
+            str(fake_ss_home),
+            "--format",
+            "json",
+        ],
     )
     assert second.exit_code == 0, second.output
     payload_second = json.loads(second.output)
@@ -406,8 +453,6 @@ def test_death_init_settings_invalid_after_hook_copy(
     (fake_claude / "settings.json").write_text("{}", encoding="utf-8")
 
     from secondsight.installer.claude_settings import ClaudeSettingsPatcher
-
-    real_plan = ClaudeSettingsPatcher.plan
 
     def apply_raising(self, hook_dir):
         raise InvalidSettingsError("simulated race: settings changed between plan and apply")

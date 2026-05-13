@@ -1,0 +1,259 @@
+task_id: task-5
+feature: 2026-05-13_config-unification
+title: "新增 secondsight config subcommand：show（含來源標示）、validate（含 model format check）"
+completion_status: done
+revision: 3  # Re-review critical fixes applied 2026-05-13: .env loading + bool TTL + dead params
+
+known_shortcuts:
+  - id: shortcut-1
+    description: >
+      _collect_sourced_values() independently re-reads both the raw (un-interpolated) and
+      interpolated TOML files, duplicating logic already present in loader.py's _parse_toml().
+      This means any bug fix in loader.py's TOML reading path must be tracked to config_cmd.py
+      separately. The correct design would expose a loader helper that returns raw + interpolated
+      dicts together, but that would modify loader.py (outside task file scope).
+    severity: low
+    deferred_to_feature_iteration: true
+
+  - id: shortcut-2
+    description: >
+      [.env] file values vs shell env var values are both attributed as [env_var].
+      The distinction between "set in ~/.secondsight/.env" vs "set in shell environment" is not
+      tracked. load_global_config() loads .env with override=False (shell wins), but after that
+      merge, config_cmd.py only checks os.environ — it cannot determine which of the two sources
+      wrote that value. Documented limitation per task spec.
+    severity: low
+    deferred_to_feature_iteration: false
+
+  - id: shortcut-3
+    description: >
+      No --json flag for machine-readable output. v1 is human-readable only. Agent consumers
+      cannot parse the output programmatically without text scraping. Per task spec: v1 human-readable only.
+    severity: low
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - id: sfc-1
+    description: >
+      If a new env var override is added to config/env.py (e.g. SECONDSIGHT_RETENTION_TTL) but
+      not wired into _collect_sourced_values() in config_cmd.py, the source attribution for that
+      field will incorrectly show [global_config] or [builtin_default] even when the env var is set.
+      The operator sees wrong source, DC-1 is not solved for that field.
+    detection: >
+      First detected when an operator sets the new env var and `config show` still shows the wrong
+      source label. No automated detection exists — relies on manual review when adding new env vars.
+    mitigation: >
+      RESOLVED (see resolved_items: sfc-1-detection). Added a comment in env.py pointing to
+      config_cmd.py as the mandatory update site when new env vars are added.
+
+  - id: sfc-2
+    description: >
+      _determine_source() checks for ${VAR} patterns in the raw TOML before interpolation.
+      If _read_raw_toml() fails (e.g. TOML parse error occurs only on certain platforms or
+      with certain TOML features), the raw doc will be None and interpolation source detection
+      will fall through to global_config instead of env_var_interpolation. This is actually
+      safe behavior (the next load will also fail), but the error message may be confusing.
+    detection: >
+      _read_raw_toml() raises SecondSightConfigError on malformed TOML, which propagates up
+      and is caught at the command level, printing an error. So this silent failure path does
+      not actually occur — the function raises rather than returning None on parse errors.
+    mitigation: Confirmed not a silent failure — malformed TOML raises loudly.
+
+  - id: sfc-3
+    description: >
+      The model format validator checks for the -YYYYMMDD suffix pattern on claude-* models but
+      does NOT verify the date is a real calendar date. A model named "claude-haiku-4-5-99991299"
+      would pass validation despite having an impossible date. The regex only checks 8 digits,
+      not calendar validity.
+    detection: >
+      An operator with a typo in the date portion gets exit 0 from validate, deploys the bad
+      config, and runtime fails on model resolution. First detected at runtime model call.
+    mitigation: >
+      Accepted risk — the task spec says "YYYYMMDD pattern check" (format only). Calendar
+      validation would require knowing what dates Anthropic releases models on (requires API call).
+
+  - id: sfc-4
+    description: >
+      _collect_sourced_values() uses `or {}` to default sections that return None. For the
+      retention section, it computes per-project and global values independently using simple
+      dict.get(). It does NOT use _resolve_ttl_field() from storage/retention.py, which has
+      more robust type validation. If a retention TTL is set to a string or boolean in TOML,
+      _collect_sourced_values() will include that invalid value in the sourced output without
+      error, while load_global_config() would raise SecondSightConfigError on the same input.
+    detection: >
+      PARTIALLY RESOLVED (see resolved_items: sfc-4-partial). validate now checks TTL type
+      (int expected). config show still displays invalid TTL types without flagging them.
+      The deeper fix (using _resolve_ttl_field()) is deferred to feature iteration.
+    deferred_to_feature_iteration: true
+
+assumptions_made:
+  - id: assumption-1
+    description: >
+      The SECONDSIGHT_ANALYSIS_MODEL env var overrides ALL per-adapter model fields
+      (claude_code, codex, opencode) uniformly. The loader code confirms this: env_model
+      is applied to project_model regardless of which adapter is being used.
+    verified: true
+    verification_method: >
+      Read loader.py _build_config_from_docs() — env_model = get_env_analysis_model()
+      is applied to project_model after all TOML layers resolve. Also confirmed by
+      DT-show-1 test passing.
+
+  - id: assumption-2
+    description: >
+      The --project flag takes a project_id string directly (not a path). The loader
+      uses this ID to build the path home/projects/<project_id>/config.toml.
+      If the project_id contains path traversal characters (../../etc), the path
+      resolution may escape the SecondSight home directory.
+    verified: true
+    verification_method: >
+      Read loader.py load_project_config() — uses Path() join which is OS-normalized but
+      does NOT sanitize project_id. This is a pre-existing issue in the loader, not
+      introduced by this task.
+
+  - id: assumption-3
+    description: >
+      Typer's CliRunner used in tests properly isolates os.environ when env= parameter
+      is passed. Tests use explicit env dicts to avoid cross-test contamination.
+    verified: true
+    verification_method: >
+      Tests pass consistently when run in isolation and together. CliRunner env= parameter
+      replaces the subprocess environment for the invocation scope.
+
+debt_registered:
+  - id: debt-1
+    description: >
+      _collect_sourced_values() does not use _resolve_ttl_field() for retention validation.
+      Retention type errors (string TTL, boolean TTL) pass through show/validate silently
+      even though load_global_config() would reject them. A future task should either call
+      load_global_config() for validation and separately attribute sources, or expose
+      _resolve_ttl_field() through a public API that config_cmd.py can use.
+    location: src/secondsight/cli/config_cmd.py:_collect_sourced_values()
+    severity: medium
+
+  - id: debt-2
+    description: >
+      No --json flag. Machine-readable output would allow agent consumers to parse config
+      show output programmatically. Currently requires text scraping.
+    location: src/secondsight/cli/config_cmd.py:show()
+    severity: low
+
+narrative: >
+  Task-5 implements the DC-1 detection mechanism: "env var overrides TOML but operator
+  doesn't know which layer." The core challenge is that load_project_config() returns
+  merged values without source attribution — source detection requires re-reading the
+  raw TOML files independently.
+
+  The implementation uses a two-pass approach: _read_raw_toml() reads TOML without
+  ${VAR} interpolation to detect interpolation patterns, while _parse_toml() reads
+  the interpolated version for effective values. Source attribution is determined by
+  checking env vars first, then scanning raw TOML for ${} patterns, then checking
+  which TOML layer contains the key.
+
+  Known gap (sfc-4 / debt-1): retention TTL type validation is weaker in config_cmd.py
+  than in the main loader. This means `config validate` does not catch all the same
+  errors that the runtime loader would catch. This is a shortcut taken to avoid
+  duplicating _resolve_ttl_field() logic; the correct fix is a shared validation API.
+
+resolved_items:
+  - id: sfc-1-detection
+    original_section: silent_failure_conditions
+    original_id: sfc-1
+    description: >
+      Added a co-update comment in src/secondsight/config/env.py pointing explicitly
+      to config_cmd.py as the mandatory update site when new env vars are added.
+      This does not eliminate the silent failure but makes the coupling visible at the
+      definition site so future developers know to update both files.
+    what_was_done: >
+      Added a CO-UPDATE CONTRACT comment block above __all__ in env.py: "If you add a
+      new env var constant here, you MUST also update _collect_sourced_values() in
+      src/secondsight/cli/config_cmd.py... Failure to do so means `secondsight config show`
+      silently misreports the source layer — a DC-1 regression."
+
+  - id: sfc-4-partial
+    original_section: silent_failure_conditions
+    original_id: sfc-4
+    description: >
+      Added lightweight retention TTL type validation inside the validate command.
+      Now checks that raw_traces_ttl_days and analysis_ttl_days are int (not str/bool).
+      This catches the most common misconfiguration without requiring _resolve_ttl_field().
+    what_was_done: >
+      Added a retention TTL type check loop in the validate() command before model
+      validation. Each TTL sourced value is checked with isinstance(sv.value, int).
+      Non-integer values produce an error message and trigger exit 1. The config show
+      command still displays invalid TTL types without flagging them (partial fix only).
+
+  - id: cr-fix-1-ttl-or-chain
+    original_section: known_shortcuts (code-review fix — not a scar item in revision 1)
+    original_id: N/A
+    description: >
+      Critical bug: TTL resolution used `project_ret.get("raw_traces_ttl_days") or global_ret.get(...)`
+      which treated an explicit project-level 0 as falsy, silently falling through to the global or
+      builtin value with the wrong source label. A user setting raw_traces_ttl_days = 0 would see
+      the global default value in `config show` instead of 0.
+    what_was_done: >
+      Replaced the `or` chains for both raw_traces_ttl_days and analysis_ttl_days with explicit
+      `is None` checks: `_project_val if _project_val is not None else global_ret.get(...)`.
+      Death test TestDTZeroTtlNotSilentlyIgnored added, confirmed RED before fix, GREEN after.
+
+  - id: cr-fix-2-cleanup-interpolation
+    original_section: silent_failure_conditions (DC-1 regression — code-review fix)
+    original_id: N/A
+    description: >
+      Critical DC-1 regression: cleanup_after_analysis used hand-rolled inline source detection
+      that bypassed _determine_source(). A TOML value `cleanup_after_analysis = "${VAR}"` was
+      labeled [per_project_config] or [global_config] instead of [env_var_interpolation].
+      The operator could not tell that an env var was controlling this field.
+    what_was_done: >
+      Replaced the hand-rolled inline source detection with a proper call to _determine_source(),
+      passing raw_global_ret and raw_project_ret (the un-interpolated TOML dicts) so that
+      _has_var_interpolation() can detect the "${VAR}" string before interpolation.
+      Also added normalisation of string "true"/"false" values (produced when _parse_toml()
+      interpolates a string "${VAR}" into its env var value) to Python bool.
+      Death test TestDTCleanupInterpolationLabeledCorrectly added, confirmed RED before fix,
+      GREEN after.
+
+  - id: cr2-fix-1-dotenv-not-loaded
+    original_section: silent_failure_conditions (behavior divergence — re-review fix)
+    original_id: N/A
+    description: >
+      Critical behavior divergence: _collect_sourced_values() called _parse_toml() without
+      first loading ~/.secondsight/.env via _load_dotenv_if_exists(). If a ${VAR} reference
+      is resolved only via .env (not shell env), `config validate` would exit 1 with
+      "missing env var" while the runtime loader (load_global_config) would succeed, because
+      load_global_config() loads .env as its first step. The operator sees a false positive
+      from validate that contradicts runtime behavior — the opposite of DC-5's contract.
+    what_was_done: >
+      Added `_load_dotenv_if_exists(home / ".env")` call at the start of
+      _collect_sourced_values(), matching the side effect of load_global_config().
+      Also imported _load_dotenv_if_exists from secondsight.config.loader.
+      Death test TestDTDotEnvLoadedBeforeValidate added, confirmed RED before fix, GREEN after.
+
+  - id: cr2-fix-2-bool-as-int-ttl
+    original_section: silent_failure_conditions (bool subclass escape — re-review fix)
+    original_id: N/A
+    description: >
+      Critical: isinstance(True, int) is True in Python — `raw_traces_ttl_days = true` in TOML
+      produced sv.value = True (bool), which passed the `not isinstance(sv.value, int)` check
+      silently (exit 0). The runtime _validate_ttl() explicitly rejects booleans with an
+      isinstance(value, bool) pre-check. Config validate silently passed a config that runtime
+      would reject with SecondSightConfigError.
+    what_was_done: >
+      Added `isinstance(sv.value, bool)` pre-check before the `not isinstance(sv.value, int)`
+      guard: `if sv is not None and (isinstance(sv.value, bool) or not isinstance(sv.value, int))`.
+      Death test TestDTTtlBoolRejectedByValidate added, confirmed RED before fix, GREEN after.
+
+  - id: cr2-fix-3-dead-params
+    original_section: naming and dead weight (important issues — re-review fix)
+    original_id: N/A
+    description: >
+      Important: _determine_source() had two dead parameters — `value` (never read inside the
+      function) and `builtin_default` (documented as "informational only" but not read). Every
+      call site passed these as keyword arguments for no benefit, increasing cognitive load.
+      Also, `cleanup_project_raw` and `cleanup_global_raw` were named `_raw` but sourced from
+      the interpolated TOML dicts, shadowing the `raw_*` naming convention used for
+      un-interpolated dicts.
+    what_was_done: >
+      Removed `value` and `builtin_default` parameters from _determine_source() signature and
+      docstring. Updated all 5 call sites to drop those keyword arguments.
+      Renamed cleanup_project_raw → cleanup_project_interp and cleanup_global_raw →
+      cleanup_global_interp to accurately reflect that these come from the interpolated path.

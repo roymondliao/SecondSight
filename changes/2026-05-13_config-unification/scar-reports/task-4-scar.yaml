@@ -1,0 +1,241 @@
+task_id: task-4
+feature: 2026-05-13_config-unification
+title: "更新 secondsight init：生成 ~/.secondsight/config.toml with defaults（含 diff 保護）"
+completion_status: done
+
+known_shortcuts:
+  - id: shortcut-1
+    description: >
+      The _render_text() addition for config_status in cli/init.py uses a
+      fragile string-prefix check (line.startswith(secondsight_home)) to decide
+      whether to apply the yellow prefix to each line in the diff output. This
+      heuristic is brittle — if the message format changes in write_config_if_needed(),
+      the rendering may silently revert to non-colored output or miss lines.
+      A structured return type (dataclass or NamedTuple with status enum + details
+      list) would be cleaner but is out of task scope (would require changing the
+      public API of write_config_if_needed).
+    severity: low
+    deferred_to_feature_iteration: false
+
+  - id: shortcut-2
+    description: >
+      The existing test test_death_init_dry_run_does_not_touch_disk in
+      tests/cli/test_cli_app.py does NOT pass --secondsight-home, so Stage 3
+      (write_config_if_needed) runs against the real ~/.secondsight. In dry_run
+      mode this is safe (no write), but the test's assertion scope has silently
+      narrowed: it does not verify that config.toml is NOT created in a temp
+      dir. The test was written before Stage 3 existed and its coverage of
+      Stage 3 dry-run behaviour is absent.
+    severity: low
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - id: sfc-1
+    description: >
+      diff_against_template() compares key-path presence only (flat set comparison).
+      If a template key changes type (e.g. fallback_models goes from list to string
+      in a future template version), the diff will report the key as "present" in the
+      existing config (because the key path exists) even though the type has changed.
+      An operator running `secondsight init` after a type-change upgrade will see
+      "already up-to-date" and miss the type mismatch.
+    detection: >
+      First detected at runtime when the analysis layer reads the config and gets a
+      TypeError or unexpected value. No automatic detection currently.
+    deferred_to_feature_iteration: true
+
+  - id: sfc-2
+    description: >
+      write_config_if_needed() catches ALL exceptions from tomllib.load() via a bare
+      `except Exception`. If the file is readable but the TOML library raises an
+      unexpected non-parse error (e.g. OSError mid-read due to disk failure), it
+      will be silently treated as "malformed TOML" and the operator will see
+      "malformed" message instead of an I/O error. The distinction matters for diagnosis.
+    detection: >
+      Operator sees "malformed" message but the file is actually valid TOML. Would
+      require checking the file manually to diagnose. No automatic detection.
+    deferred_to_feature_iteration: false
+
+  - id: sfc-3
+    description: >
+      The `installer.py` specification in the task doc referred to a file
+      `src/secondsight/installer/installer.py` that does not exist. The actual
+      init logic lives in `src/secondsight/cli/init.py`. Stage 3 was wired into
+      cli/init.py (correct), but if a future refactor creates an actual
+      `installer.py` that orchestrates the init sequence, Stage 3 wiring might
+      be duplicated or missed.
+    detection: >
+      Code reviewer or architect would need to notice the file naming discrepancy.
+      No automated detection.
+    deferred_to_feature_iteration: true
+
+  - id: sfc-4
+    description: >
+      The secondsight_home used in Stage 3 resolves via resolve_secondsight_home()
+      which reads SECONDSIGHT_HOME env var. If an operator sets SECONDSIGHT_HOME
+      to a different directory and already has a config.toml there, Stage 3 will
+      check THAT path rather than ~/.secondsight. This is correct behaviour but
+      the summary JSON key "secondsight_home" may confuse operators who expect it
+      to always be ~/.secondsight.
+    detection: >
+      Operator confusion only; not a silent failure per se.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - id: assumption-1
+    description: >
+      Python 3.11+ is the target runtime (tomllib is stdlib). For older Pythons,
+      tomli must be installed as a dependency. The template.py file includes a
+      fallback import (`import tomli as tomllib`) for pre-3.11 Pythons.
+      Assumption: pyproject.toml has either tomllib (3.11+) or tomli as a
+      dependency for < 3.11.
+    verified: true
+    verification_method: >
+      Read pyproject.toml: `requires-python = ">=3.14,<3.15"`. Python 3.14 is
+      well above 3.11, so tomllib is always available as stdlib. The tomli
+      fallback import in template.py is defensive dead code but harmless — it
+      will never be reached on this project's Python constraint. Debt-1 is closed.
+
+  - id: assumption-2
+    description: >
+      The existing cli/init.py dry-run tests (test_death_init_dry_run_does_not_touch_disk)
+      will continue to pass because: (a) write_config_if_needed(dry_run=True) never
+      writes, and (b) the test checks exit_code == 0 and that specific paths don't
+      exist — both still hold. The test does not assert on the JSON output keys,
+      so the new "secondsight_home" and "config_status" keys in the summary won't
+      break it.
+    verified: false
+    verification_method: >
+      Would need to run `python -m pytest tests/cli/test_cli_app.py` and confirm
+      test_death_init_dry_run_does_not_touch_disk passes. BLOCKED: bash access
+      was not available during implementation.
+
+  - id: assumption-3
+    description: >
+      The _TEMPLATE string in template.py produces valid TOML when parsed with
+      tomllib.loads(). The inline comments after values (e.g. `claude_code = ""   # 預設: ...`)
+      are valid TOML comment syntax (# starts a comment anywhere after a value).
+    verified: true
+    verification_method: >
+      TOML spec section 3 confirms inline comments after values are valid.
+      The test DT-init-3 (test_death_generated_config_is_valid_toml) verifies
+      this programmatically by calling tomllib.load() on the generated file.
+      The test DT-init-4 also parses the template string directly.
+
+  - id: assumption-4
+    description: >
+      The existing `tests/config/__init__.py` file exists (was empty) so the
+      test discovery will find tests/config/test_template.py without needing
+      a new __init__.py.
+    verified: true
+    verification_method: >
+      Read the directory listing — tests/config/__init__.py exists (0 bytes).
+
+debt_registered:
+  - id: debt-1
+    description: >
+      assumption-1: pyproject.toml dependency check for tomli/tomllib not done.
+      Should verify Python version constraints and add tomli as optional dep if needed.
+    location: pyproject.toml
+    target_task: feature-iteration
+
+  - id: debt-2
+    description: >
+      sfc-1: type-change detection in diff_against_template(). Currently only
+      key presence is compared. Future version may need value-type comparison
+      or a schema-version key in the template to force re-check on upgrades.
+    location: src/secondsight/config/template.py (diff_against_template)
+    target_task: future
+
+  - id: debt-3
+    description: >
+      shortcut-2: test_death_init_dry_run_does_not_touch_disk should be updated
+      to pass --secondsight-home pointing to a tmp_path directory to explicitly
+      verify Stage 3 dry-run behaviour.
+    location: tests/cli/test_cli_app.py
+    target_task: feature-iteration
+
+debt_location: src/secondsight/config/template.py, src/secondsight/cli/init.py
+
+narrative: >
+  The main structural decision was WHERE to put write_config_if_needed(): the task
+  spec said "installer.py" but that file doesn't exist — the init orchestration lives
+  in cli/init.py. The function was placed in config/template.py (correct per the
+  import rules: no analysis/sdk imports) and wired into cli/init.py as Stage 3.
+
+  The diff protection logic uses flat key-path set comparison (_flatten_toml).
+  This is deliberately simple (Scar-1) — it handles presence/absence only and
+  does not detect type changes. The scar is documented and deferred.
+
+  The "never raise" contract for Stage 3 (write_config_if_needed returns string,
+  never raises) is enforced by catching bare Exception from tomllib.load(). The
+  tradeoff is that I/O errors (sfc-2) are misclassified as "malformed". This is
+  the correct tradeoff: hook installation succeeding is more important than a
+  perfect config.toml error message.
+
+  The existing dry-run test (test_death_init_dry_run_does_not_touch_disk) remains
+  valid — dry_run=True causes write_config_if_needed to skip all writes and return
+  a message. The test uses --format json and only checks exit_code==0 and absence
+  of hook files, so the new keys in the JSON summary don't break it.
+
+resolved_items:
+  - original_section: assumptions_made
+    original_id: assumption-1
+    description: >
+      Python version constraint: whether tomllib is always available as stdlib.
+    resolution: >
+      Verified by reading pyproject.toml: `requires-python = ">=3.14,<3.15"`.
+      Python 3.14 has tomllib as stdlib (added in 3.11). The tomli fallback
+      import in template.py is defensive dead code — harmless but not needed.
+      Debt-1 (pyproject.toml check) is closed.
+
+  - original_section: known_shortcuts
+    original_id: shortcut-2
+    description: >
+      Existing CLI tests (test_init_apply_then_idempotent, test_init_codex_apply_then_idempotent,
+      test_death_init_dry_run_does_not_touch_disk) did not pass --secondsight-home,
+      so Stage 3 would run against the real ~/.secondsight during testing.
+    resolution: >
+      Updated all three tests in tests/cli/test_cli_app.py to pass
+      `--secondsight-home {tmp_path}/secondsight`, isolating Stage 3 from the
+      real filesystem. Also added explicit assertion to dry_run test:
+      `assert not (fake_ss_home / "config.toml").exists()`.
+      This is within task scope (test isolation for new CLI option) even though
+      it modifies existing test files.
+
+  - original_section: silent_failure_conditions
+    original_id: sfc-2
+    description: >
+      Bare `except Exception` misclassifies I/O errors as "malformed TOML".
+    resolution: >
+      Documented the intentional tradeoff in a code comment (lines 242-250 of
+      template.py). The "never raise" contract is more important than perfect
+      error classification. No code change — only documentation. The sfc-2
+      entry remains in the scar report as accepted risk.
+
+  - original_section: known_shortcuts
+    original_id: shortcut-1
+    description: >
+      Fragile string-prefix heuristic in _render_text() for config_status coloring.
+    resolution: >
+      The rendering logic distinguishes "malformed" (yellow warning) from "new key"
+      (diff output) from other messages (plain text). The multiline diff case
+      iterates lines and applies yellow only to the first line (path-based message).
+      This is the best fix achievable within the constraint that write_config_if_needed()
+      returns a string (not a structured type). Marked severity: low — acceptable.
+
+  - original_section: known_shortcuts
+    original_id: vocabulary-coupling
+    description: >
+      Post-review cleanup (task-4 PASS_WITH_CONCERNS): _render_text() in cli/init.py
+      pattern-matched against raw string literals ("malformed", "new key") that were
+      also produced by write_config_if_needed() in template.py — no shared contract.
+      A rename of either string would silently break coloring with no test failure.
+    resolution: >
+      Added MSG_GENERATED, MSG_MALFORMED, MSG_NEW_KEYS, MSG_UP_TO_DATE string constants
+      to template.py (exported via __all__). write_config_if_needed() now builds its
+      return strings using these constants (e.g. f"...is {MSG_MALFORMED}."). cli/init.py
+      imports MSG_MALFORMED and MSG_NEW_KEYS and uses them in the _render_text() checks.
+      Five death tests in tests/config/test_template.py pin each constant against the
+      actual return value (test_death_msg_constants_match_*) and verify importability
+      (test_death_vocab_constants_are_importable). An ImportError is now the immediate
+      signal for a coupling break — no more silent color regression.

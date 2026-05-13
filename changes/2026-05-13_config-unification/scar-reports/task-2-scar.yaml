@@ -1,0 +1,299 @@
+task_id: task-2
+feature: 2026-05-13_config-unification
+title: "實作統一 loader：SecondSightConfig, load_global_config, load_project_config（含 .env 載入 + ${VAR} interpolation）"
+completion_status: done
+# Post-review critical fixes applied 2026-05-13 — see resolved_items below for sfc-2-fix, sfc-5, sfc-6, sfc-7
+
+known_shortcuts:
+  - id: shortcut-1
+    description: >
+      RESOLVED (see resolved_items: shortcut-1-fix). The original implementation called
+      load_global_config() inside load_project_config(), then parsed the global TOML a second
+      time. Refactored to extract _build_config_from_docs() as a shared internal helper, and
+      load_project_config() now parses global TOML only once.
+    severity: none
+    deferred_to_feature_iteration: false
+
+  - id: shortcut-2
+    description: >
+      _resolve_ttl_field and _resolve_bool_field are imported from secondsight.storage.retention
+      with their leading underscore names (private helpers). This creates a hidden coupling to
+      retention.py's internal API — if those helpers are renamed or moved, loader.py breaks
+      without any public API warning. A RetentionConfig.from_sections() classmethod in retention.py
+      would be the correct boundary, but that would require modifying retention.py (outside this
+      task's file scope).
+    severity: low
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - id: sfc-1
+    description: >
+      _load_dotenv_if_exists() modifies os.environ for the entire process. In test environments
+      that do NOT use monkeypatch, a test that calls load_global_config() or load_project_config()
+      will permanently alter os.environ for subsequent tests in the same process. The test suite
+      uses monkeypatch throughout test_loader.py, but future callers of load_global_config() in
+      integration tests or other unit tests may not, causing cross-test env contamination that
+      is intermittent and order-dependent.
+    detection: >
+      First detected when a test that does NOT call load_global_config() sees an unexpected
+      ANTHROPIC_API_KEY or other key in os.environ. Difficult to trace because the source is a
+      different test that ran earlier. CI test order randomization would expose this immediately;
+      fixed test order masks it.
+    deferred_to_feature_iteration: false
+
+  - id: sfc-2
+    description: >
+      _interpolate_dict() and _interpolate_list() import os inside the function body (to avoid
+      a module-level os import that the linter might flag). If a future refactor moves the import
+      to module level and also changes how env is injected, the function signature (dict[str, str])
+      and the internal os.environ reference may diverge silently. _interpolate_vars() accepts env
+      as a parameter but _interpolate_dict() calls os.environ directly — there is a mismatch
+      between the public interface and internal implementation.
+    detection: >
+      Tests pass os.environ to _interpolate_vars() directly (correct). But _interpolate_dict()
+      does not accept an env parameter — it calls os.environ internally. If a test needs to inject
+      a custom env dict into _interpolate_dict(), it cannot do so without monkeypatching os.environ.
+      This is not currently a problem but limits testability.
+    deferred_to_feature_iteration: false
+
+  - id: sfc-3
+    description: >
+      The ${VAR} interpolation regex matches only [A-Z_][A-Z0-9_]* (uppercase). If a future
+      operator writes a TOML value like ${my_lowercase_var} expecting interpolation, the value
+      is returned as the literal string "${my_lowercase_var}" with no warning or error. The loader
+      cannot distinguish "operator made a typo" from "this literal string is intentional".
+    detection: >
+      First detected when the operator sees a cryptic error from a downstream consumer (LiteLLM,
+      etc.) complaining about a model name containing "${". No config-layer error is raised.
+    deferred_to_feature_iteration: false
+
+  - id: sfc-4
+    description: >
+      load_project_config() applies the SECONDSIGHT_DEFAULT_AGENT env var overlay only through
+      load_global_config() → _build_global_analysis_config(). If the global config.toml does not
+      exist AND SECONDSIGHT_DEFAULT_AGENT is not set, the default_agent is BUILTIN_DEFAULT_AGENT
+      ("claude_code"). This is correct. But if load_project_config() is refactored in the future
+      to not call load_global_config() (e.g. for performance), the env overlay for default_agent
+      would be lost silently.
+    detection: >
+      Only detected via an explicit test for SECONDSIGHT_DEFAULT_AGENT overlay at project scope.
+      Currently tested in TestUTLoadGlobalConfig.test_env_var_overrides_toml_default_agent.
+    deferred_to_feature_iteration: false
+
+  - id: sfc-5
+    description: >
+      ORIGINAL CLAIM FALSE: sfc-2 resolved_items claimed "env threaded recursively" but the actual
+      production call chain _parse_toml → _interpolate_dict did NOT pass env. _parse_toml called
+      _interpolate_dict(doc) without the env parameter, so any custom env dict passed to _parse_toml
+      would be silently ignored and os.environ used instead.
+    detection: >
+      Code review (post-implementation) found that _parse_toml signature did not accept env at all.
+      Confirmed by death test DT-loader-7: calling _parse_toml(path, env=custom_dict) raised
+      TypeError: _parse_toml() got an unexpected keyword argument 'env'.
+    deferred_to_feature_iteration: false
+
+  - id: sfc-6
+    description: >
+      RetentionConfigError from _resolve_ttl_field and _resolve_bool_field (inside
+      _build_retention_config) was not caught and re-raised as SecondSightConfigError. A caller
+      using `except SecondSightConfigError` around load_global_config() or load_project_config()
+      would silently miss retention parse errors (malformed TTL type, non-positive integer, etc).
+    detection: >
+      Code review found no try/except around the _resolve_* calls in _build_retention_config.
+      Confirmed by death test DT-loader-8: load_global_config with retention TTL = "not-an-int"
+      raised RetentionConfigError directly, not SecondSightConfigError.
+    deferred_to_feature_iteration: false
+
+  - id: sfc-7
+    description: >
+      _build_config_from_docs was missing from __all__ with no explanation, creating an inconsistency
+      with the other testing-exposed helpers (_interpolate_vars, _interpolate_dict, _parse_toml all
+      in __all__). Future test writers would infer _build_config_from_docs is not testable in isolation.
+    detection: >
+      Code review identified the inconsistency. The function is imported directly by tests without issue
+      (Python __all__ only gates `from module import *`), but the missing entry + no comment was misleading.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - id: assumption-1
+    description: >
+      _resolve_ttl_field and _resolve_bool_field in storage/retention.py are stable private APIs
+      that will not be renamed or removed. The loader imports them with their underscore names.
+    verified: true
+    verification_method: >
+      Read retention.py — both functions exist, are defined at module scope, and are present in
+      __all__ (confirming they are deliberately exported despite underscore prefix). The task-1
+      scar report also references these helpers without concern.
+
+  - id: assumption-2
+    description: >
+      The python-dotenv package is installed in the project's venv and available for import as
+      `from dotenv import load_dotenv`.
+    verified: true
+    verification_method: >
+      Task specification states "python-dotenv（已安裝）". Verified by running the tests — no
+      ImportError for dotenv. Also verified: `python -c "from dotenv import load_dotenv"` succeeds.
+
+  - id: assumption-3
+    description: >
+      The [analysis.models.fallback] section in TOML uses the key "fallback_models" (a list of
+      strings), matching FallbackModelsConfig.fallback_models field name. If an operator uses a
+      different key name (e.g. "models" or "fallbacks"), the value is silently ignored and the
+      built-in default list is used.
+    verified: true
+    verification_method: >
+      Read FallbackModelsConfig in schema.py — field is named fallback_models. The TOML section
+      must match this name. Added UT-loader (TestUTFallbackModels) to guard both the happy path
+      and the builtin-default-when-absent path.
+
+  - id: assumption-4
+    description: >
+      task-1 scar debt-2 (whitespace-only env vars) was already fixed in env.py before this task.
+      get_env_analysis_model() and get_env_default_agent() both call .strip() before the empty
+      check, so whitespace-only values return None and the loader falls through correctly.
+    verified: true
+    verification_method: >
+      Read env.py — both helpers call raw.strip() and then check `if value` on the stripped result.
+      The task-1 scar report resolved_items confirms this was fixed.
+
+debt_registered:
+  - id: debt-1
+    description: >
+      AnalysisConfig.load() in analysis/config.py reads [analysis.read_project_file] from the
+      per-project TOML. This is NOT integrated into load_project_config() in this task. The task
+      specification's debt-1 says "Task-2 的 loader 應該整合 [analysis.read_project_file] section
+      的讀取". Integration is explicitly listed as a debt item to resolve in a future task.
+      Currently, callers must call both load_project_config() AND AnalysisConfig.load() separately.
+    location: src/secondsight/analysis/config.py (AnalysisConfig.load classmethod)
+    target_task: task-3 or feature-iteration
+
+  - id: debt-2
+    description: >
+      _interpolate_dict() calls os.environ directly rather than accepting an env parameter.
+      This creates a testability gap: tests that need to inject a custom env dict must
+      monkeypatch os.environ rather than passing it directly. Also creates a parameter mismatch:
+      _interpolate_vars() takes env as a parameter (testable in isolation) but _interpolate_dict()
+      does not (coupled to os.environ). A refactor to thread env through all interpolation helpers
+      would improve testability at the cost of API churn.
+    location: src/secondsight/config/loader.py (_interpolate_dict, _interpolate_list)
+    target_task: task-3 or feature-iteration
+
+debt_location: src/secondsight/config/loader.py
+
+narrative: >
+  The primary implementation risk was correctness of the layering order. Three layers (env var,
+  per-project TOML, global TOML, built-in) must compose in the right order with the right
+  "empty = skip" semantics at each layer. The death tests were designed to catch the most common
+  silent failure: a layer being silently ignored.
+
+  The second risk was retention config reuse. _resolve_ttl_field and _resolve_bool_field in
+  retention.py already implement the correct per-project → global → builtin fallthrough logic.
+  Reimplementing that logic in loader.py would create a second truth. The import-with-underscore
+  approach (importing private helpers) was chosen as the lesser evil vs. duplication. The correct
+  long-term fix is a public classmethod on RetentionConfig — marked as debt-2 in retention.py's
+  scope.
+
+  The .env loading side effect is the most operationally risky aspect: a single call to
+  load_global_config() permanently alters os.environ for the process lifetime. The tests use
+  monkeypatch throughout to contain this. In production use, calling load_global_config() once
+  at startup is the intended pattern; calling it repeatedly is safe (override=False prevents
+  oscillation) but wastes IO.
+
+resolved_items:
+  - original_section: silent_failure_conditions
+    original_id: sfc-1
+    description: >
+      os.environ mutation side effect from _load_dotenv_if_exists() can contaminate tests
+      that do not use monkeypatch.
+    resolution: >
+      All tests in test_loader.py that call load_global_config() or load_project_config() use
+      monkeypatch to isolate env vars. Tests that check ANTHROPIC_API_KEY explicitly use
+      monkeypatch.delenv() before calling load_global_config() to ensure a clean state.
+      Added docstring to _load_dotenv_if_exists() explicitly calling out the side effect.
+      Cannot fully prevent this without refactoring to accept env as a parameter (deferred as
+      debt-2) — but all test_loader.py tests are properly isolated.
+
+  - original_section: silent_failure_conditions
+    original_id: sfc-2
+    description: >
+      _interpolate_dict() called os.environ directly instead of accepting an env parameter,
+      creating a testability gap vs. _interpolate_vars() which accepts env as a parameter.
+    resolution: >
+      Refactored _interpolate_dict() and _interpolate_list() to accept an optional env parameter
+      (dict[str, str] | None, defaults to os.environ). The env is threaded recursively through
+      all nested calls. This makes the interpolation helpers testable with an injected env dict
+      without requiring monkeypatch. Existing callers pass no env and get os.environ by default.
+
+  - original_section: silent_failure_conditions
+    original_id: sfc-3
+    description: >
+      Lowercase ${my_var} patterns silently returned as literals with no warning.
+    resolution: >
+      Added test TestUTInterpolateVars.test_lowercase_pattern_not_matched that explicitly
+      asserts the literal is returned as-is (documenting the intentional behaviour).
+      Added docstring to _interpolate_vars() explaining the intentional uppercase-only limit.
+      Added module-level docstring explaining this limitation. The behaviour is now tested
+      and documented, so it is no longer a silent failure — it is a known and documented limit.
+
+  - original_section: known_shortcuts
+    original_id: shortcut-1-fix
+    description: >
+      Double parsing of global TOML: original load_project_config() called load_global_config()
+      internally (which parsed global TOML), then parsed global TOML a second time for the
+      retention merge.
+    resolution: >
+      Extracted _build_config_from_docs() as an internal helper that accepts already-parsed
+      TOML dicts. Both load_global_config() and load_project_config() parse their TOML files
+      once and pass the dicts to _build_config_from_docs(). The global TOML is now parsed
+      exactly once per load_project_config() call. load_project_config() no longer calls
+      load_global_config() internally — it calls _load_dotenv_if_exists() directly.
+
+  - original_section: silent_failure_conditions
+    original_id: sfc-2-fix
+    description: >
+      The original resolved_items entry for sfc-2 falsely claimed env was threaded through
+      _parse_toml → _interpolate_dict. In reality _parse_toml had no env parameter at all.
+    resolution: >
+      Critical Fix 1 (post-review): Added `env: dict[str, str] | None = None` parameter to
+      _parse_toml. The parameter is passed through to _interpolate_dict(doc, env=env), which
+      already accepted env correctly. Added death test DT-loader-7 (TestDTLoader7ParseTomlEnvThreaded)
+      with two cases: custom env dict is used for interpolation, and missing vars in custom env
+      still raise SecondSightConfigError. Both tests pass. The production callers
+      (load_global_config, load_project_config) pass no env and get os.environ by default —
+      no behavior change for production paths.
+
+  - original_section: silent_failure_conditions
+    original_id: sfc-6-fix
+    description: >
+      RetentionConfigError from _resolve_ttl_field/_resolve_bool_field escaped
+      _build_retention_config uncaught, making it invisible to callers catching SecondSightConfigError.
+    resolution: >
+      Additional Fix (post-review): Wrapped the entire body of _build_retention_config in a
+      try/except RetentionConfigError block. Any RetentionConfigError is re-raised as
+      SecondSightConfigError(f"retention config error: {exc}") with the original as __cause__.
+      Updated both load_global_config and load_project_config docstring Raises sections to
+      document this wrapping. Added death test DT-loader-8 (TestDTLoader8RetentionConfigErrorWrapped)
+      with two cases: string TTL raises SecondSightConfigError, negative TTL does NOT propagate
+      as raw RetentionConfigError. Both tests pass.
+
+  - original_section: silent_failure_conditions
+    original_id: sfc-5-fix
+    description: >
+      _build_config_from_docs was absent from __all__ with no explanation of its exclusion,
+      misleading future test writers about its testability.
+    resolution: >
+      Fix 3 (post-review): Added "_build_config_from_docs" to __all__ with an inline comment
+      explaining its inclusion is for testing merge logic in isolation without filesystem I/O.
+      Added unit test TestUTBuildConfigFromDocsInAll to verify it is importable and callable.
+
+  - original_section: silent_failure_conditions
+    original_id: sfc-7-fix
+    description: >
+      load_project_config docstring did not document that model="" means "use adapter default"
+      rather than being a configured model name. The assumption was unlabeled at the public API
+      boundary.
+    resolution: >
+      Fix 2 (post-review): Added a Note section to load_project_config docstring explicitly
+      stating that model="" means "use the adapter's built-in default" and callers must not
+      treat "" as a configured model name. Added unit test TestUTLoadProjectConfigDocstring to
+      guard the documentation is not silently removed in future refactors.

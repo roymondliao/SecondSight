@@ -53,7 +53,7 @@ import typer
 import httpx
 
 from secondsight.cli._home import secondsight_home as resolve_secondsight_home
-from secondsight.sdk.trigger import DispatchResult, LockRegistry, Trigger
+from secondsight.sdk.trigger import DispatchResult, Trigger
 
 _logger = logging.getLogger(__name__)
 
@@ -375,9 +375,10 @@ def _build_in_process_trigger(
     orchestrator's _verify_session_complete_and_get_project_id() will raise
     SessionIncompleteError, which propagates as exit code 1.
     """
+    from secondsight.analysis.runtime import build_project_analysis_runtime
     from secondsight.storage.db_engine import DBEngine
     from secondsight.storage.events_repository import EventsRepository
-    from secondsight.storage.analysis_runs_repository import AnalysisRunsRepository
+    from secondsight.storage.raw_trace_store import RawTraceStore
 
     project_dir = secondsight_home / "projects" / project_id
     db_path = project_dir / "intelligence.db"
@@ -385,25 +386,14 @@ def _build_in_process_trigger(
     db_engine = DBEngine(db_path)
     events_repo = EventsRepository(db_engine)
     events_repo.create_schema()
-    runs_repo = AnalysisRunsRepository(db_engine)
-    runs_repo.create_schema()
-
-    # Lazy orchestrator: constructed on-demand inside the Trigger.
-    # For the in-process CLI path, we build the full orchestrator now
-    # so we can await the analysis task.
-    orchestrator = _build_orchestrator(
+    runtime = build_project_analysis_runtime(
         secondsight_home=secondsight_home,
         project_id=project_id,
         db_engine=db_engine,
+        events_repository=events_repo,
+        raw_trace_store=RawTraceStore(project_root=project_dir),
     )
-
-    lock_registry = LockRegistry()
-    return Trigger(
-        orchestrator=orchestrator,
-        analysis_runs_repo=runs_repo,
-        events_repo=events_repo,
-        lock_registry=lock_registry,
-    )
+    return runtime.trigger
 
 
 def _build_orchestrator(
@@ -421,20 +411,19 @@ def _build_orchestrator(
     per-project config lives at secondsight_home/projects/<pid>/config.toml.
     Both may be absent (built-in defaults apply).
     """
-    from secondsight.analysis.config import (
-        AnalysisConfig,
-        GlobalAnalysisConfig,
-        ProjectAnalysisConfig,
-    )
+    from secondsight.analysis.config import AnalysisConfig
     from secondsight.analysis.orchestrator import Orchestrator
     from secondsight.analysis.tools import AnalysisTools
+    from secondsight.config import load_project_config
     from secondsight.sdk.agent import PydanticAIAnalysisAgent
     from secondsight.sdk.model_selection import select_model
     from secondsight.sdk.router import LLMRouter
+    from secondsight.storage.analysis_runs_repository import AnalysisRunsRepository
     from secondsight.storage.behavior_flags_repository import BehaviorFlagsRepository
     from secondsight.storage.directives_repository import DirectivesRepository
     from secondsight.storage.events_repository import EventsRepository
     from secondsight.storage.session_reports_repository import SessionReportsRepository
+    from types import SimpleNamespace
 
     from secondsight.storage.db_engine import DBEngine as _DBEngine
 
@@ -452,23 +441,21 @@ def _build_orchestrator(
 
     project_dir = secondsight_home / "projects" / project_id
 
-    # Load per-project config (absent file → built-in defaults, never raises).
+    # Load per-project AnalysisConfig for tool settings (extra_denylist, size_cap, etc.)
     project_config_path = project_dir / "config.toml"
     analysis_config = AnalysisConfig.load(config_path=project_config_path)
 
-    # NOTE: Global config loading (secondsight_home / "config.toml") is not yet
-    # implemented for model selection. GlobalAnalysisConfig and ProjectAnalysisConfig
-    # use built-in defaults (claude_code adapter, default fallback models).
-    # Full TOML-backed GlobalAnalysisConfig.load() is deferred to feature iteration.
-    # Impact: if the operator has set a non-default model in global config.toml,
-    # the CLI ignores it in v1 and uses "claude_code" defaults.
-    global_cfg = GlobalAnalysisConfig()
-    project_cfg = ProjectAnalysisConfig()
+    # Load unified config (env var > per-project TOML > global TOML > built-in defaults).
+    # Absent config files → built-in defaults, never raises.
+    cfg = load_project_config(home=secondsight_home, project_id=project_id)
 
+    # select_model() structural typing contract: see runtime.py:_build_analysis_agent()
+    # for the full explanation. SimpleNamespace wrappers remap SecondSightConfig's attribute
+    # shape to what select_model() expects.
     primary, fallbacks = select_model(
         project_id=project_id,
-        project_config=project_cfg,
-        global_config=global_cfg,
+        project_config=SimpleNamespace(analysis=cfg.project_analysis),
+        global_config=SimpleNamespace(analysis=cfg.analysis),
         events_repo=events_repo,
     )
 
@@ -549,6 +536,24 @@ def _run_in_process_dispatch(
                         reason="timed-out",
                         run_id=result.run_id,
                     )
+                # Check completed tasks for exceptions. The done callback
+                # (_on_task_done) already logged the exception; we surface
+                # it here so the CLI exits 1 instead of printing "Analysis
+                # complete" when the analysis pipeline actually failed.
+                failed = [t for t in done if not t.cancelled() and t.exception() is not None]
+                if failed:
+                    exc = failed[0].exception()
+                    _logger.error(
+                        "analyze: analysis task completed with exception session_id=%r: %s: %s",
+                        session_id,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    return DispatchResult(
+                        dispatched=True,
+                        reason="task-failed",
+                        run_id=result.run_id,
+                    )
         return result
 
     return asyncio.run(_dispatch_and_wait())
@@ -569,6 +574,16 @@ def _handle_dispatch_result(result: DispatchResult, *, session_id: str) -> None:
             typer.echo(
                 f"Analysis for session {session_id!r} timed out after 300s. "
                 "The analysis task was cancelled. Check logs for progress.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        if result.reason == "task-failed":
+            # Analysis task completed but raised an exception.
+            # The exception was already logged by _on_task_done and the
+            # error handler in _dispatch_and_wait. Surface a clean exit 1.
+            typer.echo(
+                f"Analysis failed for session {session_id!r}. "
+                "See logs above for the exception detail.",
                 err=True,
             )
             raise typer.Exit(code=1)

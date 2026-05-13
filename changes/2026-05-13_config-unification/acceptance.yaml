@@ -1,0 +1,149 @@
+feature: config-unification
+coverage_type: verified
+
+scenarios:
+  # --- Death paths first ---
+
+  - name: "Env var 覆蓋 TOML 但 config show 不顯示來源 → operator 無法 debug"
+    type: death_path
+    given: "SECONDSIGHT_ANALYSIS_MODEL=claude-opus-4-7 已設，config.toml 也有 model = claude-haiku-4-5-20251001"
+    when: "operator 改了 config.toml 的 model 值，以為會生效"
+    then:
+      - "secondsight config show 在每個欄位旁顯示來源標籤（env_var / per_project_config / global_config / builtin_default）"
+      - "env_var 來源的欄位有明顯標示，不讓 operator 誤以為 TOML 生效"
+
+  - name: "model = '' 空字串被 silently 視為有效值"
+    type: death_path
+    given: "per-project config.toml 有 [analysis] model = '' （空字串）"
+    when: "load_project_config() 載入此設定"
+    then:
+      - "raise SecondSightConfigError 說明 model 不可為空字串"
+      - "不 silently fallthrough 到 global config（行為不明確，必須明確 reject）"
+
+  - name: "secondsight init 覆蓋 operator 已有的 config.toml"
+    type: death_path
+    given: "~/.secondsight/config.toml 已存在且有 operator 自訂設定"
+    when: "operator 重跑 secondsight init"
+    then:
+      - "init 偵測到 config.toml 已存在"
+      - "不覆蓋任何內容"
+      - "若有新版本新增的 key，印出 diff 提示 operator 手動合併"
+      - "exit 0（不是 error，但有 actionable warning）"
+
+  - name: "TOML model typo 在 config load 時不報錯，等到 LLM call 才爆"
+    type: death_path
+    given: "config.toml 有 model = 'claude-haiku-4-5'（缺 date suffix）"
+    when: "secondsight config validate"
+    then:
+      - "validate 回報 model name format 不合法"
+      - "印出具體的 format pattern 說明（claude-*-YYYYMMDD 格式）"
+      - "exit 1"
+
+  - name: "Server runtime 持有 startup 時的 stale config"
+    type: death_path
+    given: "secondsight serve 已啟動，operator 修改 config.toml"
+    when: "新的 analysis 請求進來"
+    then:
+      - "server 使用 startup 時讀入的舊 config（known limitation）"
+      - "secondsight config show 顯示 'config last loaded at <startup timestamp>'"
+      - "README 和 config show 都說明需要 restart 才生效"
+
+  - name: "${VAR} 指向不存在的 env var → 明確 error 而非 silently 留 literal"
+    type: death_path
+    given: "config.toml 有 model = '${MISSING_KEY}'，os.environ 和 .env 都沒有 MISSING_KEY"
+    when: "load_global_config() 載入"
+    then:
+      - "raise SecondSightConfigError 說明哪個 TOML key 有未解析的 ${MISSING_KEY}"
+      - "不回傳含 '${MISSING_KEY}' literal 的 config（這會在 LLM call 時才爆）"
+
+  - name: "${VAR} 展開後是空字串（env var 存在但值為空）"
+    type: death_path
+    given: ".env 有 ANTHROPIC_API_KEY= （有 key 無 value），config.toml 有 anthropic_api_key = '${ANTHROPIC_API_KEY}'"
+    when: "load_global_config() 載入"
+    then:
+      - "raise SecondSightConfigError 說明 ANTHROPIC_API_KEY 展開後為空字串"
+      - "不 silently 傳空字串給 pydantic-ai"
+
+  # --- Degradation paths ---
+
+  - name: "global config.toml 不存在 → fallback 到 built-in defaults（不是 error）"
+    type: degradation
+    given: "~/.secondsight/config.toml 不存在"
+    when: "load_global_config() 被呼叫"
+    then:
+      - "回傳 SecondSightConfig with all built-in defaults"
+      - "不 raise，不 warn（fresh install 是合法狀態）"
+      - "secondsight config show 顯示所有欄位來源為 builtin_default"
+
+  - name: "default_agent = 'auto' 且尚無 session → ModelSelectionError（不是 silent fallback）"
+    type: degradation
+    given: "global config 有 default_agent = 'auto'，events_repo 無任何 session"
+    when: "analysis 嘗試 select_model()"
+    then:
+      - "raise ModelSelectionError with 明確說明和 suggested_config snippet"
+      - "不 silently fallback 到 claude_code"
+
+  - name: "TOML 有未知的 key → warn 不 fail"
+    type: degradation
+    given: "config.toml 有 [analysis] unknown_key = 'value'（可能是 typo 或舊版 key）"
+    when: "load_global_config() 載入"
+    then:
+      - "記錄 WARNING log 列出未知 key"
+      - "不 raise（向前相容）"
+      - "secondsight config validate 回報 unknown key 作為 warning（不是 error）"
+
+  # --- Happy paths with evidence ---
+
+  - name: "per-project model 覆蓋 global default"
+    type: happy_path
+    given: "global config 無 model 設定（空字串），per-project config 有 model = 'claude-sonnet-4-6'"
+    when: "load_project_config(home, project_id) 被呼叫"
+    then:
+      - "返回 SecondSightConfig with project_analysis.model = 'claude-sonnet-4-6'"
+      - "runtime.py 使用此 model 呼叫 LLM"
+      - "secondsight config show 顯示 model 來源為 per_project_config"
+
+  - name: "env var SECONDSIGHT_ANALYSIS_MODEL 覆蓋所有 TOML 層"
+    type: happy_path
+    given: "SECONDSIGHT_ANALYSIS_MODEL=claude-opus-4-7，TOML 有不同 model 設定"
+    when: "load_project_config() 被呼叫"
+    then:
+      - "返回 SecondSightConfig with model = 'claude-opus-4-7'"
+      - "secondsight config show 顯示 model 來源為 env_var"
+
+  - name: "secondsight init 在 config.toml 不存在時生成含 default 的模板"
+    type: happy_path
+    given: "~/.secondsight/config.toml 不存在"
+    when: "secondsight init 執行"
+    then:
+      - "~/.secondsight/config.toml 被建立"
+      - "包含所有 section（[retention], [analysis], [analysis.models], [analysis.models.fallback], [analysis.read_project_file]）"
+      - "每個欄位旁有 comment 說明用途和有效值"
+      - "所有值等於 built-in defaults"
+      - "印出 'Generated config at ~/.secondsight/config.toml'"
+
+  - name: ".env 成功載入，pydantic-ai 可讀取 API key"
+    type: happy_path
+    given: "~/.secondsight/.env 有 ANTHROPIC_API_KEY=sk-ant-...，os.environ 無此 key"
+    when: "load_global_config() 被呼叫（server startup 或 analyze CLI）"
+    then:
+      - "python-dotenv load_dotenv() 將 ANTHROPIC_API_KEY 載入 os.environ"
+      - "後續 pydantic-ai Agent 建構時可從 os.environ 讀到 ANTHROPIC_API_KEY"
+      - "secondsight config show 標示 ANTHROPIC_API_KEY 來源為 .env"
+
+  - name: "config.toml 中 ${VAR} 成功展開"
+    type: happy_path
+    given: "os.environ 有 MY_MODEL=claude-sonnet-4-6，config.toml 有 model = '${MY_MODEL}'"
+    when: "load_project_config() 載入"
+    then:
+      - "返回 SecondSightConfig with model = 'claude-sonnet-4-6'（已展開）"
+      - "secondsight config show 顯示 model = claude-sonnet-4-6（來源：env_var interpolation）"
+
+  - name: "secondsight config validate 在所有設定合法時 exit 0"
+    type: happy_path
+    given: "global 和 per-project config.toml 都存在且格式正確"
+    when: "secondsight config validate 執行"
+    then:
+      - "逐一驗證每個 TOML 檔案"
+      - "印出 '2 config file(s) validated, 0 errors'"
+      - "exit 0"

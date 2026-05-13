@@ -1,0 +1,192 @@
+task_id: task-3
+feature: 2026-05-13_config-unification
+title: "接上 runtime.py + analyze.py：以 load_project_config() 取代 hardcoded GlobalAnalysisConfig()"
+completion_status: done
+
+known_shortcuts:
+  - id: shortcut-1
+    description: >
+      runtime.py:_build_analysis_agent() and cli/analyze.py:_build_orchestrator() have
+      overlapping model-selection logic (both call load_project_config + select_model with
+      the same SimpleNamespace wrapper pattern). This is pre-existing duplication not
+      introduced by this task. The two helpers serve different call paths (_build_orchestrator
+      is dead code in v1; _build_analysis_agent is the live path via build_project_analysis_runtime).
+      Not merged in this task — merging would require understanding the full _build_orchestrator
+      lifecycle, which is outside this task's scope.
+    severity: low
+    deferred_to_feature_iteration: true
+
+  - id: shortcut-2
+    description: >
+      _build_orchestrator() in cli/analyze.py is dead code (defined but never called from
+      any live code path in v1). The fix is applied anyway for correctness and to prevent
+      the bug from silently surfacing if _build_orchestrator() is wired in the future.
+      Leaving dead code corrected is preferable to leaving it broken.
+    severity: none
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - id: sfc-1
+    description: >
+      select_model() uses structural typing (object with .analysis.*). The wiring
+      uses SimpleNamespace(analysis=cfg.project_analysis) and SimpleNamespace(analysis=cfg.analysis)
+      to match the expected interface. If SecondSightConfig's attribute names change
+      (e.g., project_analysis renamed to project_model_config), the SimpleNamespace wrapping
+      will produce an object with wrong attribute names — select_model() will access the
+      wrong attribute and return the built-in default silently. No exception, no log line.
+    detection: >
+      The death tests DT-wire-1 and DT-wire-2 catch this directly: they assert on the
+      resolved model name and fail if select_model() gets wrong input.
+    deferred_to_feature_iteration: false
+
+  - id: sfc-2
+    description: >
+      load_project_config() calls _load_dotenv_if_exists() which has a process-wide side
+      effect on os.environ (override=False). Called on every analysis run, this means
+      .env file is loaded repeatedly. With override=False this is safe (existing env vars
+      win), but if the .env file changes between calls within the same process, the change
+      is not picked up (os.environ already has the key from the first load). This is
+      accepted behavior per the loader docstring; mentioned here for visibility.
+    detection: None in v1 — operator would need to restart the process to pick up .env changes.
+    deferred_to_feature_iteration: false
+
+  - id: sfc-3
+    description: >
+      load_project_config() is called on every _build_analysis_agent() invocation (every
+      analysis run). No caching. For a high-throughput deployment, this adds TOML parsing
+      overhead per run. In v1 with single-project, single-threaded use this is negligible.
+      Accepted for v1.
+    detection: Operator would see elevated analysis latency if TOML parsing becomes a bottleneck.
+    deferred_to_feature_iteration: true
+
+  - id: sfc-4
+    description: >
+      If both runtime.py and analyze.py:_build_orchestrator() are active simultaneously
+      (future refactor wires _build_orchestrator), the two load_project_config() calls
+      per run would race on .env loading. With override=False both reads are idempotent,
+      so this is not a correctness issue. Mentioned for the architectural record.
+    detection: Race is benign with override=False. No detection needed.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - id: assumption-1
+    description: >
+      SecondSightConfig.analysis (GlobalAnalysisConfig) has the attribute shape that
+      select_model() expects: .default_agent (str), .models.claude_code (str),
+      .models.codex (str), .models.opencode (str), .models.fallback.fallback_models (list[str]).
+    verified: true
+    verification_method: >
+      Read schema.py GlobalAnalysisConfig and ModelsConfig definitions. Cross-referenced
+      with select_model() attribute accesses in model_selection.py lines 326, 332, 336,
+      371-375, 386. The attribute paths match exactly.
+
+  - id: assumption-2
+    description: >
+      SecondSightConfig.project_analysis (ProjectAnalysisConfig) has a .model attribute
+      (str, empty = not set), which is what select_model() reads as project_config.analysis.model.
+    verified: true
+    verification_method: >
+      Read schema.py ProjectAnalysisConfig — .model: str = "". Cross-referenced with
+      select_model() line 326: project_config.analysis.model. The SimpleNamespace wrapper
+      maps cfg.project_analysis to project_config.analysis, so .model is accessible.
+
+  - id: assumption-3
+    description: >
+      load_project_config() does NOT raise when the config.toml file is absent (it returns
+      built-in defaults). This is the fresh-install path.
+    verified: true
+    verification_method: >
+      Read loader.py load_project_config() — it calls _parse_toml() which returns None
+      for absent files, then falls through to {} in _build_config_from_docs(). The death
+      test DT-wire-3 also verifies this at runtime.
+
+  - id: assumption-4
+    description: >
+      AnalysisTools.project_root.resolve() does not raise when the directory exists but
+      is freshly created (no files inside). Used in tests where we mkdir the project dir
+      but write no config.toml.
+    verified: true
+    verification_method: >
+      Read tools.py __init__ line 193: project_root.resolve() (no strict=True). Path.resolve()
+      without strict=True does not require the path to exist. Tests confirm no exception.
+
+  - id: assumption-5
+    description: >
+      _build_orchestrator() in cli/analyze.py is dead code in v1 (never called from any
+      active code path). Confirmed by grepping all .py files for _build_orchestrator calls.
+    verified: true
+    verification_method: >
+      grep -r "_build_orchestrator" src/ — only one definition, no callers.
+      The fix is applied for correctness but has no active impact in v1.
+
+debt_registered:
+  - id: debt-1
+    description: >
+      Structural typing contract between SimpleNamespace wrappers and select_model() is
+      implicit — no Protocol or type annotation enforces it. If select_model() or
+      SecondSightConfig attribute names change independently, the wiring silently degrades.
+      A typed wrapper dataclass or Protocol that select_model() accepts would make this
+      contract explicit and detectable by mypy.
+    debt_location: >
+      src/secondsight/analysis/runtime.py:_build_analysis_agent() (lines wrapping cfg in SimpleNamespace)
+      src/secondsight/cli/analyze.py:_build_orchestrator() (same)
+      src/secondsight/sdk/model_selection.py:select_model() (function signature uses object)
+
+  - id: debt-2
+    description: >
+      _build_orchestrator() in cli/analyze.py is dead code. It should either be wired up
+      or deleted. Leaving it corrected but uncalled creates a maintenance burden: any future
+      change to the build pipeline must be applied to both _build_in_process_trigger() and
+      _build_orchestrator() independently.
+    debt_location: src/secondsight/cli/analyze.py:_build_orchestrator()
+
+narrative: >
+  The implementation is minimal: replace two hardcoded constructor calls with load_project_config()
+  and correctly wrap the result for select_model()'s structural typing interface.
+
+  Critical insight: select_model() expects project_config.analysis.model and global_config.analysis.{...}.
+  SecondSightConfig has cfg.project_analysis (not cfg.analysis for the project-level model).
+  Therefore the wrappers MUST be:
+    project_config=SimpleNamespace(analysis=cfg.project_analysis)
+    global_config=SimpleNamespace(analysis=cfg.analysis)
+  Passing cfg directly as either argument would silently produce wrong model selection
+  (cfg.analysis has no .model attribute; cfg.project_analysis has no .default_agent attribute).
+
+  The death tests DT-wire-1 and DT-wire-2 are the critical protection: they assert the
+  resolved model name matches the TOML/env override, catching any SimpleNamespace wiring bug
+  without requiring the tests to know about select_model()'s internal implementation.
+
+  The _build_orchestrator() fix also corrects a pre-existing bug where ProjectAnalysisConfig()
+  was passed directly as project_config (without SimpleNamespace wrapping) — select_model()
+  would have raised AttributeError on .analysis.model if that dead code path were ever activated.
+
+resolved_items:
+  - id: resolved-assumption-1
+    original_section: assumptions_made
+    description: >
+      Verified select_model() attribute access contract against schema.py definitions.
+      The SimpleNamespace wrapping is explicitly tested by death tests DT-wire-1 and DT-wire-2.
+    what_was_done: >
+      Read model_selection.py lines 326, 332, 336, 371-375, 386. Cross-referenced with
+      GlobalAnalysisConfig and ProjectAnalysisConfig dataclass field names. Added death tests
+      that exercise the actual attribute paths end-to-end.
+
+  - id: resolved-sfc-1
+    original_section: silent_failure_conditions
+    description: >
+      Silent failure: wrong attribute path → built-in default used silently.
+    what_was_done: >
+      Added death tests DT-wire-1 (TOML override) and DT-wire-2 (env var) that fail if
+      the loaded config is not used. These tests remain in the test suite as regression guards.
+      The assumption-1 verification confirmed the attribute paths are correct post-fix.
+
+  - id: resolved-debt-1-comment
+    original_section: debt_registered (debt-1)
+    description: >
+      The untyped structural contract between SimpleNamespace wrappers and select_model()
+      was made visible by adding inline comments at both wiring sites.
+    what_was_done: >
+      Added a comment at runtime.py:_build_analysis_agent() and a cross-reference comment
+      at cli/analyze.py:_build_orchestrator() explaining the attribute shape contract and
+      pointing to the death tests as the regression guard. The full typed Protocol fix
+      is deferred (requires modifying model_selection.py).
