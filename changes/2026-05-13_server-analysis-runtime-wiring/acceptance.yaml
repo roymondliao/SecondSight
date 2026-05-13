@@ -1,0 +1,60 @@
+feature: server-analysis-runtime-wiring
+coverage_type: death_first
+
+silent_failure_scenarios:
+  - id: DT-1
+    death_case: DC-1
+    given: "A project session has `session_start` and `session_end` persisted in `events`."
+    when: "The server ingests the `session_end` event through the normal hook path."
+    then_naive_lie: "The session is complete, so automatic analysis must have started."
+    then_truth: "An `analysis_runs` row is created via event-driven dispatch; if not, the server wiring is incomplete."
+    test: "server/runtime integration test proving `session_end` creates an `analysis_runs` row without manual CLI"
+
+  - id: DT-2
+    death_case: DC-2
+    given: "A session is stale by timeout and has no terminal analysis run."
+    when: "The sweeper tick runs."
+    then_naive_lie: "A stale warning is enough to count as timeout recovery."
+    then_truth: "The sweeper must call `Trigger.dispatch(source='timeout')`; `analysis_runs` becomes non-empty or an explicit skip reason is logged."
+    test: "server sweeper test proving timeout dispatch occurs"
+
+  - id: DT-3
+    death_case: DC-3
+    given: "Event-driven dispatch and timeout dispatch target the same session within one dispatch window."
+    when: "Both paths execute."
+    then_naive_lie: "More dispatch paths means more reliability."
+    then_truth: "Only one dispatch is scheduled because both paths share the same trigger, lock, and idempotency gates."
+    test: "trigger/server integration test proving no duplicate scheduled analysis"
+
+  - id: DT-4
+    death_case: DC-4
+    given: "The CLI can analyze a project session with valid analysis config."
+    when: "The same project session ends under the server path."
+    then_naive_lie: "Server and CLI support the same analysis lifecycle."
+    then_truth: "Server uses compatible runtime wiring and can dispatch the same analysis path automatically."
+    test: "runtime-builder coverage or equivalent shared-wiring test"
+
+happy_path_scenarios:
+  - id: HP-1
+    given: "A project session receives a normal `session_end` event."
+    when: "The event is ingested successfully."
+    then:
+      - "The event row exists in `events`."
+      - "The pipeline callback triggers `dispatch(source='event')`."
+      - "An `analysis_runs` row appears for that session."
+    test: "event-driven dispatch integration test"
+
+  - id: HP-2
+    given: "A project session is stale and unanalyzed."
+    when: "The sweeper runs after the timeout threshold."
+    then:
+      - "The session is selected as a stale candidate."
+      - "The server dispatches analysis via the shared trigger."
+      - "The result is logged as dispatched or skipped with an explicit reason."
+    test: "timeout dispatch integration test"
+
+exit_criteria:
+  - "Event-driven dispatch works without manual `secondsight analyze --session ...`."
+  - "Sweeper performs timeout recovery instead of warning-only repetition."
+  - "Duplicate event+timeout dispatch does not create duplicate runs."
+  - "pytest coverage for the new wiring is green."

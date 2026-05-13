@@ -1,0 +1,21 @@
+task_id: task-1
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: "Legacy `_build_orchestrator()` still exists in `src/secondsight/cli/analyze.py`; CLI now uses the shared runtime builder, but the old helper was not deleted in this task."
+
+silent_failure_conditions:
+  - description: "If analysis runtime construction fails during first project materialization, the failure is logged and cached for the process lifetime; the operator must restart the server after fixing config or credentials."
+
+assumptions_made:
+  - assumption: "Constructing the real analysis runtime during registry materialization is side-effect free enough for the server startup/first-ingest path."
+    verified: false
+    note: "Wiring tests use a fake analysis agent; the real agent construction path was exercised indirectly by registry tests but not with live provider credentials."
+
+debt_registered: true
+debt_location: "src/secondsight/api/registry.py, src/secondsight/analysis/runtime.py, src/secondsight/cli/analyze.py"
+
+resolved_items:
+  - original_section: "known_shortcuts"
+    original_description: "Server and CLI assemble divergent per-project analysis runtimes."
+    resolution: "Introduced `secondsight.analysis.runtime.build_project_analysis_runtime()` and switched the CLI trigger path to reuse it."

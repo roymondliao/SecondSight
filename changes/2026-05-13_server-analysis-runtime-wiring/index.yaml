@@ -1,0 +1,44 @@
+feature: server-analysis-runtime-wiring
+status: done
+plan_ref_doc: changes/2026-05-13_server-analysis-runtime-wiring/2-plan.md
+acceptance_ref_doc: changes/2026-05-13_server-analysis-runtime-wiring/acceptance.yaml
+overview_ref_doc: changes/2026-05-13_server-analysis-runtime-wiring/overview.md
+design_refs:
+  - changes/2026-05-06_gur-102_phase2-analysis-orchestration/2-plan.md
+  - changes/2026-05-07_gur-103_phase2-analysis-agent-integration/2-plan.md
+  - changes/2026-05-07_gur-149_analysis-ttl-and-post-analysis-trigger/2-plan.md
+
+tasks:
+  - id: task-1
+    title: "Create shared server-side project analysis runtime"
+    status: done
+    depends_on: []
+    outputs:
+      - "Per-project runtime composition for orchestrator/trigger/repositories"
+      - "Single ownership point for server-side analysis wiring"
+    scar_count: 3
+    scar_ref: "scar-reports/task-1-scar.yaml"
+    unresolved_assumptions: 1
+
+  - id: task-2
+    title: "Wire event-driven dispatch on session_end"
+    status: done
+    depends_on: [task-1]
+    outputs:
+      - "Pipeline callback registration"
+      - "Automatic `analysis_runs` creation on successful session_end ingest"
+    scar_count: 3
+    scar_ref: "scar-reports/task-2-scar.yaml"
+    unresolved_assumptions: 0
+
+  - id: task-3
+    title: "Upgrade sweeper to real timeout recovery and add verification"
+    status: done
+    depends_on: [task-1]
+    outputs:
+      - "Timeout dispatch via shared trigger"
+      - "Outcome-aware logs"
+      - "Tests for event path, timeout path, and duplicate-dispatch prevention"
+    scar_count: 3
+    scar_ref: "scar-reports/task-3-scar.yaml"
+    unresolved_assumptions: 0

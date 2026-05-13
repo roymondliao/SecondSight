@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -195,18 +196,7 @@ class _ServerSweepCoordinator:
     1. Get the list of materialized project_ids from the registry.
     2. For each project, use the project's EventsRepository to find stale sessions.
     3. Filter out sessions with a terminal analysis_runs row.
-    4. Log stale candidates for operator visibility.
-
-    Dispatch limitation (v1): The coordinator finds stale sessions but
-    cannot dispatch analysis without a full Orchestrator (LLMRouter + agent)
-    per project. Building the Orchestrator requires model selection config
-    and LLM credentials not available at server startup. The coordinator
-    logs WARNING-level messages so operators know sessions are accumulating.
-
-    Full dispatch wiring (building a per-project Trigger and Orchestrator
-    inside the coordinator) is deferred to a follow-up feature iteration.
-    The current implementation satisfies D10's "Sweeper runs in server
-    lifespan" requirement and closes the "silent placeholder" gap.
+    4. Dispatch timeout recovery through the project's shared Trigger.
 
     Silent failure conditions:
     - Projects that have not yet received any event are not in the registry
@@ -258,7 +248,7 @@ class _ServerSweepCoordinator:
                 logger.info("Sweeper coordinator cancelled during sleep.")
                 raise
 
-    async def _sweep_all_projects(self, cutoff: "datetime") -> None:
+    async def _sweep_all_projects(self, cutoff: datetime) -> None:
         """One sweep tick across all materialized projects."""
         from secondsight.analysis.schemas import TERMINAL_STAGES
 
@@ -274,25 +264,69 @@ class _ServerSweepCoordinator:
                     project_id=project_id,
                     last_event_before=cutoff,
                 )
-                from secondsight.storage.analysis_runs_repository import AnalysisRunsRepository  # noqa: PLC0415
+                if resources.analysis_runtime is None:
+                    if candidates:
+                        logger.warning(
+                            "Sweeper: project_id={pid} has {count} stale session(s) "
+                            "but analysis runtime is unavailable: {err}",
+                            pid=project_id,
+                            count=len(candidates),
+                            err=resources.analysis_runtime_error or "unknown error",
+                        )
+                    continue
 
-                # Build analysis_runs_repo once per project (not per candidate).
-                runs_repo = AnalysisRunsRepository(resources.db_engine)
+                runs_repo = resources.analysis_runtime.analysis_runs_repository
+                trigger = resources.analysis_runtime.trigger
 
                 for pid, session_id, last_event_ts in candidates:
-                    latest_run = runs_repo.get_latest_for_session(session_id)
-                    if latest_run is not None and latest_run.stage.value in TERMINAL_STAGES:
-                        continue  # Already done
+                    try:
+                        latest_run = runs_repo.get_latest_for_session(session_id)
+                        if latest_run is not None and latest_run.stage.value in TERMINAL_STAGES:
+                            logger.info(
+                                "Sweeper: stale candidate already terminal — "
+                                "project_id={pid} session_id={sid} stage={stage}",
+                                pid=pid,
+                                sid=session_id,
+                                stage=latest_run.stage.value,
+                            )
+                            continue
 
-                    logger.warning(
-                        "Sweeper: stale session found — project_id={pid} "
-                        "session_id={sid} last_event_ts={ts}. "
-                        "Full dispatch requires Orchestrator wiring (deferred to v2). "
-                        "Use `secondsight analyze --session {sid}` to manually trigger.",
-                        pid=pid,
-                        sid=session_id,
-                        ts=last_event_ts,
-                    )
+                        result = await trigger.dispatch(
+                            pid,
+                            session_id,
+                            source="timeout",
+                        )
+                        if result.dispatched:
+                            logger.info(
+                                "Sweeper: timeout recovery dispatched — project_id={pid} "
+                                "session_id={sid} last_event_ts={ts}",
+                                pid=pid,
+                                sid=session_id,
+                                ts=last_event_ts,
+                            )
+                        else:
+                            logger.info(
+                                "Sweeper: timeout recovery skipped — project_id={pid} "
+                                "session_id={sid} last_event_ts={ts} reason={reason} "
+                                "existing_stage={stage}",
+                                pid=pid,
+                                sid=session_id,
+                                ts=last_event_ts,
+                                reason=result.reason,
+                                stage=result.existing_stage,
+                            )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.warning(
+                            "Sweeper: timeout recovery failed — project_id={pid} "
+                            "session_id={sid} last_event_ts={ts} error={type}: {exc}",
+                            pid=pid,
+                            sid=session_id,
+                            ts=last_event_ts,
+                            type=type(exc).__name__,
+                            exc=exc,
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

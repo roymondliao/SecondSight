@@ -1,0 +1,21 @@
+task_id: task-2
+completion_status: done
+
+known_shortcuts:
+  - description: "Event-driven callback registration is tied to the current pipeline instance; callers that replace `resources.pipeline` after materialization must re-register manually."
+
+silent_failure_conditions:
+  - description: "Swapping out the materialized pipeline object without re-registering the trigger drops automatic `session_end` dispatch on that replacement pipeline."
+
+assumptions_made:
+  - assumption: "One registry materialization corresponds to one stable pipeline instance in normal server operation."
+    verified: true
+    note: "Verified by registry caching behavior and callback-count test coverage in `tests/api/test_registry.py` and `tests/sdk/test_trigger.py`."
+
+debt_registered: true
+debt_location: "src/secondsight/sdk/trigger.py, src/secondsight/api/registry.py"
+
+resolved_items:
+  - original_section: "silent_failure_conditions"
+    original_description: "`session_end` can be persisted without ever triggering analysis because no pipeline callback is registered."
+    resolution: "Registry now registers the shared trigger's SESSION_END callback exactly once per project pipeline."

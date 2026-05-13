@@ -28,6 +28,10 @@ from pathlib import Path
 
 from loguru import logger
 
+from secondsight.analysis.runtime import (
+    ProjectAnalysisRuntime,
+    build_project_analysis_runtime,
+)
 from secondsight._common.lazy_cache import LazyCacheWithLocking
 from secondsight.observation.pipeline import ObservationPipeline
 from secondsight.storage.db_engine import DBEngine
@@ -48,6 +52,8 @@ class ProjectResources:
     raw_trace_store: RawTraceStore
     sync_log: SyncLog
     pipeline: ObservationPipeline
+    analysis_runtime: ProjectAnalysisRuntime | None
+    analysis_runtime_error: str | None
 
 
 class ProjectRegistry:
@@ -132,6 +138,29 @@ class ProjectRegistry:
             raw_ingress_store=ris,
         )
 
+        analysis_runtime: ProjectAnalysisRuntime | None = None
+        analysis_runtime_error: str | None = None
+        try:
+            analysis_runtime = build_project_analysis_runtime(
+                secondsight_home=self._home,
+                project_id=project_id,
+                db_engine=db_engine,
+                events_repository=repo,
+                raw_trace_store=rts,
+            )
+            analysis_runtime.trigger.register_pipeline_callback(pipeline)
+            logger.info(
+                "Analysis runtime ready for project: {pid} (event callback registered)",
+                pid=project_id,
+            )
+        except Exception as exc:
+            analysis_runtime_error = f"{type(exc).__name__}: {exc}"
+            logger.exception(
+                "Failed to build analysis runtime for project {pid}: {err}",
+                pid=project_id,
+                err=analysis_runtime_error,
+            )
+
         return ProjectResources(
             project_id=project_id,
             db_engine=db_engine,
@@ -140,6 +169,8 @@ class ProjectRegistry:
             raw_trace_store=rts,
             sync_log=sync_log,
             pipeline=pipeline,
+            analysis_runtime=analysis_runtime,
+            analysis_runtime_error=analysis_runtime_error,
         )
 
     @staticmethod

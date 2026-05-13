@@ -121,6 +121,7 @@ async def test_registry_get_returns_project_resources(
     tmp_secondsight_home: Path,
 ) -> None:
     """Unit: get() returns a ProjectResources with all required attributes."""
+    from secondsight.analysis.runtime import ProjectAnalysisRuntime
     from secondsight.storage.events_repository import EventsRepository
     from secondsight.storage.raw_ingress_store import RawIngressStore
     from secondsight.storage.raw_trace_store import RawTraceStore
@@ -138,6 +139,8 @@ async def test_registry_get_returns_project_resources(
         assert isinstance(res.raw_trace_store, RawTraceStore)
         assert isinstance(res.sync_log, SyncLog)
         assert isinstance(res.pipeline, ObservationPipeline)
+        assert isinstance(res.analysis_runtime, ProjectAnalysisRuntime)
+        assert res.analysis_runtime_error is None
     finally:
         await registry.aclose()
 
@@ -158,5 +161,28 @@ async def test_registry_different_projects_different_resources(
         res_b = await registry.get("project-beta")
         assert res_a.db_engine is not res_b.db_engine
         assert res_a.project_id != res_b.project_id
+    finally:
+        await registry.aclose()
+
+
+@pytest.mark.asyncio
+async def test_registry_reuses_single_analysis_runtime_and_registers_callback_once(
+    tmp_secondsight_home: Path,
+) -> None:
+    """Death test: one project gets one shared runtime and one callback registration.
+
+    If registry materialization builds multiple trigger instances or double-registers
+    the pipeline callback, SESSION_END can fan out duplicate dispatches silently.
+    """
+    registry = ProjectRegistry(secondsight_home=tmp_secondsight_home)
+    try:
+        first = await registry.get("shared-runtime-proj")
+        second = await registry.get("shared-runtime-proj")
+
+        assert first.analysis_runtime is not None
+        assert second.analysis_runtime is first.analysis_runtime
+        assert len(first.pipeline._post_ingest_callbacks) == 1, (
+            "Pipeline callback must be registered exactly once per project runtime."
+        )
     finally:
         await registry.aclose()

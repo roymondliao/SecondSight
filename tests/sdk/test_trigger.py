@@ -541,7 +541,7 @@ async def test_in_flight_run_blocks_dispatch(
 ) -> None:
     """Non-terminal run updated_at within trigger_lock_seconds → block dispatch."""
     # Insert a non-terminal run with updated_at = now (very recent)
-    run_id = runs_repo.start_run(_PROJECT_ID, _SESSION_ID)
+    runs_repo.start_run(_PROJECT_ID, _SESSION_ID)
     # run is at stage='pending', updated_at=now → "in flight"
 
     fake_orchestrator = _CountingOrchestrator()
@@ -615,7 +615,7 @@ async def test_lock_registry_non_blocking_acquire_on_contention() -> None:
     release_event = asyncio.Event()
 
     async def _hold_lock() -> None:
-        async with registry.acquire("sess-lock-test") as held:
+        async with registry.acquire("sess-lock-test"):
             acquired_event.set()
             await release_event.wait()
 
@@ -756,6 +756,45 @@ async def test_pipeline_callback_does_not_fire_on_non_session_end(
     assert fake_orchestrator.call_count == 0
 
 
+@pytest.mark.asyncio
+async def test_pipeline_callback_registration_is_idempotent(
+    runs_repo: AnalysisRunsRepository,
+    events_repo: EventsRepository,
+    lock_registry: LockRegistry,
+) -> None:
+    """Death test: double registration must not silently duplicate callbacks."""
+    from secondsight.observation.pipeline import ObservationPipeline
+
+    fake_orchestrator = _CountingOrchestrator()
+    trigger = Trigger(
+        orchestrator=fake_orchestrator,
+        analysis_runs_repo=runs_repo,
+        events_repo=events_repo,
+        lock_registry=lock_registry,
+    )
+
+    class _FakeRTS:
+        async def write(self, event: Event) -> str:
+            return "/fake/path"
+
+    class _FakeSyncLog:
+        def record_failure(self, *a: object, **kw: object) -> None:
+            pass
+
+    pipeline = ObservationPipeline(
+        raw_trace_store=_FakeRTS(),  # type: ignore[arg-type]
+        events_repository=events_repo,
+        sync_log=_FakeSyncLog(),  # type: ignore[arg-type]
+    )
+
+    trigger.register_pipeline_callback(pipeline)
+    trigger.register_pipeline_callback(pipeline)
+
+    assert len(pipeline._post_ingest_callbacks) == 1, (
+        "Duplicate registration silently doubles SESSION_END dispatch."
+    )
+
+
 # =====================================================================
 # In-memory dispatch tracker pruning (self-iteration fix)
 # =====================================================================
@@ -791,7 +830,7 @@ async def test_in_memory_tracker_pruned_after_expiry(
 
     # Second dispatch on a DIFFERENT session to trigger pruning
     other_session = "sess-pruning-other"
-    result2 = await trigger.dispatch(_PROJECT_ID, other_session, source="event")
+    await trigger.dispatch(_PROJECT_ID, other_session, source="event")
 
     # The original session entry should have been pruned
     assert _SESSION_ID not in trigger._in_memory_dispatched, (

@@ -243,6 +243,7 @@ class Trigger:
         # The tracker is a Trigger-instance attribute (not shared across triggers).
         # Entries older than trigger_lock_seconds are treated as stale.
         self._in_memory_dispatched: dict[str, float] = {}
+        self._registered_pipeline_ids: set[int] = set()
 
     async def dispatch(
         self,
@@ -431,7 +432,19 @@ class Trigger:
         This is the wiring point for the event-driven trigger path (D3):
         ingest() stays unblocked because the callback uses asyncio.create_task.
         """
+        pipeline_id = id(pipeline)
+        if pipeline_id in self._registered_pipeline_ids:
+            _logger.debug(
+                "register_pipeline_callback: pipeline_id=%r already registered; skipping",
+                pipeline_id,
+            )
+            return
         pipeline.add_post_ingest_callback(self._pipeline_callback)
+        self._registered_pipeline_ids.add(pipeline_id)
+        _logger.info(
+            "register_pipeline_callback: registered SESSION_END callback for pipeline_id=%r",
+            pipeline_id,
+        )
 
     async def _pipeline_callback(self, event: Event) -> None:
         """Called by ObservationPipeline after each DB-write-succeeded ingest.
@@ -447,10 +460,16 @@ class Trigger:
             event.session_id,
             event.project_id,
         )
-        await self.dispatch(
+        result = await self.dispatch(
             event.project_id,
             event.session_id,
             source="event",
+        )
+        _logger.info(
+            "_pipeline_callback: source='event' session_id=%r project_id=%r outcome=%r",
+            event.session_id,
+            event.project_id,
+            result.reason,
         )
 
 

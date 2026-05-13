@@ -1,0 +1,22 @@
+task_id: task-3
+completion_status: done
+
+known_shortcuts:
+  - description: "Server sweeper still scans only projects materialized since process start; dormant projects that were never touched in the current process remain outside the sweep set."
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: "None found within task scope after adding timeout-dispatch coverage and duplicate-dispatch checks."
+
+assumptions_made:
+  - assumption: "Using the shared trigger from registry resources is sufficient to prevent duplicate event+timeout dispatches."
+    verified: true
+    note: "Verified by `tests/api/test_server_analysis_runtime.py::test_dt_sar_3_event_and_timeout_share_trigger_without_duplicate_runs` plus existing trigger lock/idempotency tests."
+
+debt_registered: true
+debt_location: "src/secondsight/api/server.py sweeper project discovery limitation"
+
+resolved_items:
+  - original_section: "silent_failure_conditions"
+    original_description: "Sweeper notices stale sessions but only emits a warning, creating an endless operator loop."
+    resolution: "Sweeper now calls the shared trigger with `source='timeout'` and logs dispatched vs skipped outcomes explicitly."
