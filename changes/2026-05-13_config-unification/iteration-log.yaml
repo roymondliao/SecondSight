@@ -1,0 +1,59 @@
+feature: "2026-05-13_config-unification"
+signal_lost_initial: 9
+
+budget:
+  max_rounds: 3
+  reviewer_retry_limit: 2
+
+rounds:
+  - round: 1
+    signal_lost_before: 9
+    budget_context:
+      remaining_rounds_at_start: 2
+      stagnation_count_at_start: 0
+      net_rot_previous_round: 0
+      strategy_hint: converge
+    items_triaged: 10
+    triage_result:
+      fix:
+        - "U-2: config show silently displays invalid TTL types (bool/non-int) without flagging them; validate exits 1 but show exits 0 without warning"
+        - "D-6: _collect_sourced_values() independently re-reads both raw and interpolated TOML files, duplicating logic already present in loader.py's _parse_toml()"
+        - "U-1: _build_orchestrator() exists in analyze.py but has no callers — dead code with maintenance liability on every Orchestrator/AnalysisTools change"
+      accept:
+        - description: "D-3: _collect_sourced_values() collects sources for global + project config only; no per-user overrides or env-var attribution layer"
+          expiry_date: "2026-08-13"
+          rationale: "Current MVP scope is global+project only. Env-var attribution is future work tracked in feature backlog."
+        - description: "D-4: _interpolate_dict() resolves env vars greedily at parse time; no lazy or deferred substitution"
+          expiry_date: "2026-08-13"
+          rationale: "Lazy interpolation is not required for current use cases. Acceptable until dynamic config loading is needed."
+        - description: "D-5: config show --source uses string matching to attribute TTL keys; brittle if key names change"
+          expiry_date: "2026-08-13"
+          rationale: "Key names are constants (_TTL_INT_KEYS). A rename would break the match but the death test would catch it."
+        - description: "A-1: _parse_toml() does not accept a raw_env parameter override; callers must load .env before calling"
+          expiry_date: "2026-08-13"
+          rationale: "All callers follow the _load_dotenv_if_exists() → _parse_toml() ordering contract. Documented in scar reports."
+      defer:
+        - "D-1: _collect_sourced_values() has no integration test covering both global and project config simultaneously with conflicting values"
+        - "D-2: _show_section() rendering is not death-tested for missing or partial sourced values"
+        - "D-7: No death test for the case where _parse_toml_both() is called with a file that exists but has read permission denied"
+    fixes_applied: 3
+    fixes_scar_count: 3
+    budget_spent:
+      implementer_dispatches: 0
+      reviewer_dispatches: 6
+      reviewer_retries: 0
+      validation_runs: 6
+    evidence_gained:
+      - "U-2: TestDTShowBoolTtlWarned RED before fix, GREEN after; 20 tests in test_config_cmd.py pass"
+      - "U-2: bool pre-check (isinstance(sv.value, bool)) must precede int check — bool is subclass of int in Python"
+      - "D-6: TestDTD6NoDuplicateTomlReader RED before fix, GREEN after; 58 tests in test_config_cmd.py+test_loader.py pass"
+      - "D-6: _parse_toml_both() reduces TOML read count from 4 to 2 per config-file pair; eliminates SFC-2 divergence risk"
+      - "U-1: grep confirmed single match for _build_orchestrator (definition only); TestDTU1BuildOrchestratorDeleted RED before, GREEN after"
+      - "U-1: 316 unit tests pass after deletion; both code-reviewer and code-quality-reviewer: PASS"
+    residual_risk:
+      - "TTL key list (_TTL_INT_KEYS) is duplicated between show() warning loop and validate() exit loop — shared via constant but not via abstraction"
+      - "ty-check has 215 pre-existing type errors in src/ and tests/ (unrelated to config-unification); cache was hiding them"
+      - "D-1, D-2, D-7 deferred tests remain as technical debt"
+    signal_lost_after: 6
+    decision: stop
+    decision_reason: "User chose to stop after round 1. 3 items fixed, 4 accepted, 3 deferred. signal_lost 9 → 6. Entering Security & Privacy Review."
