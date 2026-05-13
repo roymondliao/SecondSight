@@ -536,6 +536,33 @@ class TestDTDotEnvLoadedBeforeValidate:
         )
 
 
+class TestDTD6NoDuplicateTomlReader:
+    """DT-d6: after D-6 fix, config_cmd.py must not define its own TOML reader.
+
+    Death test for D-6 (TOML re-reads DRY violation):
+    Before fix: config_cmd.py defined _read_raw_toml() as a local TOML reader
+    parallel to loader.py's _parse_toml(). Any change to the reading path (error
+    messages, exception types) needed tracking to both sites independently.
+    After fix: _read_raw_toml() is removed; config_cmd imports _parse_toml_both()
+    from loader.py — both raw and interpolated reads co-locate in one function.
+    """
+
+    def test_no_local_toml_reader_in_config_cmd(self) -> None:
+        import secondsight.cli.config_cmd as config_cmd
+
+        assert not hasattr(config_cmd, "_read_raw_toml"), (
+            "config_cmd.py must not define its own _read_raw_toml() — "
+            "use _parse_toml_both() from loader.py instead (D-6 fix)"
+        )
+
+    def test_parse_toml_both_importable_from_loader(self) -> None:
+        from secondsight.config import loader
+
+        assert hasattr(loader, "_parse_toml_both"), (
+            "loader.py must expose _parse_toml_both() after D-6 fix"
+        )
+
+
 class TestDTShowBoolTtlWarned:
     """DT-show-bool-ttl: config show with bool TTL must print WARNING, NOT exit 1.
 

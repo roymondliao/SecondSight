@@ -27,8 +27,9 @@ Implementation assumptions (explicit per Samsara rules):
 Silent failure conditions (declared per Samsara):
     1. If a new env var is added to env.py but not to _collect_sourced_values(), it will
        silently misattribute that field's source.
-    2. If _parse_toml_raw() fails but _parse_toml() (interpolated) succeeds, the raw scan
-       for ${} patterns may miss some interpolation fields → wrong source label.
+    2. _parse_toml_both() must be called after _load_dotenv_if_exists(). If a future caller
+       skips the .env loading step, ${VAR} references to .env-only vars will raise
+       SecondSightConfigError even though the runtime loader would resolve them successfully.
     3. The model validator does not know which model names are currently valid (no API call);
        it only validates format patterns. A syntactically valid but deprecated model name
        passes validate.
@@ -37,7 +38,6 @@ Silent failure conditions (declared per Samsara):
 from __future__ import annotations
 
 import re
-import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,7 +53,7 @@ from secondsight.config.env import (
     get_env_analysis_model,
     get_env_default_agent,
 )
-from secondsight.config.loader import _load_dotenv_if_exists, _parse_toml
+from secondsight.config.loader import _VAR_PATTERN, _load_dotenv_if_exists, _parse_toml_both
 from secondsight.config.schema import (
     BUILTIN_DEFAULT_AGENT,
     BUILTIN_FALLBACK_MODELS,
@@ -92,9 +92,6 @@ _SOURCE_DISPLAY: dict[ConfigSourceLabel, str] = {
     "builtin_default": "[builtin_default]",
 }
 
-_VAR_PATTERN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
-
-
 @dataclass
 class SourcedValue:
     """A config value with its source layer identified.
@@ -106,33 +103,6 @@ class SourcedValue:
 
     value: Any
     source: ConfigSourceLabel
-
-
-# ---------------------------------------------------------------------------
-# Raw TOML reader (no interpolation — to detect ${VAR} patterns)
-# ---------------------------------------------------------------------------
-
-
-def _read_raw_toml(path: Path) -> dict[str, Any] | None:
-    """Read TOML without ${VAR} interpolation.
-
-    Used to detect which fields contain ${VAR_NAME} references BEFORE
-    interpolation expands them, so we can attribute them to env_var_interpolation
-    rather than global_config.
-
-    Returns None if the file does not exist. Does NOT raise on ${VAR} patterns
-    (unlike _parse_toml which interpolates and can raise SecondSightConfigError).
-
-    Raises:
-        SecondSightConfigError: File exists but is malformed TOML.
-    """
-    if not path.is_file():
-        return None
-    try:
-        with path.open("rb") as fh:
-            return tomllib.load(fh)
-    except tomllib.TOMLDecodeError as exc:
-        raise SecondSightConfigError(f"malformed TOML in config ({path}): {exc}") from exc
 
 
 def _has_var_interpolation(raw_value: Any) -> bool:
@@ -238,11 +208,10 @@ def _collect_sourced_values(
 ) -> dict[str, SourcedValue]:
     """Build a flat dict of all config keys mapped to SourcedValue.
 
-    This function reads the raw (un-interpolated) TOML files to detect ${VAR}
-    patterns, then also reads the interpolated versions to get effective values.
-
-    All resolved values are taken from the interpolated doc (or from env vars
-    directly). Raw docs are only used for source attribution.
+    Calls _parse_toml_both() from loader.py to read each config file once,
+    returning both the raw (un-interpolated) and interpolated dicts in a single
+    pass. Raw docs are used for source attribution (${VAR} pattern detection);
+    interpolated docs provide the effective resolved values.
 
     Keys returned (dot-separated section paths):
         retention.raw_traces_ttl_days
@@ -266,13 +235,17 @@ def _collect_sourced_values(
     # SecondSightConfigError here while the runtime loader would succeed.
     _load_dotenv_if_exists(home / ".env")
 
-    # Read raw (no interpolation) for source detection
-    raw_global = _read_raw_toml(global_path)
-    raw_project = _read_raw_toml(project_path) if project_path else None
+    # Read each config file once: _parse_toml_both() returns (raw, interpolated) in a
+    # single pass. raw_* dicts keep ${VAR} patterns intact (for source attribution);
+    # interp_* dicts have them expanded (for effective values).
+    raw_global, interp_global_r = _parse_toml_both(global_path)
+    interp_global = interp_global_r or {}
 
-    # Read interpolated for effective values
-    interp_global = _parse_toml(global_path) or {}
-    interp_project = (_parse_toml(project_path) or {}) if project_path else {}
+    if project_path:
+        raw_project, interp_project_r = _parse_toml_both(project_path)
+        interp_project = interp_project_r or {}
+    else:
+        raw_project, interp_project = None, {}
 
     result: dict[str, SourcedValue] = {}
 

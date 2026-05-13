@@ -657,6 +657,56 @@ class TestUTLoadProjectConfigDocstring:
         )
 
 
+class TestUTParseTomlBothBehavior:
+    """UT-loader-18: _parse_toml_both returns raw (${VAR} intact) and interpolated dicts.
+
+    Behavioral contract: raw_doc retains ${VAR} pattern strings so callers can detect
+    which fields use interpolation; interp_doc has them expanded for effective values.
+    Tests structural presence of the function AND its behavioral guarantee — structural
+    tests alone cannot catch an impl that returns the interpolated dict twice.
+    """
+
+    def test_raw_retains_var_pattern_interp_expands(self, tmp_path: Path) -> None:
+        from secondsight.config.loader import _parse_toml_both
+
+        toml = tmp_path / "config.toml"
+        toml.write_text('[analysis.models]\nclaude_code = "${DT_MODEL}"\n', encoding="utf-8")
+        env = {"DT_MODEL": "claude-haiku-4-5-20251001"}
+
+        raw_doc, interp_doc = _parse_toml_both(toml, env=env)
+
+        assert raw_doc is not None, "raw_doc must not be None for existing file"
+        assert interp_doc is not None, "interp_doc must not be None for existing file"
+
+        raw_val = raw_doc["analysis"]["models"]["claude_code"]
+        interp_val = interp_doc["analysis"]["models"]["claude_code"]
+
+        assert raw_val == "${DT_MODEL}", (
+            f"raw_doc must keep ${'{'}DT_MODEL{'}'} pattern intact, got {raw_val!r}"
+        )
+        assert interp_val == "claude-haiku-4-5-20251001", (
+            f"interp_doc must expand ${'{'}DT_MODEL{'}'}, got {interp_val!r}"
+        )
+
+    def test_returns_none_none_for_absent_file(self, tmp_path: Path) -> None:
+        from secondsight.config.loader import _parse_toml_both
+
+        raw_doc, interp_doc = _parse_toml_both(tmp_path / "nonexistent.toml")
+
+        assert raw_doc is None
+        assert interp_doc is None
+
+    def test_raises_on_malformed_toml(self, tmp_path: Path) -> None:
+        from secondsight.config.loader import _parse_toml_both
+        from secondsight.config.schema import SecondSightConfigError
+
+        toml = tmp_path / "bad.toml"
+        toml.write_text("not = valid [toml", encoding="utf-8")
+
+        with pytest.raises(SecondSightConfigError, match="malformed"):
+            _parse_toml_both(toml)
+
+
 class TestUTBuildConfigFromDocsInAll:
     """UT-loader-17: _build_config_from_docs must have explicit decision in __all__ or comment.
 

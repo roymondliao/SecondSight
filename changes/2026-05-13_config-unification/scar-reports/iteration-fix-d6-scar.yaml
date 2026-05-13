@@ -1,0 +1,88 @@
+task_id: iteration-fix-d6
+feature: 2026-05-13_config-unification
+title: "Iteration fix D-6: _parse_toml_both() — eliminate duplicate TOML reader in config_cmd.py"
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      _parse_toml_both() does not accept a raw_env parameter to override the environment
+      for interpolation (matching _parse_toml's env parameter). The caller
+      (_collect_sourced_values) passes no env and relies on os.environ being populated
+      by _load_dotenv_if_exists() beforehand. Tests that need to inject a custom env for
+      the interpolation step must still monkeypatch os.environ.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      _parse_toml_both() returns (raw_doc, interp_doc) where interp_doc is produced by
+      calling _interpolate_dict(raw_doc). If _interpolate_dict raises SecondSightConfigError
+      (unresolvable ${VAR}), the exception propagates before interp_doc is returned.
+      The caller (_collect_sourced_values) wraps the call site — this is correct behavior,
+      not a silent failure. Documented here for completeness.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      tomllib.load() on a TOML file does not mutate the file or the Path object.
+      raw_doc from tomllib.load() is a pure dict that can be safely passed to
+      _interpolate_dict() without concern about aliasing.
+    verified: true
+    note: >
+      tomllib.load() returns a new dict; _interpolate_dict returns another new dict
+      (iterates key-by-key, builds result: dict). No aliasing concern.
+
+debt_registered: false
+debt_location: null
+
+narrative: |
+  Before this fix, config_cmd.py defined _read_raw_toml() as a local TOML reading
+  function. _collect_sourced_values() called _read_raw_toml() (local) AND _parse_toml()
+  (from loader.py) for each config file — four total calls for two files.
+
+  The DRY violation: any fix to the TOML reading path in loader.py (e.g., improved
+  error messages, different exception handling) needed to be tracked to _read_raw_toml()
+  in config_cmd.py separately. There was no import-visible coupling between the two.
+
+  The fix adds _parse_toml_both() to loader.py that reads the file once (raw parse)
+  and returns both the un-interpolated dict (for ${VAR} source detection) and the
+  interpolated dict (for effective values) in a single pass. _read_raw_toml() is deleted
+  from config_cmd.py. Now both raw and interpolated reads co-locate in loader.py.
+
+  As a bonus, the fix reduces the file-read count: previously 4 reads (2 raw + 2 interp)
+  for 2 config files; now 2 reads (one _parse_toml_both() per file). The difference
+  is negligible in practice (TOML files are small), but the co-location is the real value.
+
+  Additionally resolved: the module-level docstring SFC-2 ("If _parse_toml_raw() fails
+  but _parse_toml() succeeds, the raw scan may miss interpolation fields") is eliminated
+  because _parse_toml_both() uses the same raw_doc for both attribution and interpolation.
+  If the TOML parse fails, both views fail together.
+
+resolved_items:
+  - original_section: known_shortcuts
+    original_description: >
+      task-5/shortcut-1: _collect_sourced_values() independently re-reads both the raw
+      and interpolated TOML files, duplicating logic already present in loader.py's
+      _parse_toml(). Any bug fix in loader.py's TOML reading path must be tracked to
+      config_cmd.py separately.
+    resolution: >
+      Added _parse_toml_both() to loader.py. Deleted _read_raw_toml() from config_cmd.py.
+      _collect_sourced_values() now calls _parse_toml_both() once per config file.
+      Death tests TestDTD6NoDuplicateTomlReader verify _read_raw_toml no longer exists
+      in config_cmd and _parse_toml_both is importable from loader. 58 tests pass.
+  - original_section: silent_failure_conditions
+    original_description: >
+      config_cmd.py SFC-2: If _parse_toml_raw() fails but _parse_toml() (interpolated)
+      succeeds, the raw scan for ${} patterns may miss some interpolation fields.
+    resolution: >
+      Eliminated by _parse_toml_both(): raw_doc and interp_doc share the same tomllib.load()
+      call. If the parse fails, both views raise together — no divergence possible.
+
+budget_spent:
+  validation_runs: 2
+  reviewer_retries_consumed: 0
+evidence_gained:
+  - "TestDTD6NoDuplicateTomlReader.test_no_local_toml_reader_in_config_cmd: RED before fix, GREEN after"
+  - "TestDTD6NoDuplicateTomlReader.test_parse_toml_both_importable_from_loader: RED before fix, GREEN after"
+  - "Full test_config_cmd.py + test_loader.py suite: 58 passed, 0 failed"
+residual_risk:
+  - "_parse_toml_both() env parameter not threaded (caller must load .env first)"

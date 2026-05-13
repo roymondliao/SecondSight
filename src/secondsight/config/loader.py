@@ -72,9 +72,19 @@ __all__ = [
     "_interpolate_vars",
     "_interpolate_dict",
     "_parse_toml",
+    # _parse_toml_both: reads a TOML file once, returns (raw, interpolated) for
+    # source-attribution callers (e.g. config_cmd._collect_sourced_values) that
+    # need both the un-interpolated dict (to detect ${VAR} patterns) and the
+    # interpolated dict (for effective values) without double file-reading.
+    "_parse_toml_both",
     # _build_config_from_docs is intentionally included for testing the merge logic
     # in isolation without exercising filesystem I/O (TOML parsing + .env loading).
     "_build_config_from_docs",
+    # _VAR_PATTERN is the single source of truth for the ${VAR} interpolation regex.
+    # Exported so config_cmd._has_var_interpolation can use the same pattern without
+    # defining a local copy.
+    "_VAR_PATTERN",
+    "_load_dotenv_if_exists",
 ]
 
 # ---------------------------------------------------------------------------
@@ -229,6 +239,44 @@ def _parse_toml(path: Path, env: dict[str, str] | None = None) -> dict[str, Any]
     except tomllib.TOMLDecodeError as exc:
         raise SecondSightConfigError(f"malformed TOML in config ({path}): {exc}") from exc
     return _interpolate_dict(doc, env=env)
+
+
+def _parse_toml_both(
+    path: Path,
+    env: dict[str, str] | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Read a TOML file once, returning both the raw and interpolated dicts.
+
+    Designed for callers (e.g. _collect_sourced_values) that need:
+    - raw_doc: ${VAR} patterns intact, for source attribution (which fields are interpolated?)
+    - interp_doc: ${VAR} expanded, for effective config values
+
+    Reading the file once prevents the raw-vs-interpolated split from diverging
+    if the underlying reading path (_parse_toml) is ever modified.
+
+    The caller is responsible for calling _load_dotenv_if_exists() BEFORE this
+    function so that ${VAR} references to .env-only vars are in os.environ.
+
+    Args:
+        path: Path to the TOML file.
+        env: Environment dict for interpolation. Defaults to os.environ if None.
+
+    Returns:
+        (raw_doc, interp_doc): both None if the file does not exist.
+
+    Raises:
+        SecondSightConfigError: File exists but has malformed TOML, or a
+            ${VAR} reference cannot be resolved.
+    """
+    if not path.is_file():
+        return None, None
+    try:
+        with path.open("rb") as fh:
+            raw_doc = tomllib.load(fh)
+    except tomllib.TOMLDecodeError as exc:
+        raise SecondSightConfigError(f"malformed TOML in config ({path}): {exc}") from exc
+    interp_doc = _interpolate_dict(raw_doc, env=env)
+    return raw_doc, interp_doc
 
 
 def _build_global_analysis_config(doc: dict[str, Any]) -> GlobalAnalysisConfig:
