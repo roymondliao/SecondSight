@@ -1,0 +1,161 @@
+delivered_capability: |
+  Unified config system for SecondSight: single source of truth at
+  ~/.secondsight/config.toml with per-project overrides at
+  ~/.secondsight/projects/<pid>/config.toml. .env loading via python-dotenv,
+  ${VAR} interpolation, env var overlay (SECONDSIGHT_ANALYSIS_MODEL,
+  SECONDSIGHT_DEFAULT_AGENT), and two new CLI subcommands:
+
+    - secondsight config show     — print effective config with source attribution
+    - secondsight config validate — type-check + model name format validation
+
+  secondsight init now generates a default config.toml on first run with
+  diff-protection on subsequent runs (never overwrites, prints new keys).
+
+  Runtime integration: server and CLI analyze pipelines both load config
+  through the unified loader.load_project_config(); AnalysisConfig.load()
+  shares the same ${VAR} interpolation pass (no split parse paths).
+
+known_failure_modes:
+  - mode: |
+      Server reads config at startup and holds it for the process lifetime.
+      Operator edits to ~/.secondsight/config.toml require server restart
+      to take effect.
+    severity: degradation
+    detection: |
+      `secondsight config show` prints "Config last loaded at <timestamp>".
+      Operator comparing this to last config.toml mtime detects staleness.
+
+  - mode: |
+      AnalysisConfig.load() and load_project_config() both read the same
+      per-project config.toml. The C-1 fix unified the interpolation pass,
+      but the two functions still parse the file twice (one read each).
+      A TOML write between the two reads could surface partial state.
+    severity: degradation
+    detection: |
+      Race window is microseconds wide and only affects mid-write reads,
+      which would surface as TOML parse errors (AnalysisConfigError or
+      SecondSightConfigError) — never silent corruption.
+
+  - mode: |
+      ty-check pre-commit hook reports 215 type errors in src/ and tests/
+      at HEAD baseline. These are pre-existing and unrelated to
+      config-unification (verified by stashing all session changes and
+      running ty check at HEAD). The cache was hiding them for prior
+      commits; the analyze.py modification in U-1 invalidated the cache.
+    severity: degradation
+    detection: |
+      `ty check --python=.venv/ src tests` exit code 1 with full error
+      list. Pre-commit was bypassed with --no-verify (user-approved) for
+      all iteration + review fix commits.
+
+accepted_risks:
+  - risk: |
+      _TTL_INT_KEYS list is duplicated between config show()'s warning loop
+      and validate()'s error loop. Adding a new TTL field requires updating
+      one constant (mitigation) — but the per-loop iteration logic is still
+      a co-update contract not enforced by the type system.
+    accepted_by: human
+    expires: "2026-08-13"
+
+  - risk: |
+      _parse_toml_both() does not accept a raw_env override parameter.
+      Callers must call _load_dotenv_if_exists() before _parse_toml_both()
+      to ensure ${VAR} interpolation sees the correct env. Documented in
+      iteration-fix-d6-scar.yaml.
+    accepted_by: human
+    expires: "2026-08-13"
+
+  - risk: |
+      diff_against_template() uses flat key-path comparison. It detects
+      added/removed keys but NOT type changes (e.g. string→list at the same
+      key path). An operator who manually edits config.toml to change a
+      key's TOML type will not see a diff warning at next init.
+    accepted_by: human
+    expires: "2026-08-13"
+
+  - risk: |
+      Spec drift on acceptance.yaml ".env 成功載入" scenario: the spec said
+      `config show` should label ANTHROPIC_API_KEY source as .env. The
+      implementation does not show API keys in config show at all — this
+      was an intentional deviation flagged during security review (showing
+      key presence leaks awareness; the key itself could be interpolated
+      into displayed values).
+    accepted_by: human
+    expires: "2026-08-13"
+
+  - risk: |
+      Suggestions S-1..S-4 from code review left unaddressed:
+      S-1: dead Python <3.11 fallback in template.py:41-48
+      S-2: _OrchestratorResources dataclass with non-type-safe cast in runtime.py
+      S-3: _GPT_O_PREFIX_RE dead branch in config_cmd.py:504
+      S-4: config show displays env var value for all three adapter fields
+      None are critical. Tracked for future cleanup pass.
+    accepted_by: human
+    expires: "2026-08-13"
+
+  - risk: |
+      I-2 from code review: _validate_model_name docstring describes
+      gpt-4*/gpt-o* patterns but implementation uses loose ^gpt- regex.
+      Reviewed and explicitly accepted by maintainer: loose validation is
+      the right policy. Model configuration is user's responsibility — if
+      the SDK can't load the chosen model, that's a runtime error to
+      surface honestly, not a config validator's job to predict ahead of
+      OpenAI/Anthropic's release cadence.
+    accepted_by: human
+    expires: "2026-11-13"
+
+silent_failure_surface: low
+
+monitoring_hooks:
+  - |
+    `secondsight config show` — exposes source layer for every config field,
+    so an operator can verify which TOML layer or env var won.
+  - |
+    `secondsight config validate` — exits 1 on any TOML malformation,
+    unresolvable ${VAR}, or invalid claude model name format. Suitable
+    for CI pre-deployment checks.
+  - |
+    SecondSightConfigError on .env / TOML parse — surfaced at process
+    startup (server) or per-command (CLI). Never silently fallthrough.
+
+kill_switch: |
+  - Per-config: rename or delete ~/.secondsight/config.toml → loader falls
+    back to built-in defaults. No data loss.
+  - Per-project: delete ~/.secondsight/projects/<pid>/config.toml → falls
+    back to global config (or builtin defaults).
+  - Per env var: `unset SECONDSIGHT_ANALYSIS_MODEL` / `unset SECONDSIGHT_DEFAULT_AGENT`
+    to revert to TOML or defaults.
+  - Per .env: rename ~/.secondsight/.env → API keys must be exported in
+    shell before starting secondsight serve.
+
+validation_summary:
+  feature_branch: "main (5 commits ahead of 38ebcbe)"
+  unit_tests_passing: 660
+  unit_tests_in_feature_diff: 177
+  e2e_tests_passing: 10
+  acceptance_scenarios:
+    death_paths: 7
+    degradation_paths: 3
+    happy_paths: 6
+    drift_count: 1
+  code_review:
+    initial_verdict: FAIL
+    initial_findings: "1 Critical, 3 Important, 4 Suggestions"
+    final_verdict: PASS_AFTER_FIXES
+    fixes_committed: "C-1, I-1, I-3"
+    accepted_with_rationale: "I-2 (maintainer policy: loose validation is correct)"
+  iteration_signal_lost: "9 → 6 (Round 1 stop)"
+  security_review:
+    initial_verdict: FAIL
+    initial_findings: "1 Medium, 1 Low"
+    final_verdict: PASS_AFTER_FIXES
+    fixes_committed: "is_safe_id guard on --project, Rich markup → typer.echo"
+
+feature_commits:
+  - "4495e98 feat: config-unification — unified config/ package with loader, CLI show/validate"
+  - "500e5f8 fix(iteration-u2): config show TTL type warning + shared _TTL_INT_KEYS constant"
+  - "a6067f2 fix(iteration-d6): _parse_toml_both() — eliminate duplicate TOML reader, unify _VAR_PATTERN"
+  - "f271639 fix(iteration-u1): delete _build_orchestrator() dead code from analyze.py"
+  - "d3ea519 chore(iteration): write iteration-log.yaml for config-unification Round 1"
+  - "982a004 fix(security): add is_safe_id() guard + Rich escape to config show/validate"
+  - "2cf5805 fix(review): C-1 + I-1 + I-3 from validate-and-ship code review"
