@@ -1,0 +1,157 @@
+task_id: iter-F6
+completion_status: done
+# Fix F6: write e2e-results.md (T7 known_shortcuts #3)
+#
+# Scar item addressed (verbatim from task-7-scar.yaml known_shortcuts #3):
+#   "e2e-results.md was not written. The task spec called for capturing test
+#    results in changes/2026-05-14_analysis-mode-toggle/e2e-results.md. This
+#    was omitted because the gated SDK tests could not produce real results,
+#    and writing partial results risks misleading reviewers."
+#
+# Resolution approach:
+#   The concern was misleading reviewers. The fix is an honest document that
+#   clearly separates:
+#     (a) what ran and passed — non-gated (16) + CLI gated (2)
+#     (b) what was skipped and why — SDK gated (3, no ANTHROPIC_API_KEY)
+#     (c) what was found — the RouterTerminalError production bug + two-round fix
+#   The document's status header says "PARTIAL" explicitly. No inflation.
+#
+# Count correction:
+#   The task spec said "15 non-gated tests." The actual count is 16:
+#     12 in test_legacy_config_upgrade.py + 4 in test_sdk_regression.py.
+#   test_sdk_regression.py was created in Task 8 IMPORTANT FIX 7 (after the
+#   task plan was written). The e2e-results.md uses the accurate count.
+#   Total: 16 non-gated + 2 CLI gated + 3 SDK gated = 21 (not 20).
+
+budget_spent:
+  validation_runs: 0
+  # This is a documentation deliverable — no tests were run.
+  # Source verification: read 5 artifact files + 2 scar YAMLs + 2 test files
+  # + 1 PoC results file + python AST parse to confirm test counts.
+  reviewer_retries_consumed: 0
+
+evidence_gained:
+  - source_artifact_review_complete: true
+  - test_count_verified_by_ast_parse: true
+  # Actual counts: test_legacy_config_upgrade.py=12, test_sdk_regression.py=4,
+  # test_mode_toggle_cli.py=2, test_mode_toggle_sdk.py=3. Total=21.
+  - count_discrepancy_from_task_spec_documented: true
+  # Task spec said 15 non-gated + 2 CLI + 3 SDK = 20; actual is 16 + 2 + 3 = 21.
+  - production_bug_chain_documented: true
+  # RouterTerminalError → Task 7 round-1 flawed fix → Task 8 proper fix
+  - poc_verdict_referenced: true
+  # cli-protocol-poc-results.md: claude_code 10/10 and codex 10/10 on Variant 1
+  - codex_e2e_limitation_disclosed: true
+  # Codex PoC-verified only (Task 4); not exercised in full-server E2E gated run
+  - sdk_gated_status_clearly_partial: true
+  - operator_action_items_written: true
+  - no_source_code_modified: true
+  - no_other_scar_reports_modified: true
+
+known_shortcuts:
+  - description: >
+      The e2e-results.md documents the 24s CLI gated test run from Task 7 round-1
+      but does not include the actual raw test output (pytest verbose output, server
+      logs, DB row contents). The evidence exists in Task 7's scar report narrative
+      and verified assumptions, not as captured terminal output.
+    accepted: true
+    rationale: >
+      The Task 7 scar report's verified assumptions section explicitly states "CLI
+      gated tests passed (2/2) with real claude invocation in 24 seconds" and
+      "DB rows found correctly." This is sufficient basis for the e2e-results.md
+      claim. Capturing raw terminal output was not part of the iter-F6 scope.
+
+silent_failure_conditions:
+  - condition: >
+      If the SDK gated tests are never run by an operator, the e2e-results.md
+      will remain PARTIAL indefinitely. There is no automated reminder or CI gate
+      that enforces the operator probe. The document's "Pending operator" status
+      could be overlooked when the feature ships.
+    likelihood: medium
+    detection: >
+      The e2e-results.md status header says "PARTIAL" explicitly and the operator
+      action items section names the three specific tests and commands required.
+      A release checklist reviewer would need to check this file before shipping.
+
+assumptions_made:
+  - assumption: >
+      The test counts from AST parse reflect what actually ran in the Task 8 full
+      suite (1812 passed). The 16 non-gated E2E tests are included in that count.
+    verified: true
+    note: >
+      Task 8 scar states "1812 passed" and "16 tests" in e2e/ pass. The AST parse
+      confirms 12 + 4 = 16 non-gated E2E tests. The gated tests (5 total) skip in
+      sandbox, so they appear in the "skipped" count, not "passed."
+
+  - assumption: >
+      The CLI gated tests were run with the `claude` binary at version 2.1.141 as
+      stated in cli-protocol-poc-results.md. The test invocation used the same
+      binary that was available in Task 4's PoC environment.
+    verified: true
+    note: >
+      Both the PoC results doc and Task 7 scar's verified assumptions reference
+      the same machine and binary. cli-protocol-poc-results.md documents
+      "claude 2.1.141 at /Users/yuyu_liao/.local/bin/claude."
+
+  - assumption: >
+      The production bug (RouterTerminalError) was definitively fixed in Task 8
+      (not in Task 7 round-1). The e2e-results.md states Task 7's fix was "flawed"
+      and Task 8's fix was "correct." This characterization matches the scar records.
+    verified: true
+    note: >
+      task-8-scar.yaml CRITICAL FIX 1 explicitly states Task 7's fix "violated
+      the architecture invariant" and Task 8's fix "removed the mode-conditional
+      from build_project_analysis_runtime() entirely." task-7-scar.yaml's narrative
+      was corrected to remove the false "exception clause" citation.
+
+debt_registered: false
+
+residual_risk:
+  - risk: >
+      The 3 SDK gated tests in test_mode_toggle_sdk.py have never executed against
+      a real LLM. If the SDK dispatch chain (ModeAwareDispatch._get_sdk_dispatcher →
+      LLMRouter → Anthropic API → analysis_outputs row write) has a bug that only
+      manifests at runtime (e.g., async context issue, model name resolution, response
+      parsing), no current test will catch it before production.
+    likelihood: low
+    mitigation: >
+      The SDK dispatch chain was verified at the unit test level (LLMRouter tests,
+      SDKAnalysisDispatcher tests, ModeAwareDispatch tests). The test_sdk_regression.py
+      tests verify routing correctness. The unverified gap is the full server-to-DB
+      chain with a real API call. Operator probe required before production promotion.
+    operator_action: >
+      Run tests/e2e/test_mode_toggle_sdk.py with SECONDSIGHT_TEST_REAL_LLM=1 and
+      a valid ANTHROPIC_API_KEY. Capture results. Update e2e-results.md.
+
+narrative: >
+  The F6 scar item was about an honest gap: the document was omitted because partial
+  results risked misleading reviewers. The fix resolves this by writing a document
+  that is explicitly PARTIAL — the status line says so, the SDK section says "awaiting
+  operator probe," and the operator action items section tells exactly what to do next.
+
+  The document also corrects a count discrepancy: the task plan said "15 non-gated"
+  but the actual count is 16 (Task 8 added test_sdk_regression.py, which postdated
+  the task plan). This discrepancy is documented inline so reviewers see accurate
+  numbers.
+
+  The production bug chain is documented in the "Production bug found by E2E" section
+  because it is a key piece of E2E provenance: the CLI gated tests were the mechanism
+  that caught the RouterTerminalError bug. Without documenting this, a reader of the
+  e2e-results.md would not understand why Task 7 and Task 8 were both needed.
+
+resolved_items:
+  - original_section: known_shortcuts
+    original_task: task-7
+    original_description: >
+      e2e-results.md was not written. The task spec called for capturing test
+      results in changes/2026-05-14_analysis-mode-toggle/e2e-results.md.
+    resolution: >
+      Created changes/2026-05-14_analysis-mode-toggle/e2e-results.md with:
+      - Accurate test counts (16 non-gated + 2 CLI + 3 SDK = 21 total)
+      - Honest PARTIAL status (3 SDK gated tests still unverified)
+      - Full list of non-gated test names with one-line descriptions
+      - CLI gated results (2 passed in 24s, Task 7 round-1)
+      - SDK gated status (SKIPPED in sandbox) with intended assertions
+      - Production bug documentation (RouterTerminalError → Task 7 fix → Task 8 fix)
+      - Operator action items with specific commands and test names
+      - Known limitations section (port 8420, codex E2E gap, model name stability)
