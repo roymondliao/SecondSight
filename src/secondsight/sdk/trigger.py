@@ -60,6 +60,7 @@ from secondsight.event import Event, EventType
 
 if TYPE_CHECKING:
     from secondsight.analysis.orchestrator import Orchestrator
+    from secondsight.analysis.runtime import ModeAwareDispatch
     from secondsight.observation.pipeline import ObservationPipeline
     from secondsight.storage.analysis_runs_repository import AnalysisRunsRepository
     from secondsight.storage.events_repository import EventsRepository
@@ -229,12 +230,20 @@ class Trigger:
         events_repo: "EventsRepository",
         lock_registry: "LockRegistry",
         trigger_lock_seconds: int = _DEFAULT_TRIGGER_LOCK_SECONDS,
+        mode_aware_dispatch: "ModeAwareDispatch | None" = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._analysis_runs_repo = analysis_runs_repo
         self._events_repo = events_repo
         self._lock_registry = lock_registry
         self._trigger_lock_seconds = trigger_lock_seconds
+        # mode_aware_dispatch: when provided, Trigger.dispatch() routes through
+        # ModeAwareDispatch.dispatch() instead of the legacy orchestrator path.
+        # This is the CRITICAL FIX 1 wiring: Trigger now delegates to
+        # ModeAwareDispatch (the single place that reads the dispatch mode from config).
+        # When None (legacy backward-compat path), orchestrator.analyze_and_aggregate
+        # is called directly via asyncio.create_task (SDK-only path).
+        self._mode_aware_dispatch = mode_aware_dispatch
         # In-memory dispatch tracker: maps session_id → monotonic dispatch time.
         # Used to prevent rapid re-dispatch before the orchestrator's start_run()
         # has written an analysis_runs row (which is the DB-based in-flight check).
@@ -347,34 +356,65 @@ class Trigger:
                             existing_stage=stage_val,
                         )
 
-            # All checks passed: record in-memory dispatch BEFORE create_task.
-            # If create_task fails, we remove the entry in the except block
+            # All checks passed: record in-memory dispatch BEFORE scheduling.
+            # If scheduling fails, we remove the entry in the except block
             # so the next dispatch attempt is not blocked by a ghost entry.
             self._in_memory_dispatched[session_id] = asyncio.get_running_loop().time()
 
-            # Schedule the analysis as a background task.
-            try:
-                task = asyncio.create_task(
-                    self._orchestrator.analyze_and_aggregate(session_id, force=force),
-                    name=f"analyze-{session_id}",
-                )
-                # Add error logging as a done_callback so exceptions in the
-                # background task are not silently swallowed.
-                task.add_done_callback(lambda t: self._on_task_done(t, session_id, source))
-            except RuntimeError as exc:
-                # create_task can fail if the event loop is closing.
-                # Remove the in-memory entry so the next dispatch attempt is not
-                # blocked by this ghost entry (it was recorded before create_task).
-                self._in_memory_dispatched.pop(session_id, None)
-                logger.error(
-                    f"dispatch: create_task failed for session_id={session_id!r} "
-                    f"source={source!r}: {exc}"
-                )
-                return DispatchResult(
-                    dispatched=False,
-                    reason=f"create-task-error: {exc}",
-                    run_id=None,
-                )
+            # Route through ModeAwareDispatch if wired (CRITICAL FIX 1).
+            # When mode_aware_dispatch is provided, it is the SINGLE place that
+            # reads the dispatch mode from config and routes to the appropriate
+            # dispatcher (CLI or SDK). The orchestrator path (legacy SDK-only) is
+            # used only for backward compat when mode_aware_dispatch=None.
+            if self._mode_aware_dispatch is not None:
+                # Mode-aware path: dispatch synchronously (ModeAwareDispatch handles
+                # its own DC10 lock internally). The Trigger's idempotency checks
+                # above (analysis_runs DB check + in-memory tracker) still guard
+                # against re-dispatch; ModeAwareDispatch adds per-session lock as
+                # defense-in-depth for concurrent callers.
+                try:
+                    await self._mode_aware_dispatch.dispatch(
+                        session_id,
+                        project_id=project_id,
+                    )
+                except Exception as exc:
+                    self._in_memory_dispatched.pop(session_id, None)
+                    logger.error(
+                        f"dispatch: mode_aware_dispatch.dispatch() failed for "
+                        f"session_id={session_id!r} source={source!r}: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    return DispatchResult(
+                        dispatched=False,
+                        reason=f"dispatch-error: {exc}",
+                        run_id=None,
+                    )
+            else:
+                # Legacy path: schedule the orchestrator (SDK-only) as a background task.
+                # Used when mode_aware_dispatch=None (backward compat or tests that
+                # construct Trigger without the new parameter).
+                try:
+                    task = asyncio.create_task(
+                        self._orchestrator.analyze_and_aggregate(session_id, force=force),
+                        name=f"analyze-{session_id}",
+                    )
+                    # Add error logging as a done_callback so exceptions in the
+                    # background task are not silently swallowed.
+                    task.add_done_callback(lambda t: self._on_task_done(t, session_id, source))
+                except RuntimeError as exc:
+                    # create_task can fail if the event loop is closing.
+                    # Remove the in-memory entry so the next dispatch attempt is not
+                    # blocked by this ghost entry (it was recorded before create_task).
+                    self._in_memory_dispatched.pop(session_id, None)
+                    logger.error(
+                        f"dispatch: create_task failed for session_id={session_id!r} "
+                        f"source={source!r}: {exc}"
+                    )
+                    return DispatchResult(
+                        dispatched=False,
+                        reason=f"create-task-error: {exc}",
+                        run_id=None,
+                    )
 
             logger.info(
                 f"dispatch: scheduled analysis source={source!r} "

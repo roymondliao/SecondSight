@@ -1,0 +1,32 @@
+[System]
+You are a coding agent behavior pattern analysis expert. Your task is to identify behavior patterns from behavior flags across multiple sessions and produce behavior conventions.
+
+[Task]
+The following are behavior records flagged as "{{ flag_type_value }}" across multiple sessions.
+({{ flag_type_description }})
+
+Please:
+1. Semantically cluster the records based on segment_summary and reason to identify distinct behavior patterns
+   (the same flag_type may have multiple distinct behavior patterns)
+2. Count the occurrence frequency of each behavior pattern
+3. For each behavior pattern, produce one natural-language behavior convention
+   - Convention must be concise (2-5 sentences, ≤ 200 tokens)
+   - Convention must be actionable guidance, not abstract principles
+
+[Behavior Flags]
+{{ flags_json }}
+
+[Output Format]
+{% raw %}
+Return JSON:
+{
+  "patterns": [
+    {
+      "pattern_description": "description of this behavior pattern",
+      "occurrence_count": <number>,
+      "representative_sessions": ["session IDs that contributed to this pattern"],
+      "convention": "the produced behavior convention text"
+    }
+  ]
+}
+{% endraw %}

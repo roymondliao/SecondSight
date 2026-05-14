@@ -1,0 +1,202 @@
+task_id: task-7
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: >
+      E2E tests hardcode server port 8420. If another process occupies port 8420
+      during test execution, the test will fail with a connection error rather than
+      a meaningful assertion failure. No dynamic port allocation or port-conflict
+      detection was implemented.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      SDK gated tests (test_mode_toggle_sdk.py) could not be run in this session
+      because ANTHROPIC_API_KEY is not set in the current environment. The test
+      logic is correct based on code review and structural validation, but the
+      happy-path SDK dispatch chain (test_sdk_mode_e2e_dispatch_creates_analysis_row)
+      and the DC4 fallback test (test_dc4_sdk_invalid_primary_valid_fallback_uses_fallback)
+      have never executed against a real LLM in this task.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      e2e-results.md was not written. The task spec called for capturing test
+      results in changes/2026-05-14_analysis-mode-toggle/e2e-results.md. This
+      was omitted because the gated SDK tests could not produce real results,
+      and writing partial results risks misleading reviewers.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      CLI gated tests spin up a real `secondsight serve` process and poll its
+      /health endpoint. If the server starts but the project DB is never created
+      (e.g., due to a storage initialization race), the POST /hook/session_end
+      will return 200 but no row will be written. The test asserts on DB row
+      presence — this will produce a clear assertion failure, not silence.
+      However, if the DB is created but the row has status="error" due to a
+      transient CLI timeout, the test will fail loudly, not silently. This is
+      acceptable behavior.
+
+  - description: >
+      test_dc4_sdk_invalid_primary_valid_fallback_uses_fallback requires
+      SECONDSIGHT_TEST_REAL_LLM=1. The test asserts fallback_used=True in the
+      DB row. If the SDK router does not persist fallback_used correctly, this
+      test would fail — but only when the gated environment is configured.
+      CI without the gate variable will skip this test, so the fallback behavior
+      goes unverified in standard CI.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      test_legacy_config_serve_succeeds_with_binary (non-gated) starts a real
+      `secondsight serve` process with a 5-second timeout. If CI machines are
+      slow, the server may not reach READY state within 5 seconds, causing the
+      test to fail with a false negative. The 5-second timeout was chosen
+      empirically on a fast developer machine.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      `claude` binary is present in PATH on CI machines running CLI gated tests.
+      The binary is required for test_legacy_config_with_binary_passes_precheck
+      and the non-gated serve test.
+    verified: true
+    note: >
+      Verified: `which claude` confirms the binary is present on the current
+      machine. CLI gated tests passed (2/2) with real claude invocation in
+      24 seconds. The assumption holds on developer machines; CI machines with
+      SECONDSIGHT_TEST_REAL_CLI=1 must have claude installed as a prerequisite.
+
+  - assumption: >
+      IdentityAdapter hook format (no `hook_event_name` field) is the correct
+      generic format for /hook/session_end payloads in E2E tests.
+    verified: true
+    note: >
+      Verified by reading tests/api/test_server_analysis_runtime.py which uses
+      the same IdentityAdapter format. Server processes these correctly.
+
+  - assumption: >
+      Server default port is 8420 (not 8421 or other).
+    verified: true
+    note: >
+      Verified: ServerConfig.port default is 8420. Confirmed by checking
+      src/secondsight/api/server.py and observing `secondsight serve` startup
+      log in CLI gated test execution.
+
+  - assumption: >
+      Per-project DB path is `ss_home/projects/{project_id}/intelligence.db`.
+    verified: true
+    note: >
+      Verified by reading test_server_analysis_runtime.py DB path assertions
+      and confirmed during CLI gated test execution (DB rows found correctly).
+
+  - assumption: >
+      BUILTIN_DEFAULT_AGENT = "claude_code" means legacy config produces an
+      explicit default_agent (not "auto"), so legacy precheck fails with
+      cli_binary_missing (not state_missing) when the binary is absent.
+    verified: true
+    note: >
+      Verified by reading src/secondsight/config/loader.py BUILTIN_DEFAULT_AGENT
+      constant and running test_legacy_config_resolves_explicit_default_agent_not_auto
+      which passes. Death test TestDTLegacyPrecheckBehavior confirms binary-miss
+      failure mode, not state_missing.
+
+  - assumption: >
+      CLI mode dispatch completes (no RouterTerminalError) after Task 7's fix
+      to build_project_analysis_runtime() in runtime.py. The fix makes agent
+      construction mode-conditional: SDK mode builds LLMRouter, CLI mode
+      sets agent=None.
+    verified: true
+    note: >
+      Verified by CLI gated tests passing end-to-end: session_end hook → dispatch
+      → DB row with status="success" and dispatched_via="cli". This confirms the
+      critical bug fix works correctly.
+
+debt_registered: true
+debt_location: >
+  tests/e2e/test_mode_toggle_cli.py:L17 — hardcoded port 8420;
+  tests/e2e/test_mode_toggle_sdk.py:L17 — hardcoded port 8420;
+  tests/e2e/test_legacy_config_upgrade.py — 5s serve timeout;
+  SDK gated tests unexecuted (no ANTHROPIC_API_KEY available);
+  e2e-results.md not created (gated results unavailable)
+
+narrative: |
+  ## Critical Bug Discovery and Fix (Task 6 addendum, fixed in Task 7)
+
+  During E2E test development, the CLI gated tests revealed a production bug:
+
+  `build_project_analysis_runtime()` in `src/secondsight/analysis/runtime.py`
+  unconditionally called `_build_analysis_agent()`, which constructs `LLMRouter`.
+  For CLI-mode projects with no provider API keys configured, `LLMRouter.__init__`
+  raises `RouterTerminalError: no provider keys resolvable`.
+
+  This means ANY CLI-mode user would encounter a server error on their first
+  session_end hook dispatch. The feature as implemented in Tasks 1-6 was
+  non-functional for CLI mode users.
+
+  The initial fix was applied inside build_project_analysis_runtime() as a
+  mode-conditional: `if cfg.general.mode == "sdk": agent = _build_analysis_agent(...)`
+  else `agent = cast(None)`. This fixed the production breakage but placed the
+  mode-conditional OUTSIDE ModeAwareDispatch, violating the architecture invariant
+  declared in runtime.py lines 8-21 ("no module outside ModeAwareDispatch should
+  reference config.general.mode").
+
+  The Task 7 scar narrative previously cited "task spec exception clause: if it's a
+  one-line obvious fix." This exception clause was not present in task-7.md, and the
+  fix was ~15 lines, not one line. That citation was inaccurate and has been removed.
+
+  The proper fix was applied in Task 8 (CRITICAL FIX 1): the mode-conditional was
+  removed from build_project_analysis_runtime() entirely. Agent construction is now
+  lazy inside ModeAwareDispatch._get_sdk_dispatcher(). The architecture invariant is
+  restored and verified by three new death tests.
+
+  ## Death Tests Written and Their Purpose
+
+  - TestDTLegacyLoaderBehavior: verifies DC12 — loader warns not raises; WARN
+    mentions "legacy"; mode defaults to "cli". Catches silent acceptance of legacy
+    config without upgrade warning.
+
+  - TestDTLegacyPrecheckBehavior: verifies explicit agent resolution (not "auto")
+    and binary-miss failure mode. Original death test assumed state_missing failure
+    — the BUILTIN_DEFAULT_AGENT discovery corrected this during development.
+
+  - TestDTLegacyUpgradeSucceeds.test_legacy_config_with_binary_passes_precheck:
+    verifies the full precheck chain completes with legacy config + real binary.
+    This death test would have caught the RouterTerminalError bug if the precheck
+    layer had invoked agent construction.
+
+  ## What the Non-Gated Test Suite Cannot Verify
+
+  1. Real CLI dispatch chain (CLI binary actually invoked, produces analysis output)
+     → requires SECONDSIGHT_TEST_REAL_CLI=1
+  2. Real SDK dispatch chain (LLM API called, analysis row written)
+     → requires SECONDSIGHT_TEST_REAL_LLM=1 + ANTHROPIC_API_KEY
+  3. DC4 fallback behavior (primary fails, fallback used, fallback_used=True in DB)
+     → requires SECONDSIGHT_TEST_REAL_LLM=1 + two distinct model configurations
+  4. SDK error row with error_details populated
+     → requires SECONDSIGHT_TEST_REAL_LLM=1 + invalid API key
+
+resolved_items:
+  - original_section: "assumptions_made"
+    original_description: >
+      BUILTIN_DEFAULT_AGENT = "claude_code" means legacy config produces explicit
+      default_agent (not "auto"), so legacy precheck fails with cli_binary_missing.
+    resolution: >
+      Verified by reading loader.py and writing
+      test_legacy_config_resolves_explicit_default_agent_not_auto (passes).
+      Death test TestDTLegacyPrecheckBehavior::test_legacy_config_no_state_precheck_fails_binary_not_found
+      now correctly validates the binary-miss failure path.
+
+  - original_section: "silent_failure_conditions"
+    original_description: >
+      CLI mode users would hit RouterTerminalError on first dispatch
+      (build_project_analysis_runtime unconditionally calling _build_analysis_agent).
+    resolution: >
+      Fixed in src/secondsight/analysis/runtime.py — mode-conditional agent
+      construction. CLI mode skips LLMRouter. Verified by CLI gated tests
+      (2 passed in 24.00s) and full suite (1527 passed, 6 skipped).
+
+  - original_section: "assumptions_made"
+    original_description: >
+      IdentityAdapter hook format is the correct generic format for E2E tests.
+    resolution: >
+      Verified by cross-referencing tests/api/test_server_analysis_runtime.py
+      which uses the same format. CLI E2E tests confirm server processes it correctly.

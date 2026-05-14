@@ -118,9 +118,10 @@ class TestBuildAggregatePrompt:
         assert "README unrelated to the bug fix" in prompt
 
     def test_convention_spec_in_task_block(self) -> None:
+        # Convention spec updated to English in Task 3 jinja2 migration.
         prompt = build_aggregate_prompt(BehaviorFlagType.UNNECESSARY_READ, [])
         assert "≤ 200 tokens" in prompt
-        assert "可操作的指導" in prompt
+        assert "actionable" in prompt
 
 
 class TestAggregateOutput:

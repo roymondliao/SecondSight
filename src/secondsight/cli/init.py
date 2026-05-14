@@ -47,6 +47,7 @@ import json
 from pathlib import Path
 
 import typer
+from loguru import logger
 from rich.console import Console
 
 from secondsight.cli._home import claude_home as resolve_claude_home
@@ -64,6 +65,7 @@ from secondsight.installer import (
 )
 from secondsight.installer.claude_settings import InvalidSettingsError
 from secondsight.installer.hook_install import HookBundleNotFoundError
+from secondsight.state import SecondSightState, SecondSightStateError, make_state
 
 app = typer.Typer(name="init", help="Install SecondSight hook scripts into Claude Code or Codex.")
 _console = Console()
@@ -113,6 +115,11 @@ def init(
         "text",
         "--format",
         help="Output format: 'text' (default, Rich) or 'json' (agent-friendly).",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Overwrite existing state.json without prompting (for scripted re-init).",
     ),
 ) -> None:
     """Install SecondSight hooks into the chosen agent (idempotent)."""
@@ -178,6 +185,17 @@ def init(
             )
             raise typer.Exit(code=1) from exc
 
+    # ----- Stage 2.5: write state.json (init_agent persistence) -----
+    # DC11: prompt on overwrite — silent overwrite is the lie.
+    # Exception: --force bypasses prompt for scripted re-init flows.
+    # Dry-run: skip writing but include state_status in summary.
+    state_status = _write_state_json(
+        ss_home=ss_home,
+        canonical_agent=canonical_agent,
+        dry_run=dry_run,
+        force=force,
+    )
+
     # ----- Stage 3: generate (or diff-check) ~/.secondsight/config.toml -----
     # Never aborts on failure: config.toml issues are advisory (hook install
     # already succeeded). write_config_if_needed() returns a message string
@@ -193,6 +211,7 @@ def init(
         "settings_path": str(registration_path),
         "secondsight_home": str(ss_home),
         "config_status": config_status,
+        "state_status": state_status,
         "scripts_copied": install_plan.copied,
         "scripts_skipped_identical": install_plan.skipped_identical,
         "scripts_source": str(install_plan.source_dir),
@@ -218,6 +237,63 @@ def init(
         )
         for cmd in patch_plan.foreign_secondsight_paths:
             _console.print(f"  - {cmd}")
+
+
+def _write_state_json(
+    *,
+    ss_home: Path,
+    canonical_agent: str,
+    dry_run: bool,
+    force: bool,
+) -> str:
+    """Write (or check) ~/.secondsight/state.json after hook install.
+
+    DC11: if state.json already exists with a different init_agent, prompt the user
+    before overwriting. Default answer is N (preserve existing). --force skips the prompt.
+
+    Args:
+        ss_home: SecondSight home directory (~/.secondsight).
+        canonical_agent: The agent being installed ("claude_code" or "codex").
+        dry_run: If True, report what would be done without writing.
+        force: If True, overwrite without prompting.
+
+    Returns:
+        A human-readable status string for inclusion in the summary output.
+    """
+    state_path = ss_home / "state.json"
+
+    if dry_run:
+        return f"dry-run: would write state.json (init_agent={canonical_agent!r})"
+
+    # Check for existing state with a different agent
+    existing_state: SecondSightState | None = None
+    try:
+        existing_state = SecondSightState.load(state_path)
+    except SecondSightStateError as exc:
+        # Malformed existing state — warn but proceed (overwrite with valid state)
+        logger.warning(f"existing state.json is malformed, overwriting: {exc}")
+        existing_state = None
+
+    if existing_state is not None and existing_state.init_agent != canonical_agent:
+        if not force:
+            # DC11: prompt before overwriting
+            answer = typer.confirm(
+                f"state.json already exists with init_agent={existing_state.init_agent!r}. "
+                f"Overwrite with {canonical_agent!r}?",
+                default=False,
+            )
+            if not answer:
+                return f"state.json unchanged (kept init_agent={existing_state.init_agent!r})"
+
+    # Write new state
+    new_state = make_state(canonical_agent)
+    try:
+        new_state.save(state_path)
+        return f"state.json written (init_agent={canonical_agent!r})"
+    except OSError as exc:
+        # Non-fatal: state write failure is advisory (hook install already succeeded)
+        logger.warning(f"state.json write failed (non-fatal): {exc}")
+        return f"state.json write failed: {exc}"
 
 
 def _emit_error(output_format: str, code: str, message: str) -> None:
@@ -259,6 +335,26 @@ def _render_text(summary: dict[str, object]) -> None:
                 f"  [yellow]settings conflict (different install path):[/yellow] "
                 f"{', '.join(sorted(confs))}"
             )
+
+    # Stage 2.5: state.json write status.
+    # Surfaces all state_status outcomes so silent failures (disk full, permission denied)
+    # are visible to the user. Without this block the user sees "[cyan]Installed[/cyan]"
+    # even when state.json write failed — Task 6's "auto" resolution would then find no
+    # state.json and fall through to surprising defaults with no user-visible signal.
+    state_status = summary.get("state_status", "")
+    if isinstance(state_status, str) and state_status:
+        if "write failed" in state_status:
+            # Critical: state.json was not written — "auto" resolution will not work.
+            _console.print(f"  [bold red]state:[/bold red]  {state_status}")
+        elif "unchanged" in state_status or "declined" in state_status:
+            # Advisory: user declined overwrite — existing state preserved.
+            _console.print(f"  [yellow]state:[/yellow]  {state_status}")
+        elif "dry-run" in state_status or "dry_run" in state_status:
+            # Informational: dry-run mode, nothing written.
+            _console.print(f"  [dim]state:  {state_status}[/dim]")
+        else:
+            # Normal: written or unchanged (idempotent re-init).
+            _console.print(f"  state:  {state_status}")
 
     # Stage 3: config.toml status.
     # MSG_MALFORMED and MSG_NEW_KEYS are imported from template.py so that

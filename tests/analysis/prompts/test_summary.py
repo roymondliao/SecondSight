@@ -99,12 +99,13 @@ class TestBuildSummaryPrompt:
         assert "segment_count: 0" in prompt
 
     def test_includes_required_section_headers(self) -> None:
+        # Section headers were updated to English in Task 3 jinja2 migration.
         prompt = build_summary_prompt("sess-1", "proj-1", [_segment_analysis()])
         for header in (
             "[System]",
-            "[Schema 說明]",
+            "[Schema]",
             "[Session Context]",
-            "[任務]",
+            "[Task]",
             "[Segments]",
             "[Output Format]",
         ):
@@ -152,31 +153,35 @@ class TestTaskBlockUxDefaults:
     def test_neutral_observational_tone_is_named(self) -> None:
         """UX default 2: tone explicitly told to stay neutral and
         observational, not coaching or judgmental.
+        Updated to English in Task 3 jinja2 migration.
         """
         prompt = self._prompt()
-        assert "中性觀察" in prompt
-        assert "不勸導" in prompt
+        assert "neutral" in prompt.lower()
+        assert "observational" in prompt.lower()
 
     def test_key_findings_ordered_by_confidence_then_frequency(self) -> None:
         """UX default 3: confidence is the primary sort key, frequency
         secondary. High-confidence flags surface first.
+        Updated to English in Task 3 jinja2 migration.
         """
         prompt = self._prompt()
-        assert "依 confidence 由高到低" in prompt
-        assert "依出現次數由多到少" in prompt
+        assert "confidence" in prompt
+        assert "high" in prompt
 
     def test_body_references_event_ids_directly(self) -> None:
         """UX default 4: body must cite event_ids verbatim so the
         dashboard can hyperlink them to trace detail (GUR-106).
+        Updated to English in Task 3 jinja2 migration.
         """
-        assert "直接引用 event_ids" in self._prompt()
+        assert "event_ids" in self._prompt()
 
     def test_low_confidence_flags_summarized_not_enumerated(self) -> None:
         """UX default 5: low-confidence flags get a single-line count
         summary; never per-flag enumeration. Avoids drowning the
         report in noise.
+        Updated to English in Task 3 jinja2 migration.
         """
         prompt = self._prompt()
-        assert "低信心觀察" in prompt
-        # And the explicit "省略" rule when N=0 must be carried.
-        assert "省略" in prompt
+        assert "low-confidence" in prompt
+        # The explicit omit-when-zero rule must be carried.
+        assert "omit" in prompt

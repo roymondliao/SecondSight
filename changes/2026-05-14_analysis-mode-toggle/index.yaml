@@ -1,0 +1,103 @@
+feature: analysis-mode-toggle
+status: pending
+
+tasks:
+  - id: task-1
+    title: "Config schema + state.json + loader (foundation)"
+    status: done
+    scar_count: 10
+    unresolved_assumptions:
+      - "analysis_global backward-compat bridge: Task 6 must migrate select_model() to use analysis.cli.* and remove this field"
+      - "log_level has no enum validation; deferred until log_level wiring lands (Task 6+)"
+      - "state.json schema_version forward-compat: no migration mechanism exists yet (Task 6+)"
+      - "_get_secondsight_version catches bare Exception; deferred polish"
+    depends_on: []
+
+  - id: task-2
+    title: "AnalysisOutput pydantic contract (shared CLI/SDK schema)"
+    status: done
+    scar_count: 5
+    unresolved_assumptions:
+      - "error_details typed as dict[str, Any] not a typed sub-model; DC4 runtime-enforced but JSON-schema-invisible"
+      - "model_construct() bypasses validation; documented as accepted pydantic v2 limitation"
+      - "behavior_flags=[] passes schema validation with no warning; DC3 downstream warn belongs in dispatcher (Task 6)"
+      - "JSON schema cannot express cross-field conditional invariants; non-Python consumers cannot see them"
+    depends_on: []
+
+  - id: task-3
+    title: "Prompts jinja2 refactor (StrictUndefined, English templates)"
+    status: done
+    scar_count: 7
+    unresolved_assumptions:
+      - "test_segment_count_appears_in_render uses weak `\"1\" in result` assertion (yin: lying coverage); cheap fix, deferred"
+      - "No regression test for the self-found duplicate-header bug; can return silently"
+      - "_segment_payload non-BaseModel else branch untested"
+      - "test_aggregate.py:98 retains a Chinese FLAG_DEFINITIONS substring assertion despite user 'all English' direction; couples test to schemas.py content"
+      - "SummaryOutput / AggregateOutput LLM output schemas buried in prompt-builder files (cohesion drift between prompts/ and analysis/prompts/)"
+      - "behavior_context / summary_context / aggregate_context test fixtures duplicated across test_loader.py and test_analysis_templates.py (6 duplications); should be conftest"
+      - "PackageLoader layout convention not documented at render() call site; new maintainer must discover the rule by experiment"
+    depends_on: []
+
+  - id: task-4
+    title: "CLI mode dispatcher — Claude Code + Codex (PoC: PROCEED, 10/10 both agents on variant 1)"
+    status: done
+    scar_count: 11
+    unresolved_assumptions:
+      - "test_dispatch_uses_codex_when_configured is vacuously passing (codex reads from file but test mocks subprocess stdout; result is failure but test only asserts cli_agent='codex' which is satisfied by failure output) — recurring defect class"
+      - "dispatch() docstring says 'never raises except OpencodeNotSupportedError' but tempfile.TemporaryDirectory() can raise OSError unhandled at line 318 — contract violation"
+      - "Two `except Exception: pass` blocks in SIGKILL drain path have no log statements (forensics swallowed)"
+      - "_tmpdir_ctx uses manual .cleanup() at 6 explicit return sites instead of `with` context manager; new return path without cleanup = silent leak"
+      - "json_decode vs schema_mismatch reason classification: both branches set log_level='warning' (dead branch / no behavior diff)"
+      - "PoC consumed 20/60 budget; remaining 40 reserved if drift discovered later"
+      - "stdout contamination after valid JSON envelope: logged as json_decode not as 'contamination'"
+      - "Large session payload context overflow not tested (needs real LLM probe)"
+      - "Codex output write-to-readonly-fs scenario caught as output_file_missing failure but not specifically diagnosed"
+    depends_on: [task-2, task-3]
+
+  - id: task-5
+    title: "SDK mode key injection fix + SDKAnalysisDispatcher + AnalysisDispatcher Protocol"
+    status: done
+    scar_count: 9
+    unresolved_assumptions:
+      - "AnalysisDispatcher Protocol now unifies CLI + SDK dispatch signatures (project_root: Path|None=None); Task 6 should consume uniformly"
+      - "_infer_provider raises ValueError (not RouterTerminalError) for unknown model prefixes at construction; D6 escape hatch exists but error message doesn't reference it at the raise site"
+      - "fallback_used=False may be inaccurate when LLMRouter retried fallback internally without raising — deferred (requires LLMRouter public API)"
+      - "AST check uses glob (not rglob); future subdirectories under sdk/ won't be scanned"
+      - "assert exc.attempts[0].model_name == primary used as runtime guard; stripped under python -O — should be ValueError if load-bearing"
+      - "Task 5 silently fixed Task 1's latent runtime.py bridge bug (cfg.analysis vs cfg.analysis_global); cross-referenced in both scar reports"
+    depends_on: [task-1]
+
+  - id: task-6
+    title: "Mode-aware dispatch + startup precheck + repository wiring (live integration)"
+    status: done
+    scar_count: 14
+    unresolved_assumptions:
+      - "Trigger.dispatch() blocks caller synchronously when mode_aware_dispatch is wired (legacy was asyncio.create_task non-blocking); semantic asymmetry"
+      - "Sweeper serialization regression: serial for-loop awaits dispatch() for each stale session → N × analysis_duration; previously parallel via create_task"
+      - "_session_locks dict unbounded growth — deferred lock eviction logic"
+      - "trigger.py:666 uses tuple-except form `except T1, T2:` (Python 2 syntax parsed as tuple-catch in Python 3.14; same bug class as Task 4 had at line 351)"
+      - "build_project_analysis_runtime() silently reads ~/.secondsight/state.json from disk; documented as known coupling violation but not refactored"
+      - "ModeAwareDispatch carries 3 responsibilities (mode routing + lock + persistence); SRP debt"
+      - "Backward-compat mode_aware_dispatch=None fallback keeps legacy orchestrator path alive; transitional"
+      - "Scar references test_serve_precheck_handles_oserror which does NOT exist; OSError catch in serve.py is untested"
+      - "_make_retention test helper duplicated across 3 files despite conftest.py extraction (cleanup partial)"
+      - "TYPE_CHECKING re-import of AnalysisOutputsRepository at runtime.py:58 is redundant (already imported at module level)"
+      - "Repository insert_or_ignore raises → result returned to caller but not persisted; no retry/dead-letter (documented)"
+      - "Unknown mode in config → status='failure' reason='unknown_mode' but no exception (silent fail-soft)"
+      - "_pipeline_callback docstring still claims 'non-blocking via create_task inside dispatch()' — stale after FIX 1"
+    depends_on: [task-1, task-2, task-4, task-5]
+
+  - id: task-7
+    title: "E2E smoke + legacy-config regression + production-bug fix (architecture invariant restored)"
+    status: done
+    scar_count: 9
+    unresolved_assumptions:
+      - "task-7-scar.yaml resolved_items[1].resolution describes the superseded bad fix; narrative explains arc correctly but field-level record misleading"
+      - "_get_cli_dispatcher vs _get_sdk_dispatcher caching asymmetry (CLI reconstructs, SDK caches); structurally symmetric methods with opposite semantics"
+      - "_SERVER_HOST re-declared in both gated test files despite _SERVER_URL imported from conftest"
+      - "Per-file _wait_for_server / _poll_analysis_outputs_table wrappers are pure delegation stubs (redundant indirection)"
+      - "DC10 no-op return path repeats `mode == 'cli'` check inline 3 times (could drift if main dispatch logic changes)"
+      - "SDK gated tests (DC4 fallback path) skipped in sandbox (no ANTHROPIC_API_KEY); needs operator probe before release"
+      - "Port 8420 hardcoded; CLI and SDK gated tests must not run concurrently"
+      - "Production bug found by E2E: build_project_analysis_runtime was unconditionally calling _build_analysis_agent (Task 5/6 latent bug); fixed via lazy SDK dispatcher construction in ModeAwareDispatch._get_sdk_dispatcher (architecture invariant preserved)"
+    depends_on: [task-6]

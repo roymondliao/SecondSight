@@ -156,12 +156,13 @@ class TestBuildSegmentPrompt:
         assert a == b, "build_segment_prompt must be deterministic"
 
     def test_includes_all_six_section_headers(self) -> None:
+        # Section headers were updated to English in Task 3 jinja2 migration.
         prompt = build_segment_prompt(_segment(), _metrics())
         for header in (
             "[System]",
-            "[Schema 說明]",
-            "[Flag Type 定義]",
-            "[任務]",
+            "[Schema]",
+            "[Flag Type Definitions]",
+            "[Task]",
             "[Segment Data]",
             "[Output Format]",
         ):

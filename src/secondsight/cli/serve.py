@@ -49,6 +49,71 @@ def _log_path(home: Path) -> Path:
     return home / "logs" / "server.log"
 
 
+def _run_precheck(home: Path) -> None:
+    """Run server startup pre-check. Exits non-zero on failure.
+
+    Called BEFORE _run_server() to validate that the config is consistent
+    and all required resources are available. If precheck fails, the server
+    does NOT start in degraded mode — it exits with code 1.
+
+    Design:
+    - Config is loaded from the global config.toml (not per-project).
+    - State is loaded from ~/.secondsight/state.json (may be None on fresh install).
+    - If config loading itself fails (malformed TOML), logs the error and exits 1.
+
+    DC5: catches missing state.json and missing CLI binaries.
+    DC6: on CLI mode success, logs the resolved binary path for forensics.
+    DC7: catches empty provider keys for SDK mode.
+    """
+    from secondsight.config import SecondSightConfigError, load_global_config
+    from secondsight.config.precheck import precheck
+    from secondsight.state import SecondSightState, SecondSightStateError
+
+    # Load config first — if this fails, we can't even run precheck
+    try:
+        config = load_global_config(home=home)
+    except SecondSightConfigError as exc:
+        logger.error(
+            f"secondsight serve: config load failed: {exc}. "
+            f"Fix config.toml before starting the server."
+        )
+        raise typer.Exit(code=1)
+    except OSError as exc:
+        logger.error(
+            f"secondsight serve: cannot read config file: {exc}. "
+            f"Check that config.toml exists and is readable."
+        )
+        raise typer.Exit(code=1)
+
+    # Load state (may be None on fresh install — not an error at this layer)
+    state_path = home / "state.json"
+    state: SecondSightState | None = None
+    try:
+        state = SecondSightState.load(state_path)
+    except SecondSightStateError as exc:
+        logger.warning(
+            f"secondsight serve: state.json load failed: {exc}. "
+            f"Proceeding with state=None (precheck may fail for mode=cli + default_agent=auto)."
+        )
+
+    # Run precheck — returns PrecheckResult, never raises
+    result = precheck(config=config, state=state)
+
+    if not result.is_ok:
+        logger.error(
+            f"secondsight serve: startup pre-check FAILED. "
+            f"reason={result.reason!r} message={result.message!r}. "
+            f"The server will not start. Fix the configuration and try again."
+        )
+        typer.echo(
+            f"Server startup pre-check failed: {result.message}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    logger.info(f"secondsight serve: startup pre-check passed (mode={config.general.mode!r}).")
+
+
 def _run_server(home: Path) -> None:
     """Start uvicorn in the current process.  Blocking call.
 
@@ -89,7 +154,8 @@ def serve(
         _do_daemon(resolved_home)
         return
 
-    # Foreground mode
+    # Foreground mode: precheck BEFORE server start (DC5/DC6/DC7)
+    _run_precheck(resolved_home)
     logger.info("Starting SecondSight server in foreground (home={h})", h=resolved_home)
     _run_server(resolved_home)
 
@@ -121,6 +187,11 @@ def _do_stop(home: Path) -> None:
 def _do_daemon(home: Path) -> None:
     pid = _pid_path(home)
     log = _log_path(home)
+
+    # Precheck BEFORE daemonizing (DC5/DC6/DC7): fail fast in the parent
+    # process so the user sees the error. If precheck runs in the child,
+    # the error goes to the log file and the user sees "Daemon started." — wrong.
+    _run_precheck(home)
 
     # Check if already running
     status = daemon_status(pid)

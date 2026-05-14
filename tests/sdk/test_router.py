@@ -47,6 +47,18 @@ def _make_fallback(n: int = 1) -> list[ModelSpec]:
     return [ModelSpec(name=f"gemini-2.0-flash-{i}", provider="google") for i in range(n)]
 
 
+# Minimal resolved_keys dict for tests that use mock agent_factory.
+# Key values are test-only placeholders — they are never sent to real APIs
+# because agent_factory is always overridden in these tests.
+# "google" is not in the built-in factory but tests use mock factories so it
+# does not matter — only the primary provider ("openai") is validated at init.
+_TEST_RESOLVED_KEYS: dict[str, str] = {
+    "anthropic": "sk-ant-test-placeholder",
+    "openai": "sk-openai-test-placeholder",
+    "custom": "",
+}
+
+
 def _raising_factory(exc: Exception):
     """Return an agent_factory whose agents always raise ``exc``."""
     mock_agent = AsyncMock()
@@ -132,6 +144,7 @@ class TestDeathPaths:
         router = LLMRouter(
             primary=_make_primary(),
             fallbacks=_make_fallback(2),
+            resolved_keys=_TEST_RESOLVED_KEYS,
             agent_factory=_factory,
         )
 
@@ -171,6 +184,7 @@ class TestDeathPaths:
             router = LLMRouter(
                 primary=_make_primary(),
                 fallbacks=[],
+                resolved_keys=_TEST_RESOLVED_KEYS,
                 agent_factory=factory,
             )
 
@@ -222,6 +236,7 @@ class TestDeathPaths:
                 ModelSpec(name="gemini-2.0-flash-0", provider="google"),
                 ModelSpec(name="gemini-2.0-flash-1", provider="google"),
             ],
+            resolved_keys=_TEST_RESOLVED_KEYS,
             agent_factory=_factory,
         )
 
@@ -286,6 +301,7 @@ class TestDeathPaths:
                 ModelSpec(name="gemini-2.0-flash-0", provider="google"),
                 ModelSpec(name="gemini-2.0-flash-1", provider="google"),
             ],
+            resolved_keys=_TEST_RESOLVED_KEYS,
             chain_total_timeout_s=0.5,
             per_call_timeout_s=60.0,
             agent_factory=_factory,
@@ -352,6 +368,7 @@ class TestDegradation:
         router = LLMRouter(
             primary=ModelSpec(name="gpt-4o-mini", provider="openai"),
             fallbacks=[ModelSpec(name="gemini-2.0-flash", provider="google")],
+            resolved_keys=_TEST_RESOLVED_KEYS,
             agent_factory=_factory,
         )
 
@@ -397,6 +414,7 @@ class TestHappyPaths:
         router = LLMRouter(
             primary=ModelSpec(name="gpt-4o-mini", provider="openai"),
             fallbacks=[ModelSpec(name="gemini-2.0-flash", provider="google")],
+            resolved_keys=_TEST_RESOLVED_KEYS,
             agent_factory=_factory,
         )
 
@@ -453,6 +471,7 @@ class TestHappyPaths:
             router = LLMRouter(
                 primary=ModelSpec(name="gpt-4o-mini", provider="openai"),
                 fallbacks=[ModelSpec(name="gemini-2.0-flash", provider="google")],
+                resolved_keys=_TEST_RESOLVED_KEYS,
                 agent_factory=_factory,
             )
             result = await router.call(model_input="test", output_type=str)
@@ -481,6 +500,7 @@ class TestHappyPaths:
         router = LLMRouter(
             primary=ModelSpec(name="gpt-4o-mini", provider="openai"),
             fallbacks=[ModelSpec(name="gemini-2.0-flash", provider="google")],
+            resolved_keys=_TEST_RESOLVED_KEYS,
             agent_factory=_factory,
         )
 
@@ -526,6 +546,7 @@ class TestHappyPaths:
                 ModelSpec(name="gemini-2.0-flash-0", provider="google"),
                 ModelSpec(name="gemini-2.0-flash-1", provider="google"),
             ],
+            resolved_keys=_TEST_RESOLVED_KEYS,
             agent_factory=_factory,
         )
 
@@ -541,20 +562,27 @@ class TestHappyPaths:
 
     @pytest.mark.asyncio
     async def test_HP_agent_factory_raises_terminal_error(self) -> None:
-        """If agent_factory itself raises (e.g. unknown provider), raises
+        """If agent_factory itself raises during call(), raises
         RouterTerminalError with a clear configuration-error message.
 
         Self-iteration fix for scar silent_failure_conditions[2]:
         previously, factory construction errors escaped as un-classified
         exceptions (AttributeError etc) instead of AnalysisAgentError.
+
+        Note: Task 5 adds resolved_keys validation at LLMRouter.__init__ time
+        that rejects missing-key providers before the factory is ever called.
+        This test verifies the factory-error handling path (for custom factories
+        that raise for other reasons), using a known provider with a valid key
+        so the init-time check passes.
         """
 
         def _bad_factory(spec: ModelSpec) -> Any:
-            raise ValueError(f"Unknown provider: {spec.provider}")
+            raise ValueError(f"Custom factory error for model: {spec.name}")
 
         router = LLMRouter(
-            primary=ModelSpec(name="gpt-4o-mini", provider="unknown-provider"),
+            primary=ModelSpec(name="gpt-4o-mini", provider="openai"),
             fallbacks=[],
+            resolved_keys=_TEST_RESOLVED_KEYS,
             agent_factory=_bad_factory,
         )
 
@@ -585,6 +613,7 @@ class TestHappyPaths:
         router = LLMRouter(
             primary=primary,
             fallbacks=[fallback_a, fallback_b],
+            resolved_keys=_TEST_RESOLVED_KEYS,
             per_call_timeout_s=45.0,
             chain_total_timeout_s=120.0,
         )
@@ -616,6 +645,7 @@ class TestHappyPaths:
         router = LLMRouter(
             primary=ModelSpec(name="gpt-4o-mini", provider="openai"),
             fallbacks=[ModelSpec(name="gemini-2.0-flash", provider="google")],
+            resolved_keys=_TEST_RESOLVED_KEYS,
             agent_factory=_factory,
         )
 
@@ -670,6 +700,7 @@ class TestLoggingSchema:
         router = LLMRouter(
             primary=ModelSpec(name="gpt-4o-mini", provider="openai"),
             fallbacks=[],
+            resolved_keys=_TEST_RESOLVED_KEYS,
             agent_factory=_factory,
         )
 
@@ -713,6 +744,7 @@ class TestLoggingSchema:
         router = LLMRouter(
             primary=ModelSpec(name="gpt-4o-mini", provider="openai"),
             fallbacks=[ModelSpec(name="gemini-2.0-flash", provider="google")],
+            resolved_keys=_TEST_RESOLVED_KEYS,
             agent_factory=_factory,
         )
 

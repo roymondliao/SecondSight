@@ -42,6 +42,15 @@ from secondsight.sdk._specs import ModelSpec
 from secondsight.sdk.router import LLMRouter
 
 
+# Minimal resolved_keys for tests that use mock agent_factory.
+# Values are test-only placeholders never sent to real APIs.
+_TEST_RESOLVED_KEYS: dict[str, str] = {
+    "anthropic": "sk-ant-test-placeholder",
+    "openai": "sk-openai-test-placeholder",
+    "custom": "",
+}
+
+
 # ---------------------------------------------------------------------------
 # Helpers / shared fakes
 # ---------------------------------------------------------------------------
@@ -157,7 +166,7 @@ class TestDeathPaths:
         # No agent_factory override — this IS the production path.
         # The production scoped factories are built from tools; _scoped_tools reflects
         # what will be passed to PydanticAI Agent() at call time.
-        router = LLMRouter(primary=_make_primary(), fallbacks=[])
+        router = LLMRouter(primary=_make_primary(), fallbacks=[], resolved_keys=_TEST_RESOLVED_KEYS)
         tools = _make_fake_tools()
 
         agent = PydanticAIAnalysisAgent(router=router, tools=tools)
@@ -248,6 +257,7 @@ class TestDeathPaths:
         router = LLMRouter(
             primary=_make_primary(),
             fallbacks=[],
+            resolved_keys=_TEST_RESOLVED_KEYS,
         )
 
         # Inject the bad factory directly into PydanticAIAnalysisAgent.
@@ -295,6 +305,7 @@ class TestDeathPaths:
         router = LLMRouter(
             primary=_make_primary(),
             fallbacks=[],
+            resolved_keys=_TEST_RESOLVED_KEYS,
         )
 
         # Pass the test factory directly to PydanticAIAnalysisAgent (not via the router).
@@ -378,6 +389,7 @@ class TestHappyPaths:
         router = LLMRouter(
             primary=_make_primary(),
             fallbacks=[],
+            resolved_keys=_TEST_RESOLVED_KEYS,
         )
         agent = PydanticAIAnalysisAgent(router=router, tools=tools, agent_factory=counting_factory)
 
@@ -415,6 +427,7 @@ class TestHappyPaths:
         router = LLMRouter(
             primary=_make_primary(),
             fallbacks=[],
+            resolved_keys=_TEST_RESOLVED_KEYS,
         )
         agent = PydanticAIAnalysisAgent(router=router, tools=tools, agent_factory=single_factory)
 
@@ -432,7 +445,7 @@ class TestHappyPaths:
         expected = _make_aggregate_output()
         factory = _success_factory(expected)
 
-        router = LLMRouter(primary=_make_primary(), fallbacks=[])
+        router = LLMRouter(primary=_make_primary(), fallbacks=[], resolved_keys=_TEST_RESOLVED_KEYS)
         agent = PydanticAIAnalysisAgent(router=router, tools=tools, agent_factory=factory)
 
         result = await agent.aggregate_flag_type("some aggregation prompt")
@@ -450,7 +463,7 @@ class TestHappyPaths:
         expected = _make_summary_output()
         factory = _success_factory(expected)
 
-        router = LLMRouter(primary=_make_primary(), fallbacks=[])
+        router = LLMRouter(primary=_make_primary(), fallbacks=[], resolved_keys=_TEST_RESOLVED_KEYS)
         agent = PydanticAIAnalysisAgent(router=router, tools=tools, agent_factory=factory)
 
         result = await agent.summarize_session("some summary prompt")
@@ -464,7 +477,7 @@ class TestHappyPaths:
         """PydanticAIAnalysisAgent satisfies the AnalysisAgent Protocol (runtime_checkable)."""
         PydanticAIAnalysisAgent = _import_agent_class()
         tools = _make_fake_tools()
-        router = LLMRouter(primary=_make_primary(), fallbacks=[])
+        router = LLMRouter(primary=_make_primary(), fallbacks=[], resolved_keys=_TEST_RESOLVED_KEYS)
         factory = _success_factory(_make_segment_analysis())
 
         agent = PydanticAIAnalysisAgent(router=router, tools=tools, agent_factory=factory)
@@ -497,6 +510,7 @@ class TestHappyPaths:
         router = LLMRouter(
             primary=_make_primary(),
             fallbacks=[],
+            resolved_keys=_TEST_RESOLVED_KEYS,
         )
         agent = PydanticAIAnalysisAgent(router=router, tools=tools, agent_factory=counting_factory)
 
@@ -528,6 +542,7 @@ class TestHappyPaths:
         router = LLMRouter(
             primary=_make_primary(),
             fallbacks=[],
+            resolved_keys=_TEST_RESOLVED_KEYS,
         )
         agent = PydanticAIAnalysisAgent(router=router, tools=tools, agent_factory=ordering_factory)
 
@@ -541,7 +556,7 @@ class TestHappyPaths:
         """Positive assertion for DT-4.1: aggregate scoped tools are exactly {read_historical_flags}."""
         PydanticAIAnalysisAgent = _import_agent_class()
         tools = _make_fake_tools()
-        router = LLMRouter(primary=_make_primary(), fallbacks=[])
+        router = LLMRouter(primary=_make_primary(), fallbacks=[], resolved_keys=_TEST_RESOLVED_KEYS)
 
         agent = PydanticAIAnalysisAgent(router=router, tools=tools)
 
@@ -554,7 +569,7 @@ class TestHappyPaths:
         """Segment scoped tools must be exactly {read_traces, read_project_file}."""
         PydanticAIAnalysisAgent = _import_agent_class()
         tools = _make_fake_tools()
-        router = LLMRouter(primary=_make_primary(), fallbacks=[])
+        router = LLMRouter(primary=_make_primary(), fallbacks=[], resolved_keys=_TEST_RESOLVED_KEYS)
 
         agent = PydanticAIAnalysisAgent(router=router, tools=tools)
 
@@ -567,7 +582,7 @@ class TestHappyPaths:
         """Summary scoped tools must be exactly {read_traces, query_structured_store}."""
         PydanticAIAnalysisAgent = _import_agent_class()
         tools = _make_fake_tools()
-        router = LLMRouter(primary=_make_primary(), fallbacks=[])
+        router = LLMRouter(primary=_make_primary(), fallbacks=[], resolved_keys=_TEST_RESOLVED_KEYS)
 
         agent = PydanticAIAnalysisAgent(router=router, tools=tools)
 
@@ -599,7 +614,7 @@ class TestHappyPaths:
             flags_repo=MagicMock(),
             directives_repo=MagicMock(),
         )
-        router = LLMRouter(primary=_make_primary(), fallbacks=[])
+        router = LLMRouter(primary=_make_primary(), fallbacks=[], resolved_keys=_TEST_RESOLVED_KEYS)
 
         # Must not raise during construction with real AnalysisTools.
         # No agent_factory override — production path with scoped factories.

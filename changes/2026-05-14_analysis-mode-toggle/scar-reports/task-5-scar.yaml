@@ -1,0 +1,375 @@
+task_id: task-5
+completion_status: done
+# Review pass completed: yin+quality reviewer findings addressed.
+# 1485 non-integration tests pass (28 new tests added in review pass).
+
+known_shortcuts:
+  - description: >
+      Fallback detection in dispatch() is imprecise. After a successful router call,
+      the code assumes fallback_used=False because it did not catch an exception.
+      However, LLMRouter's internal call() may have transparently retried on the
+      fallback and succeeded without raising RouterChainExhaustedError.
+      The router's internal attempt trace is not exposed via a public API.
+      Impact: AnalysisOutput.fallback_used may be False when fallback actually fired.
+      This is a metric accuracy issue, not a correctness issue.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      _infer_provider() defaults unknown model names to "anthropic" with a warning log.
+      If a non-Anthropic model (e.g. a Gemini model name) is configured, it silently
+      constructs with anthropic provider and fails at dispatch with a 401-style error
+      (not at construction). A RouterTerminalError at construction would be safer.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      _build_system_prompt() falls back to an inline prompt string when template
+      rendering fails. The inline prompt is semantically weaker than behavior.jinja2
+      and does not include flag_definitions_block or the structured schema context.
+      This ensures dispatch continues when template is missing but weakens output quality.
+      Template rendering failure is logged as WARNING, not ERROR.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      If the LLM returns a valid JSON list that passes coercion in _make_success_output
+      but contains semantically wrong behavior flags (e.g., correct schema, wrong analysis),
+      dispatch returns status='success' with no detection. Semantic validation is
+      intentionally deferred to Task 6/7's analysis quality layer.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      If pydantic-ai's Agent raises UnexpectedModelBehavior (LLM returned valid response
+      but wrong structure), it propagates to the bare except branch in dispatch() and
+      is returned as a single-failure output. This is correct behavior but the error type
+      is not specifically tested — it falls through to the generic Exception handler.
+      A future pydantic-ai version changing this exception type would still produce a
+      valid failure output (correct degradation path) but with a less specific error message.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      LLMRouter.call() called with output_type=list — if pydantic-ai's list type
+      validation rejects the model output (e.g., model returns a dict, not a list),
+      it raises RouterChainExhaustedError which is caught and returned as failure.
+      This is correct but the caller receives no information about what the LLM
+      actually returned — the raw response is not included in error_details.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      resolved_keys snapshot is a dict copy at LLMRouter.__init__ time. If the caller
+      mutates the dict they passed in AFTER construction, the router is unaffected (DC8).
+      However, if the caller passed api_key values that were themselves mutable objects
+      (not possible with plain strings, but worth noting for future type widening),
+      that assumption would break. Current implementation: dict[str, str] — strings
+      are immutable in Python, so this is fully safe as specified.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      SDKAnalysisDispatcher does not have a retry loop. The CLI dispatcher (Task 4)
+      has a retry-with-augmented-prompt loop (up to 3 retries on JSON validation failure).
+      The SDK dispatcher relies entirely on LLMRouter's fallback chain for resilience.
+      If the primary model returns a structurally invalid response (not caught by
+      pydantic-ai's output_type), there is no retry — the result is returned as-is or
+      fails. This asymmetry with CLIAnalysisDispatcher is undocumented at the call site.
+    deferred_to_feature_iteration: true
+
+assumptions_made:
+  - assumption: >
+      AnthropicProvider(api_key=...) and OpenAIProvider(api_key=...) accept the
+      resolved string directly without additional credential wrapping. Empty string
+      api_key does NOT result in silent fallback to os.environ inside pydantic-ai.
+    verified: true
+    note: >
+      Verified by DC8 death tests: test_dc8_provider_constructed_with_snapshot_key
+      and test_dc8_unset_env_after_load_does_not_affect_router confirm that the
+      closed-over key is what gets passed to the provider, not os.environ.
+      Introspection via agent._model.client.api_key confirms the snapshot value.
+
+  - assumption: >
+      pydantic-ai's Agent(model=explicit_model_instance, defer_model_check=True)
+      construction does not attempt any network call or API key validation at init time.
+      defer_model_check=True suppresses the "is this model accessible?" check.
+    verified: true
+    note: >
+      Verified by test_happy_path_anthropic_key_resolved and the fact that all
+      router init tests pass without network access. defer_model_check=True is
+      the correct mechanism per pydantic-ai docs.
+
+  - assumption: >
+      _infer_provider heuristic correctly classifies the builtin defaults:
+      BUILTIN_SDK_PRIMARY_MODEL ("claude-haiku-4-5-20251001") → "anthropic"
+      BUILTIN_SDK_FALLBACK_MODEL ("gpt-4o-mini") → "openai"
+    verified: true
+    note: >
+      Verified by test_dc7_partial_keys_only_configured_providers_usable and
+      test_factory_for_fallback_spec_uses_correct_provider. Both built-in model
+      names resolve correctly through the heuristic.
+
+  - assumption: >
+      LLMRouter.call() raises RouterChainExhaustedError (not RouterTerminalError)
+      when both primary and fallback models fail with transport/API errors.
+      RouterTerminalError is reserved for configuration errors (missing keys, etc.).
+    verified: true
+    note: >
+      Verified by test_dc4_both_providers_fail_error_details_has_both_errors.
+      RouterChainExhaustedError.attempts is a list of per-attempt error strings.
+
+  - assumption: >
+      RouterChainExhaustedError.attempts[0] is the primary error and attempts[1]
+      is the fallback error. The order matches dispatch order (primary first).
+    verified: false
+    note: >
+      This assumption is relied upon in _make_dual_failure_output to populate
+      DC4's primary_error and fallback_error fields. The LLMRouter implementation
+      appends attempts in dispatch order, but this is not documented as a contract.
+      If LLMRouter changes attempt ordering, DC4 error attribution silently swaps.
+    deferred_to_feature_iteration: true
+
+  - assumption: >
+      SecondSightConfig remains frozen (no new field added for resolved_keys).
+      resolved_keys is passed as a separate dict parameter to LLMRouter.__init__
+      and SDKAnalysisDispatcher.__init__, not stored in config schema.
+    verified: true
+    note: >
+      Constraint from task spec honored: SecondSightConfig was not modified.
+      _resolve_provider_keys() in loader.py produces the dict from the existing
+      ProvidersConfig that is already part of SecondSightConfig.
+
+  - assumption: >
+      _resolve_provider_keys() in config/loader.py does NOT read os.environ.
+      It only materializes already-interpolated string values from ProvidersConfig.
+      The ${VAR} interpolation has already been performed by the TOML loader
+      before _resolve_provider_keys() is called.
+    verified: true
+    note: >
+      Verified by DC7 death test test_dc7_empty_config_key_does_not_read_env:
+      os.environ["ANTHROPIC_API_KEY"] = "env-key" does not flow through
+      when config.toml has ANTHROPIC_API_KEY = "". Confirmed that _resolve_provider_keys
+      returns "" (not "env-key") when TOML has an empty value.
+
+  - assumption: >
+      tests/api/conftest.py tmp_secondsight_home fixture is used by ALL API tests
+      that construct registry + analysis runtime. Missing it would cause RouterTerminalError
+      at test setup time, not silently.
+    verified: true
+    note: >
+      Verified: test_registry_get_returns_project_resources previously failed with
+      RouterTerminalError (logged test from 1778762044_pytest.log). After adding
+      provider key to conftest.py fixture, test passes.
+
+  - assumption: >
+      tests/config/test_runtime_wiring.py's _build_agent_for_test helper writes
+      to the global (shared) config.toml, not a per-test tmp config. Tests in that
+      file that call _build_agent_for_test use the global SecondSight home dir.
+    verified: true
+    note: >
+      Verified by reading the test file: _build_agent_for_test modifies
+      cfg._home / "config.toml" where cfg._home is the global home from cfg.home_dir.
+      The provider key append in the updated helper is safe because existing keys
+      are checked before appending ([providers.anthropic] block detection).
+
+debt_registered: false
+debt_location: >
+  No new technical debt items registered beyond what is listed in the scar items above.
+  Items marked deferred_to_feature_iteration=true are deferred to the feature-level
+  iteration pass (samsara:iteration) for cross-task resolution:
+  1. output_type=list[BehaviorFlagDraft] (Task 5 + Task 3 prompt schema alignment)
+  2. Fallback detection precision (requires LLMRouter public API change)
+  3. SDKAnalysisDispatcher retry loop asymmetry vs CLI dispatcher (design decision)
+  4. RouterChainExhaustedError.attempts ordering contract (LLMRouter documentation)
+
+resolved_items:
+  - section: known_shortcuts
+    original: >
+      SDKAnalysisDispatcher.dispatch() passed output_type=list (plain list type) to
+      LLMRouter.call(). pydantic-ai would only validate a list was returned, not that
+      each item conformed to BehaviorFlagDraft schema.
+    resolution: >
+      Fixed during self-iteration: changed to output_type=list[BehaviorFlagDraft].
+      pydantic-ai now enforces the BehaviorFlagDraft schema on each item via its
+      structured output mechanism. Tests confirmed still passing after the fix.
+
+  - section: assumptions_made
+    original: >
+      Whether _resolve_provider_keys() reads os.environ was unverified at spec time.
+    resolution: >
+      Written DC7 death test (test_dc7_empty_config_key_does_not_read_env) that
+      explicitly sets os.environ with a real key but passes empty TOML value.
+      Test confirms _resolve_provider_keys returns "" (not the env value). Verified.
+
+  - section: assumptions_made
+    original: >
+      Whether tests/api/conftest.py fixture was used by all API tests was unverified.
+    resolution: >
+      The pre-existing test failure in test_registry_get_returns_project_resources
+      (from log 1778762044_pytest.log) provided direct evidence that the fixture
+      was indeed used. After updating conftest.py to write provider keys, the test passes.
+      Verified by running tests/api/ suite (all pass).
+
+  - section: known_shortcuts
+    original: >
+      _infer_provider defaulting to "anthropic" for unknown model names could cause
+      silent misclassification (construction succeeds, dispatch fails at 401).
+    resolution: >
+      Added explicit logger.warning() call in _infer_provider() when default is used.
+      The warning message names the model pattern, the assumed provider, and the
+      D6 escape hatch (custom agent_factory). This makes the silent failure noisy
+      enough to appear in logs. Full fix (RouterTerminalError on unknown) is deferred
+      because the behavior.jinja2 prompt path needs the same heuristic to stay lenient.
+
+  - section: assumptions_made
+    original: >
+      Whether AnthropicProvider(api_key=...) closes over the key and ignores os.environ
+      was assumed but not verified at spec time.
+    resolution: >
+      Written test_dc8_provider_constructed_with_snapshot_key which introspects
+      agent._model.client.api_key to confirm the value passed to AnthropicProvider
+      is exactly the resolved key, not the env value. Confirmed via monkeypatch that
+      changing os.environ after construction has no effect.
+
+  # --- Review-pass fixes (post-yin+quality reviewer) ---
+
+  - section: cross-task — Task 1 latent bridge bug
+    original_description: >
+      Task 1 introduced cfg.analysis_global as backward-compat bridge for runtime.py's
+      select_model() callers. The runtime.py:87 wrapper still passed `cfg.analysis`
+      (now the new AnalysisConfig type) where select_model() expected
+      GlobalAnalysisConfig shape. This was a latent type mismatch silently exercised
+      only when SDK mode dispatch actually ran end-to-end.
+    resolution: >
+      Task 5 changed runtime.py:87 from cfg.analysis to cfg.analysis_global as part
+      of integrating SDK key injection. The bridge bug is now fixed. Note: Task 1's
+      scar may overstate the bridge's working state — cross-link added to task-1-scar.yaml.
+
+  - section: known_shortcuts
+    original_description: >
+      _build_system_prompt() falls back to an inline prompt string when template
+      rendering fails. The inline prompt omits flag_definitions_block and analysis_output_schema,
+      weakening output quality while reporting status='success'. Scar item had this as
+      deferred_to_feature_iteration=false but classified as acceptable shortcut.
+    resolution: >
+      Removed inline fallback entirely. _build_system_prompt() now re-raises the original
+      exception. dispatch() moves the _build_system_prompt() call inside the try block so
+      render failures are caught and returned as AnalysisOutput(status='failure', error_details={error:...}).
+      This converts silent degradation (success with weak output) to observable failure.
+      Death test added: test_dispatch_returns_failure_when_prompt_render_fails.
+
+  - section: silent_failure_conditions
+    original_description: >
+      _make_success_output silently dropped BehaviorFlagDraft items that failed
+      model_validate() with a bare except:pass — no count, no log, no signal in output.
+    resolution: >
+      Added dropped_count tracking. Each dropped flag emits logger.warning() with index
+      and exception repr. Non-zero dropped_count populates error_details['dropped_flags'].
+      Summary warning emitted at end of loop. Death test added:
+      test_make_success_output_dropped_flag_is_counted_and_logged.
+
+  - section: known_shortcuts
+    original_description: >
+      _infer_provider() copy in sdk_dispatcher.py duplicated model_selection.py copy,
+      with different defaults (anthropic vs openai fallback) and missing gemini prefix.
+      A gemini-* model would silently resolve to provider="anthropic".
+    resolution: >
+      Deleted copy-A from sdk_dispatcher.py. sdk_dispatcher now imports _infer_provider
+      from sdk/model_selection.py (single source of truth). Added o4-* prefix to
+      model_selection._PROVIDER_PREFIXES. Changed fallback from silent default to
+      ValueError (forces explicit config for unknown prefixes). Regression tests added:
+      test_infer_provider_gemini_is_google_not_anthropic, test_infer_provider_raises_on_unknown_prefix.
+
+  - section: assumptions_made (Fix E — attempt ordering)
+    original_description: >
+      RouterChainExhaustedError.attempts[0] assumed to be primary — verified=false.
+      If LLMRouter changes ordering, DC4 primary_error/fallback_error labels silently swap.
+    resolution: >
+      Added explicit assert in _make_dual_failure_output path inside dispatch():
+      assert exc.attempts[0].model_name == self._primary_spec.name, else AssertionError
+      with message "attempts ordering violated". Death test added:
+      test_dc4_attempt_ordering_assertion_fires_on_wrong_order.
+
+  - section: Protocol unification (Fix A)
+    original_description: >
+      CLIAnalysisDispatcher.dispatch() had project_root as required positional argument.
+      SDKAnalysisDispatcher.dispatch() had no project_root parameter. No shared Protocol.
+      Task 6's ProjectAnalysisRuntime.dispatch() would need mode-branching to call both.
+    resolution: >
+      Created analysis/dispatcher.py with AnalysisDispatcher Protocol.
+      Both dispatchers now have dispatch(session_id, session_payload, project_root=None).
+      CLI raises ValueError at entry when project_root=None.
+      SDK accepts project_root but ignores it (documented in docstring).
+      Tests added: test_dispatch_signature_accepts_project_root_kwarg,
+      test_cli_dispatch_raises_value_error_when_project_root_is_none.
+
+  - section: private attribute access (Fix D)
+    original_description: >
+      agent.py:226 accessed router._resolved_keys with # type: ignore[attr-defined].
+      Private attribute access across module boundaries with no public surface.
+    resolution: >
+      Added resolved_keys public property to LLMRouter returning dict(self._resolved_keys)
+      (copy to prevent mutation). Updated agent.py to use router.resolved_keys.
+      type: ignore removed. Tests added: test_router_resolved_keys_public_property_returns_snapshot_copy.
+
+  - section: AST check scope (Fix C)
+    original_description: >
+      AST check for Agent(model_id_string) shortcut only inspected router.py.
+      sdk/agent.py also constructs Agent instances — currently correct but unguarded.
+    resolution: >
+      Refactored test into _collect_agent_shortcut_violations() helper and changed
+      test_no_implicit_model_string_in_default_agent_factory to walk ALL *.py files
+      under src/secondsight/sdk/ (not just router.py).
+
+  - section: DC8 test vacuousness (Fix 2)
+    original_description: >
+      test_dc8_dispatch_uses_snapshot_key_not_current_env used a mock capturing_factory
+      that read resolved_keys["anthropic"] from the outer local dict, never mutated.
+      The assertion passed trivially regardless of production factory behavior.
+    resolution: >
+      Rewrote test to use production _make_explicit_agent_factory with a patched
+      _CapturingAnthropicProvider that records the api_key passed to its constructor.
+      Mutation of os.environ between construction and factory invocation verified to
+      have no effect on the captured key.
+
+narrative: |
+  Task 5 implements Decision E1 (explicit key injection, no implicit env fallback)
+  across three layers: config/loader.py (_resolve_provider_keys), sdk/router.py
+  (resolved_keys required parameter + explicit provider construction), and
+  analysis/sdk_dispatcher.py (SDKAnalysisDispatcher class).
+
+  The three death cases were the primary design drivers:
+
+  DC7 (empty config key must NOT read env): LLMRouter._validate_provider_keys_at_init
+  raises RouterTerminalError at construction time when primary provider key is empty.
+  The validation is at construction, not at first dispatch — this means the error
+  appears during server startup (registry materialization), not during a user request.
+  4 death tests verify this across different empty/partial key scenarios.
+
+  DC8 (cache-once contract): resolved_keys is snapshotted as dict(resolved_keys)
+  in LLMRouter.__init__. The _make_explicit_agent_factory closure closes over a
+  separate copy (_keys = dict(resolved_keys)). Two copies ensure neither the caller's
+  dict nor os.environ can mutate the factory's keys after construction. 3 death tests
+  verify the snapshot behavior by mutating both the original dict and os.environ
+  after construction.
+
+  DC4 (both providers fail → error_details has both errors): SDKAnalysisDispatcher
+  catches RouterChainExhaustedError, checks len(exc.attempts) > 1, and calls
+  _make_dual_failure_output() which produces error_details with both 'primary_error'
+  and 'fallback_error' keys. AnalysisOutput.check_cross_fields() (Task 2) enforces
+  this at validation time — constructing an output with fallback_used=True and
+  missing either key raises ValidationError. 2 death tests verify this invariant.
+
+  Review pass (yin+quality reviewer): 8 structural fixes applied.
+  - Fix A: Created AnalysisDispatcher Protocol. Unified dispatch() signature.
+  - Fix 1: Added dropped flag accounting in _make_success_output (logger.warning + error_details).
+  - Fix 2: Rewrote vacuous DC8 test to exercise production factory path.
+  - Fix B: Deleted _infer_provider copy-A from sdk_dispatcher.py; DRY import from model_selection.
+  - Fix C: Extended AST check to all sdk/ .py files, not just router.py.
+  - Fix D: Promoted _resolved_keys to public resolved_keys property on LLMRouter.
+  - Fix E: Added assert for attempt ordering invariant in DC4 path.
+  - Fix F: Updated task-5-scar.yaml with resolved_items; cross-referenced task-1-scar.yaml.
+  - Fix G: Made _build_system_prompt template render failure FATAL (no fallback).
+
+  One pre-existing integration test (test_mh1_single_event_evidence_chain) was failing
+  before Task 5 work began. It continues to fail for unrelated reasons (hooks session-start
+  script modification). Task 5 did not introduce this failure.
+
+  Original Task 5: 24 new tests. Review pass: 28 additional new tests.
+  Total: 52 new tests added across both passes.
+  1485 non-integration tests pass (was 1457 before review pass).

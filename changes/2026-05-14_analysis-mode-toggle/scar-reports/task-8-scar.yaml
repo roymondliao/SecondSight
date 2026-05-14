@@ -1,0 +1,248 @@
+task_id: task-8
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      ModeAwareDispatch._get_cli_dispatcher() does not cache the constructed
+      CLIAnalysisDispatcher. On each CLI dispatch call it either returns the
+      injected dispatcher or constructs a new CLIAnalysisDispatcher instance.
+      Since CLIAnalysisDispatcher is stateless, this is benign but wasteful.
+      Symmetry with _get_sdk_dispatcher() (which now caches via self._sdk_dispatcher)
+      was not applied to avoid scope creep. The inconsistency is minor.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      TestRegressionSDKTestsUnderExplicitSDKMode was moved from
+      test_legacy_config_upgrade.py to test_sdk_regression.py. The old class
+      reference in test_legacy_config_upgrade.py is replaced with a comment.
+      If any test runner or CI script references the class by its old file path
+      (e.g., test_legacy_config_upgrade.py::TestRegressionSDKTestsUnderExplicitSDKMode),
+      it will fail with "not found". No such reference was found in CI configs
+      checked, but grep was not exhaustive.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      tests/e2e/conftest.py uses `from loguru import logger` inside
+      poll_analysis_outputs_table(). This is correct per AGENTS.md but the logger
+      is used in a non-test module path (conftest). If the loguru bridge fixture
+      in tests/conftest.py is not active for conftest-level code, loguru output
+      from poll_analysis_outputs_table may not be captured by caplog.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      ModeAwareDispatch._get_sdk_dispatcher() now caches self._sdk_dispatcher after
+      first construction (lazy initialization). If the SDKAnalysisDispatcher raises
+      RouterTerminalError during construction (no provider keys), the exception
+      propagates to ModeAwareDispatch.dispatch() which catches it and returns
+      AnalysisOutput(status='failure'). On the second call, self._sdk_dispatcher is
+      still None (not cached due to exception), so construction is re-attempted on
+      every dispatch call. This is correct behavior (fail-at-use, retry each time)
+      but means every subsequent SDK dispatch attempt also incurs a construction
+      failure cost. For the common case (valid keys), this is not an issue.
+
+  - description: >
+      The death tests for CRITICAL FIX 1 (test_dt_build_runtime_*) patch
+      secondsight.analysis.runtime._build_analysis_agent. If the module is already
+      imported and cached in sys.modules before the patch, the patch may not take
+      effect. Tests use `from secondsight.analysis import runtime as _runtime_module`
+      and call _runtime_module.build_project_analysis_runtime(), which goes through
+      the module namespace. This is the correct pattern for patching module-level
+      functions. Verified working.
+
+  - description: >
+      TestDTLegacyConfigWithStateServe.test_legacy_config_with_state_serve_warns_and_succeeds
+      (IMPORTANT FIX 6) uses caplog to capture the WARN log from the loader.
+      caplog is a stdlib logging bridge fixture. Since the loader uses loguru
+      (not stdlib logging), the WARN log may not appear in caplog unless the
+      loguru-to-stdlib bridge in tests/conftest.py is active. If caplog returns
+      empty warn_messages, the test would pass vacuously (assert "" in "legacy" is False
+      but assert False OR "legacy" in "" is evaluated correctly). The assertion is a
+      disjunction so it will FAIL if no warning is emitted — this is the desired behavior.
+      Verified: test passes (warns are captured correctly via bridge).
+
+assumptions_made:
+  - assumption: >
+      _build_analysis_agent() is only ever called inside ModeAwareDispatch._get_sdk_dispatcher()
+      after this fix. No other code path calls it.
+    verified: true
+    note: >
+      Verified by grep: _build_analysis_agent is defined once at module level in
+      runtime.py and is now called only from _get_sdk_dispatcher(). The only other
+      reference is in the death tests (as a patch target). The __all__ list does not
+      export _build_analysis_agent, so external callers would need to import it explicitly.
+
+  - assumption: >
+      build_orchestrator(agent=None) is valid for all modes. The orchestrator's
+      analyze_and_aggregate() is never called when mode_aware_dispatch is wired
+      (Trigger.dispatch() routes through ModeAwareDispatch instead).
+    verified: true
+    note: >
+      Verified by reading Trigger.dispatch() — when mode_aware_dispatch is not None,
+      it awaits mode_aware_dispatch.dispatch() and returns without calling
+      orchestrator.analyze_and_aggregate(). The agent=None is safe.
+
+  - assumption: >
+      ModeAwareDispatch is NOT a frozen dataclass and allows attribute mutation
+      (self._sdk_dispatcher = ...) inside _get_sdk_dispatcher().
+    verified: true
+    note: >
+      ModeAwareDispatch is a plain Python class (__init__ sets all attrs).
+      It is NOT decorated with @dataclass(frozen=True). Attribute assignment works.
+
+  - assumption: >
+      The six failing integration tests in tests/integration/test_phase1_e2e.py
+      are pre-existing failures, not introduced by Task 8 changes.
+    verified: true
+    note: >
+      Test count: 1812 passed, 6 failed — identical to pre-task baseline (1808 passed
+      before new tests were added). The 6 failures are in TestMH1/TestMH2/TestMH5
+      which test phase-1 observation adapter functionality, unchanged by Task 8.
+
+  - assumption: >
+      tests/e2e/conftest.py is automatically loaded by pytest for tests in tests/e2e/.
+      conftest.py does NOT need to export test fixtures for the module-level functions
+      (wait_for_server, poll_analysis_outputs_table) to be importable.
+    verified: true
+    note: >
+      Verified by running tests/e2e/ which passes 16 tests. The test files import
+      directly from tests.e2e.conftest (explicit import, not relying on pytest
+      conftest auto-loading).
+
+debt_registered: true
+debt_location: >
+  src/secondsight/analysis/runtime.py — _get_cli_dispatcher() does not cache
+  (minor inconsistency with _get_sdk_dispatcher() lazy caching);
+  tests/e2e/ — TestRegressionSDKTestsUnderExplicitSDKMode moved to test_sdk_regression.py,
+  old location has comment marker only.
+
+narrative: |
+  ## Summary
+
+  Task 8 applied all CRITICAL and IMPORTANT fixes identified by Yin and Quality
+  reviewers after Task 7's implementation.
+
+  ## CRITICAL FIX 1: Architecture Invariant Restored
+
+  Task 7 fixed a production bug (RouterTerminalError for CLI mode) by adding an
+  `if cfg.general.mode == "sdk":` conditional inside build_project_analysis_runtime().
+  This violated the architecture invariant in runtime.py module docstring lines 8-21:
+  "no module outside ModeAwareDispatch should reference config.general.mode."
+
+  The proper fix: moved all agent/dispatcher construction lazily into
+  ModeAwareDispatch._get_sdk_dispatcher(), which is already the designated mode-branch
+  site. build_project_analysis_runtime() now passes agent=None to build_orchestrator()
+  for ALL modes and does NOT reference cfg.general.mode. The invariant is restored.
+
+  Three new death tests verify:
+    1. _build_analysis_agent is never called during build_project_analysis_runtime
+       (CLI mode) — guards against regression.
+    2. _build_analysis_agent is never called during build_project_analysis_runtime
+       (SDK mode) — construction must be lazy.
+    3. ModeAwareDispatch._get_sdk_dispatcher() returns a working SDKAnalysisDispatcher
+       — the lazy path must actually construct something useful.
+
+  ## CRITICAL FIX 2: _poll_analysis_outputs_table bare except
+
+  Both gated test files had `except Exception: pass` in the DB poll loop. This made
+  DB connection failures indistinguishable from "row not yet written." Fixed by
+  creating tests/e2e/conftest.py with a shared poll_analysis_outputs_table() that:
+    - Catches sqlalchemy.exc.OperationalError (table not ready yet — transient,
+      continue polling with DEBUG log)
+    - Re-raises all other exceptions (unexpected DB errors produce actionable failures)
+
+  ## IMPORTANT FIX 3: Scar cross-reference
+
+  task-6-scar.yaml now has an addendum documenting the production bug and its
+  proper fix location. task-7-scar.yaml's false "exception clause" citation was
+  corrected to accurately describe what happened and what was fixed in Task 8.
+
+  ## IMPORTANT FIX 4: Test rename
+
+  test_legacy_config_serve_succeeds_with_binary renamed to
+  test_legacy_config_passes_precheck_with_binary. The new name accurately reflects
+  that _run_server is patched to a no-op — the test verifies precheck passes,
+  not that the HTTP server actually serves.
+
+  ## IMPORTANT FIX 5: Shared conftest
+
+  Created tests/e2e/conftest.py with shared wait_for_server(), poll_analysis_outputs_table(),
+  _SERVER_PORT, _SERVER_URL. Both gated test files now import from here instead of
+  maintaining verbatim copies. The port conflict constraint is documented in one place.
+
+  ## IMPORTANT FIX 6: Composed DC5 scenario test
+
+  Added TestDTLegacyConfigWithStateServe.test_legacy_config_with_state_serve_warns_and_succeeds
+  to test_legacy_config_upgrade.py. Composes: legacy config + state.json + binary →
+  WARN log + exit 0 + mode="cli". Previous tests covered each piece separately.
+
+  ## IMPORTANT FIX 7: TestRegressionSDKTestsUnderExplicitSDKMode moved
+
+  The class was misplaced in test_legacy_config_upgrade.py. Moved to new file
+  tests/e2e/test_sdk_regression.py. Imports consolidated via _make_sdk_config() helper.
+
+resolved_items:
+  - original_section: known_shortcuts
+    original_description: >
+      Architecture invariant violation: build_project_analysis_runtime() contained
+      `if cfg.general.mode == "sdk":` — mode-conditional outside ModeAwareDispatch.
+    resolution: >
+      CRITICAL FIX 1: Removed mode-conditional from build_project_analysis_runtime().
+      Moved SDKAnalysisDispatcher construction (including LLMRouter) into
+      ModeAwareDispatch._get_sdk_dispatcher() as a lazy-construction pattern.
+      The invariant (runtime.py module docstring lines 8-21) now matches the code.
+      Verified by 3 new death tests; 1812 tests pass.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      _poll_analysis_outputs_table bare except swallowed DB connection failures,
+      making timeouts from DB errors indistinguishable from "dispatch dropped event".
+    resolution: >
+      CRITICAL FIX 2: Created tests/e2e/conftest.py with shared poll_analysis_outputs_table()
+      that distinguishes OperationalError (transient, continue) from unexpected errors
+      (re-raise). Both gated test files now delegate to shared helper.
+
+  - original_section: assumptions_made
+    original_description: >
+      task-7-scar.yaml narrative cited a false "exception clause" to justify placing
+      the fix outside ModeAwareDispatch.
+    resolution: >
+      IMPORTANT FIX 3: Corrected task-7-scar.yaml narrative. Added addendum to
+      task-6-scar.yaml documenting the bug origin and proper fix location.
+
+  - original_section: known_shortcuts
+    original_description: >
+      test_legacy_config_serve_succeeds_with_binary named misleadingly — _run_server
+      is a no-op, so the test only verifies precheck passes, not server startup.
+    resolution: >
+      IMPORTANT FIX 4: Renamed to test_legacy_config_passes_precheck_with_binary.
+      Assertion comment updated to clarify _run_server is patched to no-op.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      _wait_for_server and _poll_analysis_outputs_table were verbatim duplicates in
+      test_mode_toggle_cli.py and test_mode_toggle_sdk.py. _SERVER_PORT = 8420 was
+      also duplicated, with the port conflict constraint documented in two places.
+    resolution: >
+      IMPORTANT FIX 5: Created tests/e2e/conftest.py. Both files now import from it.
+      Port conflict constraint documented once in conftest.py module docstring.
+
+  - original_section: known_shortcuts
+    original_description: >
+      DC5 composed scenario (legacy config + state.json + binary → WARN + exit 0)
+      was acknowledged as "implicitly covered" in task-7-scar.yaml. That is not
+      the same as covered.
+    resolution: >
+      IMPORTANT FIX 6: Added TestDTLegacyConfigWithStateServe class with
+      test_legacy_config_with_state_serve_warns_and_succeeds to
+      test_legacy_config_upgrade.py. Explicitly composes all three conditions
+      and asserts WARN log, exit 0, and mode="cli".
+
+  - original_section: known_shortcuts
+    original_description: >
+      TestRegressionSDKTestsUnderExplicitSDKMode was misplaced in the legacy-config
+      test file. SDK regression tests do not belong with legacy-config tests.
+    resolution: >
+      IMPORTANT FIX 7: Created tests/e2e/test_sdk_regression.py and moved the class
+      there with consolidated imports. test_legacy_config_upgrade.py has a comment
+      noting the move location.

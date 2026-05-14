@@ -120,21 +120,24 @@ class TestDTSchema4ModelConfigsImportable:
     def test_fallback_models_config_importable(self) -> None:
         from secondsight.config.schema import FallbackModelsConfig  # noqa: F401
 
-    def test_analysis_config_NOT_in_schema(self) -> None:
-        """AnalysisConfig must NOT be importable from config.schema.
+    def test_analysis_config_in_schema_is_new_aggregate(self) -> None:
+        """AnalysisConfig IS importable from config.schema — but it is the NEW aggregate class.
 
-        AnalysisConfig is a tool-level read_project_file config with a TOML
-        loader. It belongs in analysis.config, not in the unified schema module.
-        Presence in schema.py creates a class identity split: schema.AnalysisConfig
-        and analysis.config.AnalysisConfig become two different objects, breaking
-        isinstance() checks and except-clause matching across module boundaries.
+        analysis-mode-toggle task-1 adds AnalysisConfig to config.schema as the
+        [analysis] / [analysis.cli] / [analysis.sdk] aggregate. This is a DIFFERENT
+        class from secondsight.analysis.config.AnalysisConfig (the per-project TOML reader).
 
-        If this import succeeds (no ImportError), the class identity split still exists.
+        The two classes must remain distinct (different objects) so there is no class
+        identity split for isinstance() checks on the per-project AnalysisConfig.
         """
-        import pytest
+        from secondsight.config.schema import AnalysisConfig  # noqa: F401
+        from secondsight.analysis.config import AnalysisConfig as OldAnalysisConfig
 
-        with pytest.raises((ImportError, AttributeError)):
-            from secondsight.config.schema import AnalysisConfig  # noqa: F401
+        assert AnalysisConfig is not OldAnalysisConfig, (
+            "config.schema.AnalysisConfig (new aggregate) must be a DIFFERENT class "
+            "from analysis.config.AnalysisConfig (per-project TOML reader). "
+            "Same class would create circular import dependency."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +213,7 @@ class TestUTSecondSightConfigComposition:
 
     def test_secondsight_config_field_types(self) -> None:
         from secondsight.config.schema import (
-            GlobalAnalysisConfig,
+            AnalysisConfig,
             ProjectAnalysisConfig,
             RetentionConfig,
             SecondSightConfig,
@@ -222,7 +225,8 @@ class TestUTSecondSightConfigComposition:
         assert field_map["retention"].type is RetentionConfig or "RetentionConfig" in str(
             field_map["retention"].type
         )
-        assert field_map["analysis"].type is GlobalAnalysisConfig or "GlobalAnalysisConfig" in str(
+        # analysis is now AnalysisConfig (new aggregate), not GlobalAnalysisConfig (old flat)
+        assert field_map["analysis"].type is AnalysisConfig or "AnalysisConfig" in str(
             field_map["analysis"].type
         )
         assert field_map["project_analysis"].type is ProjectAnalysisConfig or (
@@ -304,22 +308,31 @@ class TestUTBackwardCompatibility:
 
         assert issubclass(AnalysisConfigError, Exception)
 
-    def test_analysis_config_not_in_schema(self) -> None:
-        """AnalysisConfig must NOT be importable from config.schema.
+    def test_analysis_config_in_schema_is_new_aggregate_not_old_reader(self) -> None:
+        """config.schema.AnalysisConfig must be the NEW aggregate (not old per-project reader).
 
-        This is the definitive class identity guard: after the fix, config.schema
-        does not define AnalysisConfig at all. The only canonical AnalysisConfig
-        is in analysis.config. Any code importing from config.schema will get an
-        ImportError rather than a silently wrong class object.
+        analysis-mode-toggle task-1 adds a NEW AnalysisConfig to config.schema as the
+        [analysis]/[analysis.cli]/[analysis.sdk] aggregate dataclass.
+        The OLD AnalysisConfig in analysis.config remains unchanged (per-project TOML reader).
+        These MUST be different classes. This test guards against accidental collision.
         """
         import secondsight.config.schema as schema_module
+        from secondsight.analysis.config import AnalysisConfig as OldAnalysisConfig
 
-        assert not hasattr(schema_module, "AnalysisConfig"), (
-            "AnalysisConfig must NOT be defined in config.schema. "
-            "Its presence there creates a class identity split: "
-            "schema.AnalysisConfig and analysis.config.AnalysisConfig are different "
-            "objects, so `except AnalysisConfigError` and `isinstance(cfg, AnalysisConfig)` "
-            "fail silently across module boundaries."
+        # config.schema.AnalysisConfig must exist (new aggregate)
+        assert hasattr(schema_module, "AnalysisConfig"), (
+            "config.schema.AnalysisConfig must exist (added in analysis-mode-toggle task-1)."
+        )
+        new_cls = schema_module.AnalysisConfig
+        # They must be different class objects
+        assert new_cls is not OldAnalysisConfig, (
+            "config.schema.AnalysisConfig and analysis.config.AnalysisConfig must be "
+            "DIFFERENT classes to avoid circular imports and isinstance confusion."
+        )
+        # The new one must NOT have .load() (that belongs to analysis.config.AnalysisConfig)
+        assert not hasattr(new_cls, "load"), (
+            "config.schema.AnalysisConfig must NOT have .load() — it is a pure dataclass. "
+            "TOML reading belongs in analysis.config.AnalysisConfig."
         )
 
     def test_analysis_config_error_not_in_schema(self) -> None:

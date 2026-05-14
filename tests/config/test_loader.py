@@ -209,7 +209,9 @@ class TestDTLoader6MissingGlobalConfigFallback:
 
         cfg = load_global_config(home)
 
-        assert cfg.analysis.default_agent == BUILTIN_DEFAULT_AGENT
+        # analysis-mode-toggle task-1: cfg.analysis is now AnalysisConfig (new aggregate).
+        # The old GlobalAnalysisConfig default_agent is now in cfg.analysis_global.default_agent.
+        assert cfg.analysis_global.default_agent == BUILTIN_DEFAULT_AGENT
         assert cfg.retention.raw_traces_ttl_days == 90  # built-in default
         assert cfg.project_analysis.model == ""  # empty = not set
 
@@ -363,9 +365,15 @@ class TestUTLoadGlobalConfig:
         monkeypatch.delenv("SECONDSIGHT_DEFAULT_AGENT", raising=False)
 
         from secondsight.config.loader import load_global_config
+        from secondsight.config.schema import BUILTIN_DEFAULT_AGENT
 
         cfg = load_global_config(home)
-        assert cfg.analysis.default_agent == "codex"
+        # analysis-mode-toggle task-1: flat [analysis] default_agent is now LEGACY.
+        # DC12: _build_global_analysis_config now also warn-and-ignores the legacy flat key
+        # (same condition as _build_analysis_config — both use _legacy_default_agent_should_be_ignored).
+        # After ignore: analysis_global.default_agent falls back to BUILTIN_DEFAULT_AGENT,
+        # not the discarded "codex" value. This is a deliberate behavior change (spec: warn-and-IGNORE).
+        assert cfg.analysis_global.default_agent == BUILTIN_DEFAULT_AGENT
 
     def test_env_var_overrides_toml_default_agent(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -377,7 +385,8 @@ class TestUTLoadGlobalConfig:
         from secondsight.config.loader import load_global_config
 
         cfg = load_global_config(home)
-        assert cfg.analysis.default_agent == "opencode"
+        # Env var still overrides default_agent in GlobalAnalysisConfig (backward compat path)
+        assert cfg.analysis_global.default_agent == "opencode"
 
     def test_reads_retention_from_toml(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -403,7 +412,8 @@ class TestUTLoadGlobalConfig:
         from secondsight.config.loader import load_global_config
 
         cfg = load_global_config(home)
-        assert cfg.analysis.models.claude_code == "claude-opus-4-5"
+        # analysis_global preserves GlobalAnalysisConfig (old [analysis.models] path)
+        assert cfg.analysis_global.models.claude_code == "claude-opus-4-5"
 
     def test_project_analysis_empty_at_global_level(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -466,9 +476,12 @@ class TestUTLoadProjectConfig:
         monkeypatch.delenv("SECONDSIGHT_ANALYSIS_MODEL", raising=False)
 
         from secondsight.config.loader import load_project_config
+        from secondsight.config.schema import BUILTIN_DEFAULT_AGENT
 
         cfg = load_project_config(home, project_id)
-        assert cfg.analysis.default_agent == "opencode"
+        # DC12 fix: legacy flat [analysis] default_agent is now warn-and-ignored by BOTH builders.
+        # analysis_global.default_agent falls back to BUILTIN_DEFAULT_AGENT (not the discarded value).
+        assert cfg.analysis_global.default_agent == BUILTIN_DEFAULT_AGENT
         assert cfg.project_analysis.model == ""
 
     def test_dotenv_loaded_once_on_project_load(
@@ -502,7 +515,8 @@ class TestUTFallbackModels:
         from secondsight.config.loader import load_global_config
 
         cfg = load_global_config(home)
-        assert cfg.analysis.models.fallback.fallback_models == ["gpt-4o", "claude-haiku"]
+        # analysis_global preserves GlobalAnalysisConfig (old [analysis.models.fallback] path)
+        assert cfg.analysis_global.models.fallback.fallback_models == ["gpt-4o", "claude-haiku"]
 
     def test_builtin_fallback_when_no_section(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -515,7 +529,7 @@ class TestUTFallbackModels:
         from secondsight.config.schema import BUILTIN_FALLBACK_MODELS
 
         cfg = load_global_config(home)
-        assert cfg.analysis.models.fallback.fallback_models == list(BUILTIN_FALLBACK_MODELS)
+        assert cfg.analysis_global.models.fallback.fallback_models == list(BUILTIN_FALLBACK_MODELS)
 
 
 # ---------------------------------------------------------------------------

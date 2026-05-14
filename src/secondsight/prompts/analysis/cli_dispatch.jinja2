@@ -1,0 +1,24 @@
+You are a coding agent behavior analysis expert.
+
+[Valid Behavior Flag Types]
+{{ flag_definitions_block }}
+
+[Session Data to Analyze]
+{{ session_payload_json }}
+
+[Task]
+Analyze this session. Detect any inefficient or unnecessary operations.
+Return ONLY a JSON object matching this schema exactly - no markdown, no explanation, just the JSON:
+
+{{ analysis_output_schema_json }}
+
+Required field values for this response:
+- schema_version: "1.0"
+- session_id: "{{ session_id }}"
+- status: "success"
+- dispatched_via: "cli"
+- cli_agent: "{{ cli_agent }}"
+- primary_model: null
+- fallback_used: false
+- retry_count: 0
+- error_details: null

@@ -162,8 +162,7 @@ class TestDTC1AnalysisConfigInterpolation:
         monkeypatch.setenv("SECRETS_DIR", "/var/lib/secrets")
         config_file = tmp_path / "config.toml"
         config_file.write_text(
-            "[analysis.read_project_file]\n"
-            'denylist = ["${SECRETS_DIR}/keys.txt", "/etc/passwd"]\n',
+            '[analysis.read_project_file]\ndenylist = ["${SECRETS_DIR}/keys.txt", "/etc/passwd"]\n',
             encoding="utf-8",
         )
 
@@ -184,8 +183,7 @@ class TestDTC1AnalysisConfigInterpolation:
         monkeypatch.delenv("DEFINITELY_NOT_SET_VAR", raising=False)
         config_file = tmp_path / "config.toml"
         config_file.write_text(
-            "[analysis.read_project_file]\n"
-            'denylist = ["${DEFINITELY_NOT_SET_VAR}/keys.txt"]\n',
+            '[analysis.read_project_file]\ndenylist = ["${DEFINITELY_NOT_SET_VAR}/keys.txt"]\n',
             encoding="utf-8",
         )
 

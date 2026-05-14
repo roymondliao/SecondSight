@@ -282,7 +282,7 @@ class _ServerSweepCoordinator:
                     try:
                         latest_run = runs_repo.get_latest_for_session(session_id)
                         if latest_run is not None and latest_run.stage.value in TERMINAL_STAGES:
-                            logger.info(
+                            logger.debug(
                                 "Sweeper: stale candidate already terminal — "
                                 "project_id={pid} session_id={sid} stage={stage}",
                                 pid=pid,

@@ -875,3 +875,113 @@ class TestUnitTests:
             assert result.returncode == 0, (
                 f"{script_name} exited non-zero ({result.returncode}). stderr={result.stderr!r}"
             )
+
+
+# ===========================================================================
+# SESSION-START CONVENTION INJECTION TESTS (Layer 1)
+# ===========================================================================
+
+FAKE_CONVENTIONS = (
+    "- Always read AGENTS.md before starting.\n"
+    "- Prefer editing existing files over creating new ones."
+)
+
+
+def _make_convention_server(conventions_body: str) -> tuple[int, Any]:
+    """Start a fake HTTP server that returns a session-start conventions response.
+
+    Returns (port, server) so the caller can shut it down.
+    """
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length", 0))
+            self.rfile.read(length)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(conventions_body.encode())
+
+        def log_message(self, fmt: str, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    port = server.server_address[1]
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    return port, server
+
+
+class TestSessionStartConventionInjection:
+    """Layer 1 tests: session-start.sh prints conventions to stdout for system prompt injection."""
+
+    def test_conventions_printed_to_stdout_when_server_responds(self, tmp_path: Path) -> None:
+        """UT-SS-1: When server returns active conventions, hook prints them to stdout.
+
+        Claude Code reads SessionStart hook stdout as system prompt content.
+        The conventions must appear verbatim in hook stdout.
+        """
+        body = json.dumps(
+            {
+                "conventions": FAKE_CONVENTIONS,
+                "count": 2,
+                "budget_used": 80,
+                "budget_total": 2000,
+            }
+        )
+        port, server = _make_convention_server(body)
+        try:
+            home = tmp_path / ".secondsight"
+            home.mkdir()
+            env = build_env(port=port, home=home)
+            result = run_hook(hook_script("session-start.sh"), minimal_payload(), env=env)
+
+            assert result.returncode == 0, (
+                f"session-start.sh exited non-zero; stderr={result.stderr!r}"
+            )
+            assert FAKE_CONVENTIONS in result.stdout, (
+                f"Conventions not found in stdout.\nstdout={result.stdout!r}\nstderr={result.stderr!r}"
+            )
+        finally:
+            server.shutdown()
+
+    def test_empty_stdout_when_server_unreachable(self, tmp_path: Path) -> None:
+        """UT-SS-2: When server is unreachable, hook exits 0 with empty stdout.
+
+        Pre-execution injection must degrade silently — no stdout means no
+        system prompt modification, which is the correct cold-start behavior.
+        """
+        home = tmp_path / ".secondsight"
+        home.mkdir()
+        env = build_env(port=1, home=home)  # nothing on port 1
+        result = run_hook(hook_script("session-start.sh"), minimal_payload(), env=env)
+
+        assert result.returncode == 0, (
+            f"session-start.sh must exit 0 on dead port; got {result.returncode}"
+        )
+        assert result.stdout.strip() == "", (
+            f"Expected empty stdout on dead port; got: {result.stdout!r}"
+        )
+
+    def test_empty_stdout_when_no_conventions_available(self, tmp_path: Path) -> None:
+        """UT-SS-3: When server returns empty conventions, hook stdout is empty.
+
+        This is the normal cold-start path: project exists, server is running,
+        but analysis has not yet produced any conventions. Hook must not print
+        an empty string or whitespace — truly nothing.
+        """
+        body = json.dumps({"conventions": "", "count": 0, "budget_used": 0, "budget_total": 2000})
+        port, server = _make_convention_server(body)
+        try:
+            home = tmp_path / ".secondsight"
+            home.mkdir()
+            env = build_env(port=port, home=home)
+            result = run_hook(hook_script("session-start.sh"), minimal_payload(), env=env)
+
+            assert result.returncode == 0
+            assert result.stdout.strip() == "", (
+                f"Expected empty stdout when conventions=''; got: {result.stdout!r}"
+            )
+        finally:
+            server.shutdown()

@@ -53,9 +53,31 @@ def _build_agent_for_test(
 
     Creates the project directory so AnalysisTools.project_root.resolve() succeeds.
     Repos are MagicMock — no DB required.
+
+    Task 5 note: LLMRouter now requires at least one non-empty provider key at
+    init time (Decision E1). We ensure the global config.toml always has a test
+    Anthropic key so the router construction passes. The key is a test placeholder
+    — no real API calls are made in these wiring tests.
+
+    If the test already wrote a global config.toml (e.g. test_ut_wire_* tests),
+    we merge the provider section in. If no global config.toml exists, we create one
+    with only the provider key so model selection tests remain unaffected.
     """
     project_dir = secondsight_home / "projects" / project_id
     project_dir.mkdir(parents=True, exist_ok=True)
+
+    # Ensure global config.toml has provider key for LLMRouter validation.
+    # We APPEND if the file exists to avoid overwriting model selection settings.
+    global_config_path = secondsight_home / "config.toml"
+    _provider_stub = (
+        '\n[providers.anthropic]\nANTHROPIC_API_KEY = "sk-test-runtime-wiring-placeholder"\n'
+    )
+    if global_config_path.exists():
+        existing = global_config_path.read_text()
+        if "[providers.anthropic]" not in existing:
+            global_config_path.write_text(existing + _provider_stub)
+    else:
+        global_config_path.write_text(_provider_stub)
 
     return _build_analysis_agent(
         secondsight_home=secondsight_home,
@@ -273,6 +295,12 @@ def test_ut_wire_no_project_dir_uses_builtin_default(tmp_path: Path) -> None:
     """
     home = tmp_path / ".secondsight"
     home.mkdir()
+
+    # Task 5: LLMRouter requires at least one provider key. Add a test placeholder
+    # to the global config so the router construction passes.
+    (home / "config.toml").write_text(
+        '[providers.anthropic]\nANTHROPIC_API_KEY = "sk-test-no-project-dir-placeholder"\n'
+    )
 
     # Project dir does NOT exist — no config.toml can exist
     project_id = "proj-nonexistent"

@@ -55,13 +55,17 @@ from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import Agent
+from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.providers.anthropic import AnthropicProvider
+from pydantic_ai.providers.openai import OpenAIProvider
 
 from secondsight.analysis.agent import AnalysisAgentError
 from secondsight.analysis.prompts.aggregate import AggregateOutput
 from secondsight.analysis.prompts.summary import SummaryOutput
 from secondsight.analysis.schemas import SegmentAnalysis
 from secondsight.sdk._specs import ModelSpec
-from secondsight.sdk.router import LLMRouter
+from secondsight.sdk.router import LLMRouter, RouterTerminalError
 
 if TYPE_CHECKING:
     from secondsight.analysis.tools import AnalysisTools
@@ -70,21 +74,42 @@ if TYPE_CHECKING:
 AgentFactory = Callable[[ModelSpec], Any]
 
 
-def _spec_to_model_id(spec: ModelSpec) -> str:
-    """Convert a ModelSpec to a PydanticAI model identifier string.
+def _build_explicit_model(spec: ModelSpec, resolved_keys: dict[str, str]) -> Any:
+    """Build an explicit PydanticAI model instance from a ModelSpec and resolved keys.
 
-    Mirrors the convention in router._default_agent_factory:
-    - OpenAI: model name only (no prefix)
-    - Other providers: "{provider}:{name}"
+    Decision E1: API keys are injected explicitly — never read from os.environ.
+    The resolved_keys dict is the snapshot from config load time (DC8: cache-once).
+
+    Supported providers:
+        - "anthropic": AnthropicModel + AnthropicProvider(api_key=...)
+        - "openai": OpenAIModel + OpenAIProvider(api_key=...)
+
+    Raises:
+        RouterTerminalError: Provider is not in the supported set. Use a custom
+            agent_factory (D6 escape hatch) for other providers.
     """
+    if spec.provider == "anthropic":
+        api_key = resolved_keys.get("anthropic", "")
+        provider = AnthropicProvider(api_key=api_key)
+        return AnthropicModel(spec.name, provider=provider)
+
     if spec.provider == "openai":
-        return spec.name
-    return f"{spec.provider}:{spec.name}"
+        api_key = resolved_keys.get("openai", "")
+        provider = OpenAIProvider(api_key=api_key)
+        return OpenAIModel(spec.name, provider=provider)
+
+    raise RouterTerminalError(
+        f"terminal_error: unsupported provider {spec.provider!r} in scoped factory. "
+        f"Built-in factory supports 'anthropic' and 'openai'. "
+        f"For other providers, pass a custom agent_factory (D6 escape hatch). "
+        f"model={spec.name!r}"
+    )
 
 
 def _make_scoped_agent_factory(
     tools: list[Any],
     output_type: type,
+    resolved_keys: dict[str, str],
 ) -> Callable[[ModelSpec], Agent]:  # type: ignore[type-arg]
     """Return an agent_factory that creates PydanticAI Agents with the given tool list.
 
@@ -92,18 +117,25 @@ def _make_scoped_agent_factory(
     The tool list enforces D4 per-method tool scoping: PydanticAI will raise
     UnexpectedModelBehavior if the LLM requests a tool not in this list.
 
+    Decision E1: API keys are injected explicitly via resolved_keys (snapshot from
+    config load). This factory NEVER reads os.environ. The keys are closed over
+    at factory-creation time — this is the DC8 cache-once mechanism.
+
     Args:
         tools: List of async callable tool functions registered with this agent.
         output_type: Pydantic model class for structured output validation.
+        resolved_keys: Snapshot dict of provider API keys at config load time.
 
     Returns:
         A callable ModelSpec -> Agent suitable for LLMRouter's agent_factory.
     """
+    # Close over a copy (not a reference) to prevent external mutation.
+    _keys = dict(resolved_keys)
 
     def factory(spec: ModelSpec) -> Agent:  # type: ignore[type-arg]
-        model_id = _spec_to_model_id(spec)
+        model = _build_explicit_model(spec, _keys)
         return Agent(
-            model_id,
+            model=model,
             output_type=output_type,
             tools=tools,
             defer_model_check=True,
@@ -159,8 +191,9 @@ class PydanticAIAnalysisAgent:
 
         Args:
             router: Pre-wired LLMRouter providing the model chain (primary +
-                fallbacks) and timeout configuration via ``router.config``.
-                The router's own agent_factory is NOT used.
+                fallbacks), timeout configuration via ``router.config``, and
+                resolved provider keys (snapshot from config load, DC8).
+                The router's own agent_factory is NOT used directly.
             tools: AnalysisTools instance providing the four tool methods.
                 Tool availability per method is enforced at this layer (D4):
                 - analyze_segments:    [read_traces, read_project_file]
@@ -171,7 +204,8 @@ class PydanticAIAnalysisAgent:
                 factories. Intended for testing only. When None (default),
                 three separate scoped factories are built — one per method —
                 each creating PydanticAI Agents with the method-specific tool
-                list (D4 structural enforcement).
+                list (D4 structural enforcement) and explicit provider injection
+                from router._resolved_keys (Decision E1, DC8).
 
         Design bet (D4, from 2-plan.md):
             Per-method tool scoping is a security control, not a hint. The
@@ -189,6 +223,7 @@ class PydanticAIAnalysisAgent:
             chain_total_timeout_s=cfg.chain_total_timeout_s,
             scoped_tools=self._scoped_tools,
             override_factory=agent_factory,
+            resolved_keys=router.resolved_keys,  # public property (DC8 snapshot copy)
         )
         self._segment_router = segment_router
         self._aggregate_router = aggregate_router
@@ -255,8 +290,14 @@ class PydanticAIAnalysisAgent:
         chain_total_timeout_s: float,
         scoped_tools: dict[str, list[Any]],
         override_factory: AgentFactory | None,
+        resolved_keys: dict[str, str],
     ) -> tuple[LLMRouter, LLMRouter, LLMRouter]:
         """Construct three internal LLMRouters with method-scoped agent factories.
+
+        Decision E1: resolved_keys are passed to each scoped factory so that
+        AnthropicProvider / OpenAIProvider are constructed with explicit api_key=...
+        values. No factory reads os.environ. This is the DC8 cache-once mechanism:
+        the keys are closed over at factory-creation time from the snapshot.
 
         Death reason: if all three use the same factory (wrong wiring), the
         aggregator gains access to read_project_file via the segment factory.
@@ -286,18 +327,22 @@ class PydanticAIAnalysisAgent:
             summary_factory: AgentFactory = override_factory
         else:
             # Production path: build three separate scoped factories.
-            # Each factory creates a PydanticAI Agent with only the method's tools.
+            # Each factory creates a PydanticAI Agent with only the method's tools
+            # and an explicit provider constructed from resolved_keys (Decision E1).
             segment_factory = _make_scoped_agent_factory(
                 tools=scoped_tools["segment"],
                 output_type=SegmentAnalysis,
+                resolved_keys=resolved_keys,
             )
             aggregate_factory = _make_scoped_agent_factory(
                 tools=scoped_tools["aggregate"],
                 output_type=AggregateOutput,
+                resolved_keys=resolved_keys,
             )
             summary_factory = _make_scoped_agent_factory(
                 tools=scoped_tools["summary"],
                 output_type=SummaryOutput,
+                resolved_keys=resolved_keys,
             )
 
         common = dict(
@@ -305,6 +350,7 @@ class PydanticAIAnalysisAgent:
             fallbacks=fallbacks,
             per_call_timeout_s=per_call_timeout_s,
             chain_total_timeout_s=chain_total_timeout_s,
+            resolved_keys=resolved_keys,
         )
         return (
             LLMRouter(**common, agent_factory=segment_factory),

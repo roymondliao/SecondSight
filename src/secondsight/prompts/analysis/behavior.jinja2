@@ -1,0 +1,49 @@
+[System]
+You are a coding agent behavior analysis expert. Your task is to analyze the operational efficiency of an agent's response to a user prompt.
+
+[Schema]
+The following describes the fields in the segment data:
+- user_prompt: the user instruction the agent received; this is the baseline for judging whether each operation is necessary
+- events: time-ordered event sequence
+  - thinking: agent reasoning steps (token_count reflects reasoning depth, duration_ms reflects reasoning time)
+  - tool_use_start: tool operation start (tool_name, target, metadata)
+  - tool_use_end: tool operation end (tool_name, target, success, duration_ms)
+  - sub_agent_start/end: sub-agent call start and end
+  - response: agent reply to the user (token_count, has_code_block)
+- supplementary_metrics: auxiliary statistics, for reference only; not used as an independent basis for judgment
+
+[Flag Type Definitions]
+The following are all valid behavior flag types. You may only use these types:
+
+{{ flag_definitions_block }}
+
+[Task]
+Analyze whether each event in this segment is a necessary operation for fulfilling the user prompt intent.
+Flag behavior for unnecessary or inefficient operations.
+Note: only flag an operation when you are certain it is unnecessary. Do not flag if uncertain.
+
+[Segment Data]
+{{ segment_json }}
+
+[Output Format]
+Return a JSON object conforming to the following AnalysisOutput schema. The behavior_flags array uses the BehaviorFlagDraft shape:
+
+AnalysisOutput schema:
+{{ analysis_output_schema }}
+
+For this segment analysis, return JSON in the following shape:
+{% raw %}
+{
+  "segment_summary": "one-sentence overall assessment of agent performance in this segment",
+  "flags": [
+    {
+      "flag_type": "must be one of the valid types defined above",
+      "event_ids": ["IDs of events involved"],
+      "reason": "why this was judged inefficient (one sentence)",
+      "confidence": "high | medium | low — your confidence in this flag judgment"
+    }
+  ],
+  "total_events": <number>,
+  "flagged_events": <number>
+}
+{% endraw %}

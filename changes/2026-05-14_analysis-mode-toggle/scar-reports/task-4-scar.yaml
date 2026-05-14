@@ -1,0 +1,242 @@
+task_id: task-4
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      Codex output file cleanup: on dispatcher crash (SIGKILL), the TemporaryDirectory
+      finalizer may not run. The tmpdir cleanup is explicit at each return point in _run_once,
+      but a hard SIGKILL to the dispatcher process itself would bypass the finally path.
+      In that scenario, the OS will clean up the temp directory eventually (most OS temp
+      cleanup policies handle this). The risk is minor and temporary.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      cli-protocol-poc-results.md documents the PoC verdict as PROCEED. The PoC used
+      a minimal 10-event fixture. Production sessions with thousands of events approaching
+      LLM context limits have NOT been tested. If large sessions cause context overflow
+      (LLM truncates or refuses), the dispatcher's retry loop will catch the schema failure,
+      but won't automatically truncate the payload. This is a known gap.
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: >
+      If the LLM produces valid JSON that passes AnalysisOutput.model_validate_json() but
+      contains semantically wrong behavior flags (correct schema, wrong analysis), the
+      dispatcher returns success. There is no semantic correctness check. This is intentional:
+      semantic validation belongs to Task 6/7's analysis quality layer, not the dispatcher.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      If os.environ is modified between CLIAnalysisDispatcher.__init__() and
+      CLIAnalysisDispatcher.dispatch(), the dispatcher captures the modified env at
+      dispatch time (not init time). _filter_env(os.environ.copy()) is called in _run_once,
+      not at construction. This is correct behavior but the timing dependency is undocumented.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      If a future pydantic version changes the error type name from "json_invalid" to
+      something else, the json_decode vs schema_mismatch classification in _run_once breaks
+      silently (falls through to schema_mismatch). Monitored by pydantic version pinning.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The codex adapter's build_command() generates an output file in the passed tmpdir.
+      If the system temp directory is not writable (rare), codex subprocess writes will fail.
+      The dispatcher catches OSError on output file read and returns 'output_file_missing'
+      failure. This is the correct failure path.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      On success with stderr, dispatcher embeds stderr in error_details. This means
+      error_details is non-None for a status='success' result. Downstream consumers that
+      assume error_details is None on success will misread this. The cross-field invariant
+      in AnalysisOutput does NOT enforce error_details=None on success -- only DC4 requires
+      specific keys when fallback_used=True and status='failure'. The behavior is documented
+      in the dispatcher and tested. Callers must check error_details for the 'stderr' key,
+      not assume None means no forensics.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      claude --output-format json always wraps the LLM response in
+      {"type":"result","result":"..."} envelope, even when the response is a raw JSON object.
+    verified: true
+    note: >
+      Verified by 10 PoC probes. extract_result() falls back to raw stdout if envelope absent.
+
+  - assumption: >
+      codex exec --ephemeral -o <file> - reads the prompt from stdin and writes the last
+      agent message to the output file as plain text.
+    verified: true
+    note: >
+      Verified by 10 PoC probes. Output file contains raw LLM response text (valid JSON).
+
+  - assumption: >
+      asyncio.create_subprocess_exec's process.communicate(input=...) correctly closes
+      stdin after writing and does not deadlock on large prompts.
+    verified: true
+    note: >
+      Verified indirectly by PoC probes (prompt is ~7-8KB). No deadlock observed.
+
+  - assumption: >
+      asyncio.Process.terminate() sends SIGTERM on Unix (not SIGKILL).
+    verified: true
+    note: >
+      Python asyncio docs confirm: terminate() sends SIGTERM on Unix, kill() sends SIGKILL.
+      The SIGTERM -> grace -> SIGKILL sequence is now correctly implemented.
+
+  - assumption: >
+      pydantic ValidationError's error "type" field is "json_invalid" for invalid JSON
+      input to model_validate_json().
+    verified: true
+    note: >
+      Verified by test coverage. Pydantic version 2.13 (from venv).
+
+  - assumption: >
+      The PoC fixture session payload (10 events) is representative enough to validate
+      the prompt's schema compliance. Production sessions may be much larger.
+    verified: false
+    note: >
+      Only tested with a 10-event fixture. Large sessions have NOT been tested.
+    deferred_to_feature_iteration: true
+
+  - assumption: >
+      Both claude and codex CLI binaries remain in PATH for the lifetime of the dispatcher.
+      FileNotFoundError on spawn is caught and returned as 'subprocess_exit' failure.
+    verified: true
+    note: >
+      FileNotFoundError catch in _run_once handles DC6. Covered by structural test coverage.
+
+  - assumption: >
+      jinja2 cli_dispatch.jinja2 template renders content equivalent to the old f-string prompt.
+    verified: true
+    note: >
+      Verified by direct comparison: length differs by 1 byte (trailing newline from trim_blocks).
+      All content checks pass: header, flag defs, session payload, schema, required fields.
+
+  - assumption: >
+      AnalysisOutput.model_json_schema() is stable enough to embed in a jinja template.
+      If the schema changes, the template auto-updates (schema is injected at render time,
+      not hardcoded in the template). The template uses {{ analysis_output_schema_json }}.
+    verified: true
+    note: >
+      Schema is injected as a context variable each time render() is called.
+      Template does not hardcode the schema. Schema changes are reflected immediately.
+
+debt_registered: true
+debt_location: >
+  No new debt registered. Pre-existing debt from original Task 4:
+  - Large session payload testing (deferred, not blocking).
+  Both critical debts from original scar are now resolved (SIGTERM phase, jinja template).
+
+narrative: |
+  Task 4 revision resolves all 4 Critical and all 4 Important issues flagged by both reviewers.
+
+  Critical Fix 1 (jinja bypass): Migrated prompt from inline f-string to
+  src/secondsight/prompts/analysis/cli_dispatch.jinja2, rendered via _loader.render().
+  Option (b) was chosen: new CLI-specific template, because behavior.jinja2 outputs
+  BehaviorFlagDraft shape (segment-level), while CLI dispatcher needs full AnalysisOutput.
+  SDK vs CLI template asymmetry is explicitly documented. Both dispatchers (CLI Task 4,
+  SDK Task 5) use _loader.render() -- the shared-source guarantee holds.
+
+  Critical Fix 2 (syntax): Line 351 had "except asyncio.TimeoutError, Exception:" which
+  is Python 2 syntax. In Python 3.14 this is parsed as a tuple catch (semantically valid
+  but overly broad -- catches any Exception). Fixed to explicit single-exception handlers:
+  TimeoutError first, then a separate bare except for unexpected errors.
+
+  Critical Fix 3 (SIGTERM): proc.terminate() (SIGTERM) is now sent before proc.kill()
+  (SIGKILL). 1-second grace window allows subprocess to flush stderr gracefully.
+  Death tests verify terminate() is called before kill(), and that stderr written during
+  the SIGTERM grace window is captured into error_details.
+
+  Critical Fix 4 (retry test): Restructured test_retry_augmented_prompt_includes_validation_error_verbatim
+  to assert on captured CLI args (the last positional arg is the prompt for claude_code),
+  not on stdin. The assertion is now unconditional (no `if x is not None:` guard).
+
+  Important Fix 5 (dishonest default): Removed `agent_name="claude_code"` default from
+  _make_failure_output(). All callers now explicitly pass agent_name. state_missing path
+  uses _UNKNOWN_AGENT = "unknown" sentinel. Verified: AnalysisOutput cross-field invariant
+  allows any non-None string for cli_agent when dispatched_via='cli'.
+
+  Important Fix 6 (dead build_env): Removed build_env() from both adapters (claude_code.py
+  and codex.py). Env filtering is centralized in dispatcher._filter_env(). The adapters'
+  __init__.py docstring is updated. build_env tests migrated to note in test_cli_adapters.py
+  (env filtering tested via TestEnvIsolation in test_cli_dispatcher.py).
+
+  Important Fix 7 (codex tempfile): Codex output file now created in tempfile.TemporaryDirectory()
+  (system temp, NOT project_root). Death test verifies output file path is not under project_root.
+  TemporaryDirectory cleanup is explicit at each return path in _run_once.
+
+  Important Fix 8 (stderr on success): On success with non-empty stderr, dispatcher now
+  embeds stderr in error_details={"stderr": ...}. On clean success (no stderr), error_details
+  remains None. Death tests verify both behaviors.
+
+resolved_items:
+  - original_section: known_shortcuts
+    original_description: >
+      Prompt embedded as inline f-string in _build_poc_variant1_prompt() bypassing
+      Task 3's jinja2 loader.
+    resolution: >
+      Created src/secondsight/prompts/analysis/cli_dispatch.jinja2.
+      Dispatcher now calls _loader.render("analysis/cli_dispatch", context=...).
+      _build_poc_variant1_prompt() removed. Content verified equivalent to old f-string.
+      cli-protocol-poc-results.md updated to note the migration.
+
+  - original_section: known_shortcuts
+    original_description: >
+      SIGTERM phase missing -- proc.kill() (SIGKILL) called directly without SIGTERM first.
+    resolution: >
+      Now: proc.terminate() (SIGTERM) -> asyncio.wait_for(..., timeout=1.0) -> on timeout:
+      proc.kill() (SIGKILL). proc.communicate() after SIGKILL drains remaining output.
+      Death tests: test_timeout_sends_sigterm_before_sigkill and test_sigterm_handler_stderr_captured.
+
+  - original_section: known_shortcuts
+    original_description: >
+      Codex output file in project_root pollutes user state.
+    resolution: >
+      Output file now created in tempfile.TemporaryDirectory(prefix="secondsight_codex_").
+      The tmpdir reference is kept alive for the duration of _run_once and cleaned up at
+      each return point. Death test: test_codex_output_file_not_in_project_root.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      Vacuous retry test (if captured_communicate_inputs[1] is not None:) meant the assertion
+      about retry prompt augmentation was never executed for claude_code.
+    resolution: >
+      Restructured test to capture create_subprocess_exec args (the CLI positional args),
+      not stdin. For claude_code, prompt is last CLI arg. Assertion now unconditional.
+
+  - original_section: assumptions_made
+    original_description: >
+      _make_failure_output had default agent_name="claude_code" -- a lie for state_missing.
+    resolution: >
+      Default removed. All callers explicitly pass agent_name. state_missing uses
+      _UNKNOWN_AGENT="unknown". Death test: test_state_missing_returns_unknown_agent_not_default.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      build_env() in adapters was dead code (dispatcher called _filter_env() directly).
+    resolution: >
+      Removed build_env() from both claude_code.py and codex.py adapters.
+      Updated __init__.py docstring. test_cli_adapters.py updated accordingly.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      stderr not captured on success path despite spec/test claiming forensics.
+    resolution: >
+      Dispatcher now captures stderr into error_details={"stderr":...} on success when
+      stderr is non-empty. Clean success (no stderr) preserves error_details=None.
+      Tests: test_stderr_captured_in_error_details_on_success and
+      test_clean_success_no_stderr_has_none_error_details.
+
+  - original_section: known_shortcuts
+    original_description: >
+      ADAPTER_REGISTRY in __init__.py was dead code.
+    resolution: >
+      (Already resolved in prior iteration) Replaced with SUPPORTED_AGENTS frozenset.
+
+  - original_section: assumptions_made
+    original_description: >
+      pydantic ValidationError type for invalid JSON input.
+    resolution: >
+      (Already resolved in prior iteration) Verified by test coverage.

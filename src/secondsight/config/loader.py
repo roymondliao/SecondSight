@@ -42,17 +42,30 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
+from loguru import logger
 
 from secondsight.config.env import (
     get_env_analysis_model,
     get_env_default_agent,
 )
 from secondsight.config.schema import (
+    BUILTIN_ANALYSIS_TIMEOUT_SECONDS,
     BUILTIN_DEFAULT_AGENT,
+    BUILTIN_SDK_FALLBACK_MODEL,
+    BUILTIN_SDK_PRIMARY_MODEL,
+    AnalysisConfig,
+    AnalysisCLIConfig,
+    AnalysisCLIModelsConfig,
+    AnalysisSDKConfig,
     FallbackModelsConfig,
+    GeneralConfig,
     GlobalAnalysisConfig,
     ModelsConfig,
     ProjectAnalysisConfig,
+    ProviderAnthropicConfig,
+    ProviderCustomConfig,
+    ProviderOpenAIConfig,
+    ProvidersConfig,
     SecondSightConfig,
     SecondSightConfigError,
 )
@@ -85,6 +98,14 @@ __all__ = [
     # defining a local copy.
     "_VAR_PATTERN",
     "_load_dotenv_if_exists",
+    # New in analysis-mode-toggle task-1
+    "_build_general_config",
+    "_build_providers_config",
+    "_build_analysis_config",
+    # Shared ignore-condition helper (single source of truth for DC12 detection)
+    "_legacy_default_agent_should_be_ignored",
+    # New in analysis-mode-toggle task-5: materialized resolved provider keys
+    "_resolve_provider_keys",
 ]
 
 # ---------------------------------------------------------------------------
@@ -279,6 +300,221 @@ def _parse_toml_both(
     return raw_doc, interp_doc
 
 
+_VALID_MODES: frozenset[str] = frozenset({"cli", "sdk"})
+
+
+def _legacy_default_agent_should_be_ignored(analysis_section: dict[str, Any]) -> bool:
+    """Return True when the legacy flat [analysis] default_agent key should be warn-and-ignored.
+
+    DC12 spec: warn-and-ignore fires when the flat key is present AND there is no
+    nested [analysis.cli] section. When [analysis.cli] exists, the user is in a migration
+    state — the nested key wins, the flat key is silently dropped (no warn).
+
+    This helper is shared by both _build_analysis_config and _build_global_analysis_config
+    so the two code paths cannot drift independently.
+
+    Args:
+        analysis_section: The [analysis] dict from the parsed TOML.
+
+    Returns:
+        True if the legacy flat default_agent should be warned about and ignored.
+        False if either the flat key is absent or a nested [analysis.cli] already exists.
+    """
+    return "default_agent" in analysis_section and "cli" not in analysis_section
+
+
+def _build_general_config(doc: dict[str, Any]) -> GeneralConfig:
+    """Build GeneralConfig from the parsed global TOML doc.
+
+    Reads [general] section. Validates mode is one of ("cli", "sdk").
+
+    Args:
+        doc: Parsed global config.toml dict (already interpolated). May be empty {}.
+
+    Returns:
+        GeneralConfig with mode and log_level resolved.
+
+    Raises:
+        SecondSightConfigError: [general].mode is set but not "cli" or "sdk".
+    """
+    general_section = doc.get("general")
+    if not isinstance(general_section, dict):
+        general_section = {}
+
+    mode = general_section.get("mode", "cli")
+    if mode not in _VALID_MODES:
+        raise SecondSightConfigError(
+            f"[general].mode must be one of {sorted(_VALID_MODES)!r}; got {mode!r}"
+        )
+
+    log_level = general_section.get("log_level", "info")
+    return GeneralConfig(mode=mode, log_level=log_level)
+
+
+def _build_providers_config(doc: dict[str, Any]) -> ProvidersConfig:
+    """Build ProvidersConfig from the parsed global TOML doc.
+
+    Reads [providers.anthropic], [providers.openai], [providers.custom].
+    Empty string values are preserved as-is (Decision E1: no implicit env fallback).
+    ${VAR} interpolation is already done by _parse_toml before we get here.
+
+    Args:
+        doc: Parsed global config.toml dict (already interpolated). May be empty {}.
+
+    Returns:
+        ProvidersConfig with all provider credentials resolved.
+    """
+    providers_section = doc.get("providers")
+    if not isinstance(providers_section, dict):
+        providers_section = {}
+
+    # [providers.anthropic]
+    anthropic_raw = providers_section.get("anthropic")
+    if not isinstance(anthropic_raw, dict):
+        anthropic_raw = {}
+    anthropic = ProviderAnthropicConfig(
+        ANTHROPIC_API_KEY=str(anthropic_raw.get("ANTHROPIC_API_KEY", ""))
+    )
+
+    # [providers.openai]
+    openai_raw = providers_section.get("openai")
+    if not isinstance(openai_raw, dict):
+        openai_raw = {}
+    openai = ProviderOpenAIConfig(OPENAI_API_KEY=str(openai_raw.get("OPENAI_API_KEY", "")))
+
+    # [providers.custom]
+    custom_raw = providers_section.get("custom")
+    if not isinstance(custom_raw, dict):
+        custom_raw = {}
+    custom = ProviderCustomConfig(
+        API_KEY=str(custom_raw.get("API_KEY", "")),
+        base_url=str(custom_raw.get("base_url", "")),
+    )
+
+    return ProvidersConfig(anthropic=anthropic, openai=openai, custom=custom)
+
+
+def _resolve_provider_keys(providers: "ProvidersConfig") -> dict[str, str]:
+    """Materialize resolved provider API keys from a ProvidersConfig.
+
+    Decision E1: the ONLY injection path is ${VAR} interpolation in TOML.
+    This function does NOT read os.environ. The caller (loader) has already
+    expanded ${VAR} patterns before building ProvidersConfig. Empty string
+    values are preserved as-is — they signal "key not configured" and the
+    LLMRouter will reject them at construction time.
+
+    Cache-once contract (DC8): the returned dict is a snapshot of the config
+    at load time. Mid-flight os.environ mutations have NO effect. Key rotation
+    requires a server restart so the config is re-parsed.
+
+    Args:
+        providers: A ProvidersConfig instance (post-interpolation, already frozen).
+
+    Returns:
+        dict with keys: "anthropic", "openai", "custom".
+        Values are the resolved API key strings. Empty string = not configured.
+
+    Design note: this function deliberately does NOT fall back to os.environ.
+    Any code that calls os.environ["ANTHROPIC_API_KEY"] here would re-introduce
+    the implicit-env dependency this function exists to eliminate.
+    """
+    return {
+        "anthropic": providers.anthropic.ANTHROPIC_API_KEY,
+        "openai": providers.openai.OPENAI_API_KEY,
+        "custom": providers.custom.API_KEY,
+    }
+
+
+def _build_analysis_config(doc: dict[str, Any]) -> AnalysisConfig:
+    """Build the new AnalysisConfig (aggregate with cli + sdk subsections) from global TOML.
+
+    Reads:
+        [analysis]          → timeout_seconds
+        [analysis.cli]      → default_agent
+        [analysis.cli.models] → claude_code, codex, opencode
+        [analysis.sdk]      → primary_model, fallback_model
+
+    DC12 handling: If a FLAT [analysis] default_agent key is present (legacy schema),
+    this function does NOT consume it — it emits a loguru WARNING and ignores it.
+    The warning is emitted HERE rather than in _build_global_analysis_config because
+    _build_analysis_config is the entry point for the new config parsing path.
+
+    Args:
+        doc: Parsed global config.toml dict (already interpolated). May be empty {}.
+
+    Returns:
+        AnalysisConfig with cli + sdk subsections resolved.
+    """
+    analysis_section = doc.get("analysis")
+    if not isinstance(analysis_section, dict):
+        analysis_section = {}
+
+    # DC12: detect legacy flat [analysis] default_agent and warn-and-ignore.
+    # Condition: flat key present AND no nested [analysis.cli] exists.
+    # When [analysis.cli] is also present (migration state), suppress the warning —
+    # the user has already migrated; the flat key is silently dropped.
+    # Uses _legacy_default_agent_should_be_ignored() so this condition stays in sync
+    # with _build_global_analysis_config (both must agree on what to ignore).
+    if _legacy_default_agent_should_be_ignored(analysis_section):
+        logger.warning(
+            f"legacy [analysis] default_agent = {analysis_section['default_agent']!r} found in "
+            "config.toml — this flat key is no longer supported. Use [analysis.cli].default_agent "
+            "instead. The legacy [analysis] default_agent field is ignored."
+        )
+
+    # [analysis] flat keys
+    timeout_seconds = analysis_section.get("timeout_seconds", BUILTIN_ANALYSIS_TIMEOUT_SECONDS)
+    if not isinstance(timeout_seconds, int):
+        raise SecondSightConfigError(
+            f"[analysis].timeout_seconds must be an integer; got {type(timeout_seconds).__name__!r}"
+        )
+
+    # [analysis.cli]
+    cli_section = analysis_section.get("cli")
+    if not isinstance(cli_section, dict):
+        cli_section = {}
+
+    # When the legacy flat key was warn-and-ignored AND there is no [analysis.cli] section,
+    # fall back to BUILTIN_DEFAULT_AGENT (not "auto") so that analysis.cli.default_agent agrees
+    # with analysis_global.default_agent. "auto" is the fresh-install default when no agent
+    # context exists; BUILTIN_DEFAULT_AGENT is the explicit choice when a legacy value was
+    # discarded (the user had an agent preference; we reset to the built-in, not to "auto").
+    _cli_builtin = (
+        BUILTIN_DEFAULT_AGENT
+        if _legacy_default_agent_should_be_ignored(analysis_section)
+        else "auto"
+    )
+    cli_default_agent = cli_section.get("default_agent", _cli_builtin)
+
+    # [analysis.cli.models]
+    models_section = cli_section.get("models")
+    if not isinstance(models_section, dict):
+        models_section = {}
+
+    cli_models = AnalysisCLIModelsConfig(
+        claude_code=str(models_section.get("claude_code", "")),
+        codex=str(models_section.get("codex", "")),
+        opencode=str(models_section.get("opencode", "")),
+    )
+    cli_config = AnalysisCLIConfig(default_agent=cli_default_agent, models=cli_models)
+
+    # [analysis.sdk]
+    sdk_section = analysis_section.get("sdk")
+    if not isinstance(sdk_section, dict):
+        sdk_section = {}
+
+    sdk_config = AnalysisSDKConfig(
+        primary_model=str(sdk_section.get("primary_model", BUILTIN_SDK_PRIMARY_MODEL)),
+        fallback_model=str(sdk_section.get("fallback_model", BUILTIN_SDK_FALLBACK_MODEL)),
+    )
+
+    return AnalysisConfig(
+        timeout_seconds=timeout_seconds,
+        cli=cli_config,
+        sdk=sdk_config,
+    )
+
+
 def _build_global_analysis_config(doc: dict[str, Any]) -> GlobalAnalysisConfig:
     """Build GlobalAnalysisConfig from the parsed global TOML doc.
 
@@ -299,10 +535,22 @@ def _build_global_analysis_config(doc: dict[str, Any]) -> GlobalAnalysisConfig:
         analysis_section = {}
 
     # --- default_agent: env var > TOML > builtin ---
+    # DC12 warn-and-ignore: if the legacy flat [analysis] default_agent is present
+    # AND no nested [analysis.cli] exists, treat it as ignored (same condition as
+    # _build_analysis_config — both must agree; see _legacy_default_agent_should_be_ignored).
+    # When flat + nested coexist (migration state), flat is silently dropped here too.
+    # This prevents analysis_global.default_agent from diverging from analysis.cli.default_agent
+    # for the same input config.
     default_agent: str = BUILTIN_DEFAULT_AGENT
 
     toml_agent = analysis_section.get("default_agent", "")
-    if toml_agent:  # empty = not set
+    if toml_agent and not _legacy_default_agent_should_be_ignored(analysis_section):
+        # Only honor the TOML default_agent if it is the new nested-style key
+        # (i.e. it comes from [analysis].default_agent when [analysis.cli] is also present,
+        # which means the user still has both — flat is dropped by the ignore rule above).
+        # In practice: if [analysis.cli] exists, this flat key is never consumed here.
+        # If [analysis.cli] does NOT exist and flat IS present → _legacy_default_agent_should_be_ignored
+        # returns True → we skip this branch → fall through to BUILTIN_DEFAULT_AGENT.
         default_agent = toml_agent
 
     # env var overlay (highest priority for default_agent)
@@ -453,8 +701,26 @@ def _build_config_from_docs(
         project_path=project_path,
     )
 
-    # Global analysis config (default_agent, models, fallback)
-    analysis = _build_global_analysis_config(global_doc)
+    # [general] section — mode, log_level
+    general = _build_general_config(global_doc)
+
+    # [providers.*] sections — provider credentials
+    providers = _build_providers_config(global_doc)
+
+    # New [analysis] aggregate: [analysis], [analysis.cli], [analysis.sdk]
+    # DC12 warn-and-ignore for legacy flat [analysis] default_agent is inside this builder.
+    # IMPORTANT: _build_analysis_config and _build_global_analysis_config must agree on
+    # which legacy keys to ignore — both delegate to _legacy_default_agent_should_be_ignored()
+    # as the single source of truth for the ignore condition. After both builders run,
+    # analysis_global.default_agent and analysis.cli.default_agent will not diverge for
+    # the same input config.
+    analysis = _build_analysis_config(global_doc)
+
+    # GlobalAnalysisConfig preserved for backward compat (analysis/runtime.py, select_model)
+    # Task 6 will migrate select_model to use the new cfg.analysis.cli path directly.
+    # After warn-and-ignore detection runs above, analysis_global.default_agent and
+    # analysis.cli.default_agent will not diverge for the same input config.
+    analysis_global = _build_global_analysis_config(global_doc)
 
     # Per-project model override
     project_analysis_section = project_doc.get("analysis")
@@ -471,7 +737,10 @@ def _build_config_from_docs(
 
     return SecondSightConfig(
         retention=retention,
+        general=general,
+        providers=providers,
         analysis=analysis,
+        analysis_global=analysis_global,
         project_analysis=ProjectAnalysisConfig(model=project_model),
     )
 
@@ -558,9 +827,7 @@ def load_project_config(home: Path, project_id: str) -> SecondSightConfig:
     from secondsight.api._id_safety import is_safe_id
 
     if not is_safe_id(project_id):
-        raise SecondSightConfigError(
-            f"project_id {project_id!r} contains unsafe path characters"
-        )
+        raise SecondSightConfigError(f"project_id {project_id!r} contains unsafe path characters")
 
     home = Path(home)
 

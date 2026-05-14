@@ -1,0 +1,265 @@
+feature: analysis-mode-toggle
+coverage_type: verified
+
+# Death paths first. Happy paths only ratify the death-path scaffolding.
+# Each scenario maps to a Death Case (DC1-DC12) or Documented Assumption (DA-1..6) in 2-plan.md.
+
+scenarios:
+
+  # =====================================================================
+  # SILENT FAILURE SCENARIOS (death paths)
+  # =====================================================================
+
+  - name: "DC1 — CLI subprocess hangs, no output, no exit"
+    type: death_path
+    given: "mode=cli, default_agent=claude_code, [analysis].timeout_seconds=5"
+    when: "dispatch is triggered and the spawned `claude` process sleeps for 30s without writing stdout"
+    then:
+      - "dispatcher kills the subprocess after 5s (SIGTERM, then SIGKILL after 1s grace)"
+      - "intelligence.db row written with status='unknown' and reason='timeout'"
+      - "no future is left dangling in the orchestrator"
+      - "stderr (if any) is captured to the analysis row for forensics"
+
+  - name: "DC2 — CLI subprocess returns valid JSON with wrong schema"
+    type: death_path
+    given: "mode=cli, CLI subprocess writes JSON missing required field `session_summary`"
+    when: "dispatcher calls AnalysisOutput.model_validate_json(stdout)"
+    then:
+      - "pydantic raises ValidationError"
+      - "dispatcher retries once with augmented prompt including the validation error message"
+      - "if second attempt also fails, retry once more (total ≤ 2 retries)"
+      - "if all retries exhausted: intelligence.db row written with status='failed', reason='schema_mismatch_after_retries', retry_count=2"
+
+  - name: "DC3 — CLI subprocess returns valid AnalysisOutput with empty behavior_flags"
+    type: death_path
+    given: "mode=cli, session has >10 events, subprocess returns valid AnalysisOutput with behavior_flags=[]"
+    when: "dispatcher validates output"
+    then:
+      - "validation passes (empty list is a valid shape)"
+      - "intelligence.db row written with status='success'"
+      - "WARN log emitted: 'session %s analyzed with 0 behavior flags despite N events'"
+      - "dashboard can query analyses where behavior_flags is empty (visibility for under-analysis)"
+
+  - name: "DC4 — SDK primary AND fallback both fail"
+    type: death_path
+    given: "mode=sdk, primary_model unreachable, fallback_model also unreachable"
+    when: "dispatcher attempts primary, fails, attempts fallback, fails"
+    then:
+      - "intelligence.db row written with status='failed'"
+      - "row.fallback_used=true"
+      - "row.provider_errors contains BOTH primary AND fallback error details (not just last)"
+      - "no infinite retry loop"
+
+  - name: "DC5 — mode=cli + default_agent=auto + state.json missing"
+    type: death_path
+    given: "config has mode=cli, default_agent='auto', but ~/.secondsight/state.json does not exist"
+    when: "secondsight serve starts"
+    then:
+      - "precheck() returns PrecheckResult.fail()"
+      - "server exits with non-zero status"
+      - "error message reads: 'Run `secondsight init --agent <claude_code|codex>` before starting the server'"
+      - "no dispatch attempt is made"
+
+  - name: "DC6 — CLI binary disappears from PATH after server start"
+    type: death_path
+    given: "server started successfully (claude was in PATH), then claude binary removed/renamed mid-flight"
+    when: "session_end triggers dispatch"
+    then:
+      - "subprocess spawn fails with FileNotFoundError"
+      - "intelligence.db row written with status='failed', reason='cli_binary_missing'"
+      - "error message includes the resolved binary path captured at startup AND the current resolved path (for forensics)"
+
+  - name: "DC7 — User has $ANTHROPIC_API_KEY in env but config has empty ANTHROPIC_API_KEY"
+    type: death_path
+    given: "shell env has $ANTHROPIC_API_KEY=sk-..., config has [providers.anthropic] ANTHROPIC_API_KEY=\"\""
+    when: "mode=sdk, precheck() runs at server start"
+    then:
+      - "precheck fails (E1: no implicit env fallback)"
+      - "error message reads: 'mode=sdk requires at least one provider key resolvable; if you intended to use $ANTHROPIC_API_KEY from shell env, write `ANTHROPIC_API_KEY = \"${ANTHROPIC_API_KEY}\"` in config'"
+      - "server does not start"
+
+  - name: "DC8 — ${VAR} resolves at load time, env mutation after start has no effect"
+    type: death_path
+    given: "config has ANTHROPIC_API_KEY=\"${ANTHROPIC_API_KEY}\", env has sk-A at server start"
+    when: "env is changed to sk-B mid-flight, then dispatch is triggered"
+    then:
+      - "dispatcher uses the cached sk-A resolved at load time"
+      - "no re-resolution happens per dispatch (cache-once contract documented)"
+      - "if user wants to rotate the key, they must restart the server"
+
+  - name: "DC9 — Jinja template renders with missing context variable"
+    type: death_path
+    given: "behavior.jinja2 references {{ session.framework_profile }} but renderer is called without `session.framework_profile`"
+    when: "dispatcher calls prompt_loader.render('behavior', context={...without framework_profile})"
+    then:
+      - "StrictUndefined raises jinja2.UndefinedError"
+      - "dispatcher catches and returns AnalysisOutput-equivalent failure result"
+      - "intelligence.db row written with status='failed', reason='prompt_render_error'"
+      - "the missing variable name is in the error message"
+
+  - name: "DC10 — Concurrent dispatch for the same session_id"
+    type: death_path
+    given: "session_end fires AND sweeper also fires for the same session_id within milliseconds"
+    when: "two dispatch coroutines run in parallel"
+    then:
+      - "only ONE intelligence.db row is created (not two)"
+      - "second dispatch detects in-progress / completed row and exits as no-op"
+      - "no duplicate LLM tokens consumed"
+
+  - name: "DC11 — `secondsight init --agent codex` overwrites existing state.json (was claude_code)"
+    type: death_path
+    given: "~/.secondsight/state.json exists with init_agent='claude_code'"
+    when: "user runs `secondsight init --agent codex` without --force"
+    then:
+      - "CLI prompts: 'state.json currently records init_agent=claude_code. Overwrite to codex? [y/N]'"
+      - "default answer N (no overwrite)"
+      - "if --force flag passed, overwrite without prompt"
+      - "after overwrite, state.json contains new init_agent + new init_at timestamp"
+
+  - name: "DC12 — Legacy config with flat [analysis] default_agent"
+    type: death_path
+    given: "config.toml has only `[analysis]\\ndefault_agent = 'claude_code'` (no [general] section)"
+    when: "loader parses the config"
+    then:
+      - "loader emits WARN: 'found legacy [analysis] default_agent, ignored (now lives under [analysis.cli].default_agent); mode defaulted to cli'"
+      - "loader does NOT raise"
+      - "resolved config has mode='cli' (built-in default)"
+      - "downstream behavior reflects the new defaults, not the old flat field"
+
+  # =====================================================================
+  # PROMPT ITERATION (Task 4 PoC budget enforcement)
+  # =====================================================================
+
+  - name: "Task 4 PoC — variant 1 hits ≥95% on first try, no further iteration"
+    type: happy_path
+    given: "Task 3 first-draft prompt is solid; running 10 probes against `claude` returns ≥9 schema-valid AnalysisOutput JSONs"
+    when: "PoC-1 completes"
+    then:
+      - "cli-protocol-poc-results.md records variant 1 match rate"
+      - "PoC skips variants 2 and 3 for that agent (budget conserved)"
+      - "verdict for that agent is PROCEED"
+
+  - name: "Task 4 PoC — variant 1 < 95%, iterate to variant 2 which passes"
+    type: degradation
+    given: "variant 1 returns 7/10 schema-valid (e.g., 3 wrapped in markdown fences)"
+    when: "PoC iterates to variant 2 with explicit 'output ONLY JSON, no markdown fences' instruction"
+    then:
+      - "variant 2 prompt is committed to behavior.jinja2 (Task 4 modifies Task 3's output)"
+      - "10 probes on variant 2 return ≥9 schema-valid"
+      - "cli-protocol-poc-results.md records variant 1's failure mode + variant 2's fix + final rate"
+
+  - name: "Task 4 PoC — budget exhausted, escalation packet to user"
+    type: death_path
+    given: "3 variants × 10 probes each (= 30 probes) for Codex; best-variant rate is 87%"
+    when: "PoC-7 verdict evaluation"
+    then:
+      - "Task 4 does NOT auto-drop Codex from this effort"
+      - "Task 4 does NOT silently lower the threshold"
+      - "cli-protocol-poc-results.md contains an Escalation Packet with: top 3 failure modes + raw output samples + 4 explicit user-decision options (extend budget / add post-processing / lower threshold / drop adapter)"
+      - "Task 4 STOPS; subsequent Task 4 work is gated on user decision"
+
+  - name: "Task 4 PoC — escalation user picks (b) add post-processing repair"
+    type: degradation
+    given: "Escalation packet sent; user chooses option (b): add markdown-fence stripping + trailing-comma tolerance"
+    when: "Task 4 resumes with the chosen repairs added to the dispatcher"
+    then:
+      - "repair functions live in `cli_adapters/<agent>.py` as `post_process(raw_stdout: str) -> str`"
+      - "10 additional probes (verification round, not new variants) achieve ≥95% AFTER post-processing"
+      - "cli-protocol-poc-results.md records the resumption + verification results"
+
+  # =====================================================================
+  # DEGRADATION SCENARIOS
+  # =====================================================================
+
+  - name: "SDK fallback engaged when primary fails but recovers via fallback"
+    type: degradation
+    given: "mode=sdk, primary_model returns 503, fallback_model succeeds"
+    when: "dispatch runs"
+    then:
+      - "intelligence.db row written with status='success'"
+      - "row.fallback_used=true"
+      - "row.primary_model=<configured primary>"
+      - "log line records the primary failure type (timeout / rate_limit / api_error)"
+      - "result is NOT silently marked as fully-healthy success"
+
+  - name: "CLI mode retry recovers on second attempt"
+    type: degradation
+    given: "mode=cli, first subprocess returns invalid JSON, second attempt returns valid AnalysisOutput"
+    when: "dispatch runs"
+    then:
+      - "intelligence.db row written with status='success'"
+      - "row.retry_count=1"
+      - "first attempt's stderr/stdout retained as debug context (not in DB but in logs)"
+
+  - name: "Pre-check at server start logs resolved binary paths for forensics"
+    type: degradation
+    given: "mode=cli, default_agent=claude_code, claude exists at /opt/homebrew/bin/claude"
+    when: "secondsight serve starts"
+    then:
+      - "INFO log: 'precheck ok: cli_agent=claude_code resolved_to=/opt/homebrew/bin/claude'"
+      - "if dispatch later fails with FileNotFoundError, forensics can compare resolved path then vs now (DC6 mitigation)"
+
+  # =====================================================================
+  # HAPPY PATH (with evidence chain)
+  # =====================================================================
+
+  - name: "Happy path — mode=cli + claude_code + Claude Code returns valid AnalysisOutput"
+    type: happy_path
+    given: "mode=cli, default_agent='claude_code', state.json present, claude in PATH, session has 5 events"
+    when: "session_end triggers dispatch"
+    then:
+      - "subprocess invoked: claude --output-format json -p '<rendered behavior.jinja2>' with cwd=<project_root>"
+      - "stdout parsed cleanly into AnalysisOutput(schema_version='1.0', dispatched_via='cli', cli_agent='claude_code', retry_count=0)"
+      - "intelligence.db row written with status='success', dispatched_via='cli'"
+      - "evidence chain: log lines show (a) prompt rendered with all context vars present, (b) subprocess pid + exit code, (c) AnalysisOutput validation pass, (d) DB row id"
+
+  - name: "Happy path — mode=sdk + valid Anthropic key + primary succeeds"
+    type: happy_path
+    given: "mode=sdk, [providers.anthropic].ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY}', $ANTHROPIC_API_KEY=sk-valid, session has 5 events"
+    when: "session_end triggers dispatch"
+    then:
+      - "loader resolved key to 'sk-valid' at server start (cached)"
+      - "LLMRouter constructed with AnthropicProvider(api_key='sk-valid') explicit pass-through (NOT env read)"
+      - "PydanticAI agent run returns AnalysisOutput(dispatched_via='sdk', fallback_used=false, primary_model='claude-haiku-4-5-...')"
+      - "intelligence.db row written with status='success', dispatched_via='sdk'"
+      - "evidence chain: log lines show (a) resolved key length but not value, (b) provider chosen, (c) AnalysisOutput validation pass, (d) DB row id"
+
+  - name: "Happy path — manual `secondsight analyze --session <id>` works in both modes"
+    type: happy_path
+    given: "session previously observed and stored, server running, mode set"
+    when: "user runs `secondsight analyze --session <id>` for both mode=cli and mode=sdk separately"
+    then:
+      - "CLI command POSTs to server, server dispatches via same ProjectAnalysisRuntime"
+      - "both invocations produce intelligence.db rows with appropriate dispatched_via tag"
+      - "CLI command exits with 0; output shows dispatched_via + retry_count"
+
+  - name: "Happy path — sweeper-triggered dispatch is mode-agnostic at caller"
+    type: happy_path
+    given: "session was abandoned (no clean session_end); sweeper detects via session_timeout_minutes"
+    when: "sweeper triggers analysis via ProjectAnalysisRuntime.dispatch()"
+    then:
+      - "sweeper code does NOT reference [general].mode"
+      - "ProjectAnalysisRuntime internally branches by mode"
+      - "both modes produce identical schema AnalysisOutput rows; only dispatched_via differs"
+
+  # =====================================================================
+  # MIGRATION / UPGRADE SCENARIOS
+  # =====================================================================
+
+  - name: "Upgrade — fresh install with no config.toml gets default mode=cli"
+    type: happy_path
+    given: "user runs `secondsight init --agent claude_code` on a clean machine"
+    when: "init completes"
+    then:
+      - "~/.secondsight/state.json written with init_agent='claude_code'"
+      - "~/.secondsight/config.toml is NOT created automatically (defaults are sufficient)"
+      - "subsequent `secondsight serve` resolves mode='cli' from built-in default"
+
+  - name: "Upgrade — existing user with legacy flat config gets WARN but server still starts"
+    type: degradation
+    given: "existing config.toml has only `[analysis] default_agent = 'claude_code'`"
+    when: "secondsight serve starts after upgrade"
+    then:
+      - "loader logs WARN (per DC12)"
+      - "server starts successfully with effective config: mode='cli', default_agent='claude_code' (built-in default mode + recognized agent name)"
+      - "if state.json absent, server fails precheck (DC5 path) and asks user to re-init"

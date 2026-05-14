@@ -11,10 +11,32 @@ from loguru import logger
 
 @pytest.fixture
 def tmp_secondsight_home(tmp_path: Path) -> Path:
-    """A fresh SecondSight home directory for each test."""
+    """A fresh SecondSight home directory for each test.
+
+    Task 5: includes a test-only Anthropic provider key in config.toml so that
+    LLMRouter construction passes at analysis runtime build time. The key is a
+    placeholder — no real API calls are made in API tests (mocked dispatchers).
+
+    Task 6 review (CRITICAL FIX 1): mode is set to "sdk" so that ModeAwareDispatch
+    routes to SDKAnalysisDispatcher (mockable) rather than CLIAnalysisDispatcher
+    (requires system PATH binary). API tests that mock _build_analysis_agent work
+    because the SDK path goes through PydanticAIAnalysisAgent, not CLI subprocess.
+    """
     home = tmp_path / ".secondsight"
     home.mkdir(parents=True, exist_ok=True)
     (home / "logs").mkdir(exist_ok=True)
+    # Ensure LLMRouter's provider key validation passes during runtime build.
+    # mode = "sdk": tests use SDK path (mockable via _build_analysis_agent patch).
+    (home / "config.toml").write_text(
+        "[general]\n"
+        'mode = "sdk"\n'
+        "\n"
+        "[analysis.sdk]\n"
+        'primary_model = "claude-haiku-4-5-20251001"\n'
+        "\n"
+        "[providers.anthropic]\n"
+        'ANTHROPIC_API_KEY = "sk-test-api-fixture-placeholder"\n'
+    )
     return home
 
 

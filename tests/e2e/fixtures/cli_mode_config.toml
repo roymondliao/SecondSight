@@ -1,0 +1,8 @@
+# Locked schema — CLI mode.
+# Requires real `claude` binary in PATH and state.json with init_agent="claude_code".
+# Used by SECONDSIGHT_TEST_REAL_CLI=1 gated tests.
+[general]
+mode = "cli"
+
+[analysis.cli]
+default_agent = "auto"

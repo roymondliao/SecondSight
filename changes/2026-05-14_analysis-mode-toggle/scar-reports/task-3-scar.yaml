@@ -1,0 +1,150 @@
+task_id: task-3
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      The flag_definitions_block context variable is pre-rendered Python-side
+      (iterating BehaviorFlagType enum in render_flag_definitions()) rather than
+      using a jinja2 loop macro or custom filter. This means the template cannot
+      independently re-render flag definitions if given only a flag_type list —
+      the rendering logic lives in Python. The tradeoff was intentional: keeping
+      the enum-iteration logic in Python preserves the existing DT-B2 death test
+      (KeyError on missing FLAG_DEFINITIONS entry) and avoids duplicating the
+      loop in jinja2 syntax. Task 4's prompt iteration may choose to move this
+      into the template if prompt variant exploration requires it.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      FLAG_DEFINITIONS content (description/criteria/example) is in Chinese
+      because it comes from schemas.py which was written in Chinese.
+      The template surrounding instructions are English per user direction,
+      but the per-flag vocabulary content is mixed Chinese/English.
+      Task spec says "mixed-language prompts are OK if the surrounding
+      instructions are English" — this was explicitly acknowledged in the
+      scope clarification. Task 4 may translate FLAG_DEFINITIONS to English
+      if coding agent testing reveals confusion.
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: >
+      PackageLoader("secondsight", "prompts") resolves the template directory
+      relative to the installed package. If the prompts/ directory is NOT
+      included in the wheel build (e.g., hatchling config omits it), PackageLoader
+      raises an error at import time rather than silently returning empty. However,
+      if prompts/ IS included but the analysis/ subdirectory is missing its
+      __init__.py, TemplateNotFound is raised at render time — which is loud and
+      testable (covered by test_dt_template_not_found_raises_properly). The
+      __init__.py files were created as part of this task.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The jinja2 environment object (_env) is a module-level singleton instantiated
+      at import time. If PackageLoader fails to find the prompts directory at
+      import time (e.g., in an environment where the package was partially installed),
+      the ImportError occurs when _loader.py is first imported — not when render()
+      is called. This is loud (not silent) but may be confusing to diagnose in
+      a partial install scenario.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      trim_blocks=True and lstrip_blocks=True alter whitespace in rendered output
+      compared to the original Python string constants. The section headers
+      (e.g., "[System]\n") will have consistent spacing but the exact byte sequence
+      of the rendered output differs from the old constants. Existing tests that
+      pinned exact string content (Chinese-language section headers) were updated
+      to check English equivalents. There is no byte-for-byte regression test
+      because the old constants used Chinese and the new templates use English —
+      a byte-equal comparison would always fail by design. The scar report documents
+      this as an intentional approved divergence (content translated to English per
+      user direction; semantics preserved).
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      jinja2 >= 3.1.6 is already in pyproject.toml dependencies.
+    verified: true
+    note: >
+      Confirmed: pyproject.toml line 13 has "jinja2>=3.1.6". No dependency
+      addition needed.
+
+  - assumption: >
+      PackageLoader requires __init__.py files at every level of the prompts
+      directory hierarchy (prompts/, prompts/analysis/).
+    verified: true
+    note: >
+      Created both src/secondsight/prompts/__init__.py and
+      src/secondsight/prompts/analysis/__init__.py. Tests confirm PackageLoader
+      finds templates successfully after this.
+
+  - assumption: >
+      The existing tests in tests/analysis/prompts/ that pin Chinese-language
+      section headers and task block phrasing would need updating after the
+      English migration. The test spec allowed this as an approved divergence.
+    verified: true
+    note: >
+      7 tests were updated: test_includes_all_six_section_headers (behavior + summary),
+      test_convention_spec_in_task_block (aggregate), and the TestTaskBlockUxDefaults
+      group in test_summary.py. All updated tests verify the same semantic constraints
+      in English equivalents. No test was weakened — each still pins the specific
+      UX decision it was designed to guard.
+
+  - assumption: >
+      AnalysisOutput.model_json_schema() produces a dict with "schema_version"
+      as a key name visible in the JSON-serialized output.
+    verified: true
+    note: >
+      Confirmed via test_dt_schema_version_literal_in_behavior_render and
+      test_behavior_prompt_contains_analysis_output_schema. The schema_version
+      field appears in the JSON schema as both a property key and in the
+      "enum" constraint ["1.0"]. Both the loader test and compat test pass.
+
+  - assumption: >
+      The existing Python string constants contain literal { and } characters
+      (JSON example blocks in _OUTPUT_FORMAT_BLOCK) that would be parsed as
+      jinja2 expression markers without {% raw %}...{% endraw %} wrapping.
+    verified: true
+    note: >
+      All three _OUTPUT_FORMAT_BLOCK constants contained JSON examples with { }.
+      All three .jinja2 templates use {% raw %}...{% endraw %} around the output
+      format JSON examples. The test test_dt_render_result_contains_no_unrendered_jinja_markers
+      verifies no {{ or }} appear in rendered output.
+
+  - assumption: >
+      render_flag_definitions() in the original behavior.py prepended a header line
+      as part of its return value. When migrating to a template, the header moved
+      to the template (in the [Flag Type Definitions] section), so the Python function
+      must NOT include the header to avoid duplication.
+    verified: true
+    note: >
+      Found during self-iteration: the original render_flag_definitions() prepended
+      "The following are all valid behavior flag types..." AND the template also had
+      that header. Fixed by removing the header from the Python function — only the
+      per-type entries are now returned. Verified by inspecting rendered output.
+
+debt_registered: true
+debt_location: >
+  src/secondsight/prompts/analysis/ — flag definitions content is Chinese (from
+  schemas.py FLAG_DEFINITIONS); task-4 may translate if agent testing reveals issues.
+  src/secondsight/analysis/prompts/behavior.py:render_flag_definitions() — pre-renders
+  the flag block Python-side; template cannot self-render definitions independently.
+
+resolved_items:
+  - original_section: assumptions_made
+    original_description: >
+      render_flag_definitions() header duplication when template also has the header.
+    resolution: >
+      Detected during self-iteration by inspecting rendered output (showed duplicate
+      "The following are all valid behavior flag types..." lines). Fixed by removing
+      the header from render_flag_definitions() so it only returns per-type definition
+      entries; the template provides the surrounding [Flag Type Definitions] header.
+      All 79 prompt tests pass after fix.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      ty-check type error on the hasattr(ev, "model_dump") pattern carried over from
+      the original behavior.py.
+    resolution: >
+      Replaced hasattr(ev, "model_dump") with isinstance(ev, BaseModel) for proper
+      type narrowing. This is a direct improvement over the original code (not a
+      preservation of a pre-existing issue). Added BaseModel import from pydantic.
+      ty-check no longer flags behavior.py:70 for this pattern.

@@ -50,9 +50,23 @@ __all__ = [
     "BUILTIN_FALLBACK_MODELS",
     # Re-exported from storage.retention (schema only, not purge logic)
     "RetentionConfig",
-    # New in config-unification task-1
+    # New in config-unification task-1 / analysis-mode-toggle task-1
     "SecondSightConfig",
     "SecondSightConfigError",
+    # analysis-mode-toggle task-1: [general], [providers.*], [analysis.cli/sdk]
+    "GeneralConfig",
+    "ProviderAnthropicConfig",
+    "ProviderOpenAIConfig",
+    "ProviderCustomConfig",
+    "ProvidersConfig",
+    "AnalysisCLIModelsConfig",
+    "AnalysisCLIConfig",
+    "AnalysisSDKConfig",
+    "AnalysisConfig",
+    # SDK model defaults — named constants (single source of truth for schema + loader)
+    "BUILTIN_SDK_PRIMARY_MODEL",
+    "BUILTIN_SDK_FALLBACK_MODEL",
+    "BUILTIN_ANALYSIS_TIMEOUT_SECONDS",
 ]
 
 
@@ -79,6 +93,13 @@ class SecondSightConfigError(Exception):
 
 BUILTIN_DEFAULT_AGENT: str = "claude_code"
 BUILTIN_FALLBACK_MODELS: list[str] = ["gpt-4o-mini", "gemini-2.0-flash"]
+
+# SDK model defaults — single source of truth referenced by both AnalysisSDKConfig
+# defaults and _build_analysis_config fallbacks in loader.py. Updating one of these
+# constants changes both the schema default and the loader fallback simultaneously.
+BUILTIN_SDK_PRIMARY_MODEL: str = "claude-haiku-4-5-20251001"
+BUILTIN_SDK_FALLBACK_MODEL: str = "gpt-4o-mini"
+BUILTIN_ANALYSIS_TIMEOUT_SECONDS: int = 300
 
 
 @dataclass(frozen=True)
@@ -156,6 +177,151 @@ class ProjectAnalysisConfig:
 
 
 # ---------------------------------------------------------------------------
+# analysis-mode-toggle task-1: new section dataclasses
+# ---------------------------------------------------------------------------
+# These dataclasses represent the locked final schema from:
+#   changes/2026-05-14_analysis-mode-toggle/config.example.toml
+# Field names, defaults, and nesting exactly match that file.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class GeneralConfig:
+    """Config for [general] section.
+
+    Attributes:
+        mode: Analysis dispatch path. "cli" (default) spawns the coding agent CLI.
+              "sdk" uses PydanticAI + direct LLM provider API calls.
+              Only "cli" and "sdk" are valid values; loader raises SecondSightConfigError
+              for any other value.
+        log_level: Global loguru verbosity. Valid: "debug", "info", "warning", "error".
+    """
+
+    mode: str = "cli"
+    log_level: str = "info"
+
+
+@dataclass(frozen=True)
+class ProviderAnthropicConfig:
+    """Config for [providers.anthropic] section.
+
+    Attributes:
+        ANTHROPIC_API_KEY: API key for Anthropic. Empty string = unset (per Decision E1:
+            no implicit env fallback). Use "${ANTHROPIC_API_KEY}" in TOML to inject from env.
+    """
+
+    ANTHROPIC_API_KEY: str = ""
+
+
+@dataclass(frozen=True)
+class ProviderOpenAIConfig:
+    """Config for [providers.openai] section."""
+
+    OPENAI_API_KEY: str = ""
+
+
+@dataclass(frozen=True)
+class ProviderCustomConfig:
+    """Config for [providers.custom] — OpenAI-compatible custom endpoint.
+
+    Attributes:
+        API_KEY: API key for the custom endpoint. Empty = unset.
+        base_url: Base URL for the endpoint. Empty = unset.
+    """
+
+    API_KEY: str = ""
+    base_url: str = ""
+
+
+@dataclass(frozen=True)
+class ProvidersConfig:
+    """Config for [providers.*] sections aggregate.
+
+    All providers default to empty credentials (unset).
+    SDK mode pre-check (Task 6) validates at least one provider is resolvable.
+    """
+
+    anthropic: ProviderAnthropicConfig = field(default_factory=ProviderAnthropicConfig)
+    openai: ProviderOpenAIConfig = field(default_factory=ProviderOpenAIConfig)
+    custom: ProviderCustomConfig = field(default_factory=ProviderCustomConfig)
+
+
+@dataclass(frozen=True)
+class AnalysisCLIModelsConfig:
+    """Config for [analysis.cli.models] section.
+
+    Per-agent model override. Empty string = let the coding agent use its own
+    default model (Decision E5). Non-empty = pass --model <value> to the agent CLI.
+
+    Attributes:
+        claude_code: Model override for the claude CLI. "" = use claude's own default.
+        codex: Model override for the codex CLI. "" = use codex's own default.
+        opencode: Schema slot preserved; CLI dispatch is out of scope for this effort.
+    """
+
+    claude_code: str = ""
+    codex: str = ""
+    opencode: str = ""
+
+
+@dataclass(frozen=True)
+class AnalysisCLIConfig:
+    """Config for [analysis.cli] section.
+
+    Read only when [general].mode == "cli".
+
+    Attributes:
+        default_agent: Which coding agent to spawn. "auto" resolves to the agent
+            selected at `secondsight init` time (via ~/.secondsight/state.json).
+            Other values: "claude_code", "codex". "opencode" is rejected by Task 6.
+        models: Per-agent model overrides.
+    """
+
+    default_agent: str = "auto"
+    models: AnalysisCLIModelsConfig = field(default_factory=AnalysisCLIModelsConfig)
+
+
+@dataclass(frozen=True)
+class AnalysisSDKConfig:
+    """Config for [analysis.sdk] section.
+
+    Read only when [general].mode == "sdk".
+
+    Attributes:
+        primary_model: Primary model for PydanticAI agent. Required when mode == "sdk".
+        fallback_model: Single fallback model. Empty = no fallback (Decision E3:
+            collapsed from list to single string).
+
+    Defaults reference BUILTIN_SDK_PRIMARY_MODEL and BUILTIN_SDK_FALLBACK_MODEL constants
+    so the schema default and loader fallback remain in sync (single source of truth).
+    """
+
+    primary_model: str = BUILTIN_SDK_PRIMARY_MODEL
+    fallback_model: str = BUILTIN_SDK_FALLBACK_MODEL
+
+
+@dataclass(frozen=True)
+class AnalysisConfig:
+    """Config for [analysis] section aggregate (new, analysis-mode-toggle task-1).
+
+    NOTE: This is a DIFFERENT class from secondsight.analysis.config.AnalysisConfig.
+    That class is the per-project TOML reader with .load().
+    This class is the global config aggregate covering [analysis], [analysis.cli],
+    and [analysis.sdk] sections.
+
+    Attributes:
+        timeout_seconds: Max wall-clock time for a single analysis run (both modes).
+            Default references BUILTIN_ANALYSIS_TIMEOUT_SECONDS (single source of truth).
+        cli: Config for CLI dispatch mode (read when general.mode == "cli").
+        sdk: Config for SDK dispatch mode (read when general.mode == "sdk").
+    """
+
+    timeout_seconds: int = BUILTIN_ANALYSIS_TIMEOUT_SECONDS
+    cli: AnalysisCLIConfig = field(default_factory=AnalysisCLIConfig)
+    sdk: AnalysisSDKConfig = field(default_factory=AnalysisSDKConfig)
+
+
+# ---------------------------------------------------------------------------
 # SecondSightConfig root — aggregates all sections
 # ---------------------------------------------------------------------------
 
@@ -164,23 +330,44 @@ class ProjectAnalysisConfig:
 class SecondSightConfig:
     """Root config object for one resolution context (global + project merged).
 
-    The loader in task-2 produces a SecondSightConfig by:
+    The loader produces a SecondSightConfig by:
     1. Reading global ~/.secondsight/config.toml
     2. Reading per-project ~/.secondsight/projects/<pid>/config.toml
     3. Overlaying env var overrides (SECONDSIGHT_ANALYSIS_MODEL, SECONDSIGHT_DEFAULT_AGENT)
     4. Falling back to built-in defaults for any unset field
 
     Subsystem consumers that only need one section can access it directly:
-        config.retention   → RetentionConfig (resolved TTLs + sources)
-        config.analysis    → GlobalAnalysisConfig (default_agent, models)
+        config.retention        → RetentionConfig (resolved TTLs + sources)
+        config.general          → GeneralConfig (mode, log_level)
+        config.providers        → ProvidersConfig (API keys for SDK mode)
+        config.analysis         → AnalysisConfig (new: cli + sdk subsections + timeout)
         config.project_analysis → ProjectAnalysisConfig (per-project model override)
+
+    Backward-compat note:
+        The old `analysis: GlobalAnalysisConfig` field was the flat model-selection
+        config from GUR-103. It is REPLACED here by `analysis: AnalysisConfig` (new).
+        The GlobalAnalysisConfig class is preserved for warn-and-ignore detection
+        of legacy flat configs (DC12) and for backward-compat imports.
+        Callers that previously accessed `config.analysis.default_agent` must now
+        access `config.analysis.cli.default_agent`.
 
     Attributes:
         retention: Resolved retention policy (TTLs + source attributions).
-        analysis: Global analysis config (default_agent, model overrides, fallback chain).
+        general: General config (mode, log_level). NEW.
+        providers: Provider API keys. NEW.
+        analysis: Analysis config aggregate (cli + sdk subsections + timeout). NEW.
+        analysis_global: GlobalAnalysisConfig preserved for backward compat.
+            Used by select_model() and other GUR-103 consumers until Task 6 migrates them.
+            Deprecated: Task 6 will replace these uses with analysis.cli.* / analysis.sdk.*
+            access paths. After Task 6 lands, this field should be removed.
+            After warn-and-ignore detection runs in the loader, analysis_global.default_agent
+            and analysis.cli.default_agent will not diverge for the same input config.
         project_analysis: Per-project analysis config (model override, empty = not set).
     """
 
     retention: RetentionConfig
-    analysis: GlobalAnalysisConfig
+    general: GeneralConfig
+    providers: ProvidersConfig
+    analysis: AnalysisConfig
+    analysis_global: GlobalAnalysisConfig
     project_analysis: ProjectAnalysisConfig

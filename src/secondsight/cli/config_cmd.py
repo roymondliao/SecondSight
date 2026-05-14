@@ -92,6 +92,7 @@ _SOURCE_DISPLAY: dict[ConfigSourceLabel, str] = {
     "builtin_default": "[builtin_default]",
 }
 
+
 @dataclass
 class SourcedValue:
     """A config value with its source layer identified.

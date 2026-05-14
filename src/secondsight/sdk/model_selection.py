@@ -125,25 +125,49 @@ class EventsRepoProtocol(Protocol):
 
 # Provider inference by model-name prefix. This is intentionally minimal.
 # See module docstring for the limitation on exotic model names.
+# NOTE: This list is the single source of truth for provider inference.
+# sdk_dispatcher.py imports _infer_provider from here (DRY — no copy in sdk_dispatcher).
+# When adding a new model prefix, update this list AND the module docstring table.
 _PROVIDER_PREFIXES: list[tuple[str, str]] = [
     ("claude-", "anthropic"),
     ("gpt-", "openai"),
     ("gemini-", "google"),
     ("o1-", "openai"),
     ("o3-", "openai"),
+    ("o4-", "openai"),
 ]
 
 
 def _infer_provider(model_name: str) -> str:
     """Infer the provider from the model name prefix.
 
-    Falls back to "openai" for unknown prefixes (LiteLLM default).
+    This is the single source of truth for provider inference. Both model_selection.py
+    and sdk_dispatcher.py use this function — do NOT duplicate it.
+
+    Raises:
+        ValueError: If the model name prefix does not match any known provider.
+            This forces explicit configuration rather than silently routing to the
+            wrong provider (which would produce a 401-style error at dispatch time,
+            harder to diagnose than a ValueError at construction time).
+
+    Covered prefixes (see _PROVIDER_PREFIXES):
+        claude-*  → anthropic
+        gpt-*     → openai
+        gemini-*  → google
+        o1-*      → openai
+        o3-*      → openai
+        o4-*      → openai
     """
     lower = model_name.lower()
     for prefix, provider in _PROVIDER_PREFIXES:
         if lower.startswith(prefix):
             return provider
-    return "openai"
+    raise ValueError(
+        f"_infer_provider: unknown model name prefix for {model_name!r}. "
+        f"Known prefixes: {[p for p, _ in _PROVIDER_PREFIXES]}. "
+        f"For non-standard model names, configure provider explicitly "
+        f"or pass a custom agent_factory (D6 escape hatch)."
+    )
 
 
 # SD §5.7.1 — source of truth. Update this dict and the module docstring table

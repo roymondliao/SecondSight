@@ -1,5 +1,54 @@
 # TODO
 
+## Agent-Specific Hook Injection Protocol: Deferred Design Decision
+
+### Why
+
+`session-start.sh` currently outputs plain text to stdout for convention injection.
+Claude Code reads this as system prompt content. Codex does **not** — Codex requires
+`{"systemMessage": "..."}` JSON output (confirmed from `.codex/hooks/samsara-session-start.sh`).
+
+This means Codex convention injection (Layer 1) silently does nothing today.
+
+A fix is straightforward (~8 lines in `session-start.sh`), but the right abstraction
+layer is deferred because:
+
+1. **Codex Layer 2 protocol unknown**: `UserPromptSubmit` hook return format for Codex
+   is not yet verified. If it also diverges (different field name than `additionalContext`),
+   any lib function built now will need its API changed again.
+2. **Only 2 agents**: Building a multi-agent injection lib for 2 agents is premature
+   abstraction. The correct time is when a 3rd agent (e.g., OpenCode) is added and a
+   third case appears.
+
+### Kill conditions for deferral
+
+- If Codex Layer 2 (`UserPromptSubmit` return format) is confirmed, implement the
+  `case` branch in `session-start.sh` immediately without a lib abstraction.
+- If a 3rd agent is added, extract a `secondsight_inject_context` function into
+  `_lib.sh` at that point (three similar cases justify abstraction).
+
+### What needs to happen first
+
+1. Verify Codex `UserPromptSubmit` hook return format (same `additionalContext` as
+   Claude Code, or a different field?)
+2. Confirm Codex actually reads `SessionStart` hook stdout (the `systemMessage` path
+   is from Samsara, not SecondSight — needs end-to-end smoke test)
+
+### Candidate solutions (ranked by current preference)
+
+1. **`case` branch in `session-start.sh`** (minimal, no abstraction):
+   ```bash
+   case "${SECONDSIGHT_AGENT:-claude_code}" in
+       codex) printf '{"systemMessage":%s}\n' "$(printf '%s' "$conventions" | jq -Rs '.')" ;;
+       *)     printf '%s\n' "$conventions" ;;
+   esac
+   ```
+2. **`secondsight_inject_context` in `_lib.sh`** (after Layer 2 + 3rd agent confirmed)
+3. **Agent-specific script directories** (`scripts/hooks/claude-code/`, `scripts/hooks/codex/`)
+   — rejected: duplicates shared logic (symlink resolution, `secondsight_post`) for minimal gain
+
+---
+
 ## Codex Fixtures: Promote `tests/fixtures/codex` Toward Real `~/.codex` Data
 
 ### Why
@@ -141,6 +190,63 @@ This should only happen if local durable artifacts remain insufficient.
   hook-stdin capture step is required to finish the Codex fixture story.
 - If raw capture is required, add a small temporary capture script and document
   the regeneration workflow before changing the fixtures again.
+
+## Per-Project Config Override (`~/.secondsight/projects/<pid>/config.toml`): Deferred
+
+### Why
+
+SecondSight currently allows per-project config override at
+`~/.secondsight/projects/<project_id>/config.toml` (SD §8.5.2). Existing
+schema supports:
+
+- `[analysis].model` — per-project model override
+- `[retention].raw_traces_ttl_days` — per-project TTL override
+- (other sections per SD §8.5.2)
+
+The analysis-mode-toggle effort
+(`changes/2026-05-14_analysis-mode-toggle/`) considered extending this to
+support per-project `mode` selection (e.g., one project uses CLI mode
+borrowing the user's Claude subscription, another project uses SDK mode
+with its own API key for a different LLM provider).
+
+Locked decision (2026-05-14): per-project override **entirely defers** to
+a follow-up effort. Only the global `~/.secondsight/config.toml` is
+supported during the analysis-mode-toggle work. The per-project file path
+will still be readable by the loader for backward compatibility, but no
+new per-project fields are added and the existing
+`ProjectAnalysisConfig.model` / per-project retention TTL behavior is
+preserved as-is (frozen, not extended).
+
+### Kill conditions for this deferral
+
+- A user explicitly asks for "different mode per project" (e.g., work
+  uses CLI, side project uses SDK) → promote to feature ticket.
+- A third independent per-project field is requested → the dual-layer
+  override complexity is now justified by three callers.
+- Multi-tenancy is added to SecondSight (currently single-user) →
+  per-project config becomes mandatory.
+
+### What needs to happen first
+
+1. Decide whether per-project `[analysis]` mirrors the global
+   `[analysis.cli]` / `[analysis.sdk]` nested split, or stays flat with
+   merge-by-precedence semantics.
+2. Decide whether per-project can carry its own `[providers.*]`
+   credentials (different API key per project).
+3. Decide the fate of existing `ProjectAnalysisConfig.model` field
+   (`schema.py:136-156`) — deprecate, or repurpose under the new
+   nested structure.
+4. Decide validation strategy: does per-project `mode = "sdk"` require
+   per-project `[providers.*]`, or fall back to global providers?
+
+### Action
+
+- Hold until either kill condition fires.
+- When re-opened, start a new `changes/<date>_per-project-config/`
+  research with a kickoff that references the analysis-mode-toggle
+  kickoff Locked Decision E6.
+
+---
 
 ## SecondSight Session Storage: Re-evaluate Small-File Strategy
 

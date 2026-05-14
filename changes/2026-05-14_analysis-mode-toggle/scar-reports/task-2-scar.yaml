@@ -1,0 +1,216 @@
+task_id: task-2
+completion_status: done
+
+known_shortcuts:
+  - description: >
+      error_details is typed as `dict[str, Any] | None` — loosely typed to accommodate
+      diverse error shapes (SDK dual-failure carries two error strings, CLI schema mismatch
+      carries the validation error, subprocess timeout carries a different shape). A
+      typed error discriminator union would be more precise but was deferred as
+      over-engineering for an MVP telemetry field. DC4's structural requirement is now
+      enforced at the validator level (both 'primary_error' and 'fallback_error' keys),
+      which gives meaningful runtime guarantees without requiring a full typed sub-model.
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: >
+      The JSON schema emitted by model_json_schema() shows cli_agent and primary_model
+      as both nullable (anyOf: [string, null]). The cross-field invariant (exactly one
+      populated, never both, never neither) is enforced only at Python runtime by
+      @model_validator, NOT in the JSON schema. A caller who validates AnalysisOutput
+      using the JSON schema alone (e.g., a non-Python consumer) will not see the
+      constraint and may produce invalid instances that pass JSON schema validation but
+      fail pydantic parsing.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      The DC4 cross-field requirement (error_details required when fallback_used=True
+      and status=failure and dispatched_via=sdk) is enforced at runtime by the validator
+      but is not expressible in standard JSON schema. The JSON schema for error_details
+      shows it as nullable without any conditional. A JSON-schema-only consumer will not
+      see the constraint. Accepted limitation: JSON schema cannot represent cross-field
+      conditionals. Runtime enforcement is the only gate.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      frozen=True prevents mutation after construction, but model_construct() bypasses
+      pydantic validation entirely. A caller using AnalysisOutput.model_construct() can
+      produce an instance that violates cross-field invariants and DC4 constraints.
+      Documented in the module docstring with explicit guidance to use model_validate()
+      for untrusted input. No model-level guard can close this gap.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      behavior_flags=[] passes validation with no warning emitted at the schema level.
+      DC3 says "downstream WARNS if >N events but flags=[]". This warning is not
+      implemented in this task (it belongs in the dispatcher or orchestrator, not the
+      schema). If the downstream caller never checks, silent empty analyses accumulate
+      without triggering an alert.
+    deferred_to_feature_iteration: true
+
+assumptions_made:
+  - assumption: >
+      pydantic v2 is in pyproject.toml. Confirmed by running:
+      python -c "import pydantic; print(pydantic.__version__)" → 2.13.3.
+      model_config = ConfigDict(...) syntax is correct.
+    verified: true
+    note: Verified at implementation time. No action needed.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      BehaviorFlagDraft in analysis.schemas represents exactly the LLM-emittable subset:
+      flag_type, event_ids, reason, confidence. No DB identity fields. Verified by
+      reading schemas.py lines 104-120. The class docstring explicitly states this purpose.
+    verified: true
+    note: >
+      Read schemas.py. BehaviorFlagDraft(BaseModel) confirmed at lines 104-120.
+      Fields: flag_type, event_ids, reason, confidence. extra="forbid". Matches
+      the LLM-emittable-only contract exactly. No id/project_id/session_id/segment_index.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      pydantic-ai output_type respects extra="forbid" — pydantic-ai does NOT inject
+      extra fields into the output model instance. It calls TypeAdapter(output_type)
+      and validates the LLM response against the model's own schema. The runner wraps
+      the model instance in a RunResult dataclass, but the model instance itself is
+      untouched. extra="forbid" will work correctly as the output_type for pydantic-ai.
+    verified: true
+    note: >
+      Verified by inspecting pydantic_ai._output.ObjectOutputProcessor source code.
+      When is_model_like(output) is True, it uses TypeAdapter(output) which respects
+      the model's ConfigDict(extra="forbid"). No field injection occurs.
+    deferred_to_feature_iteration: false
+
+  - assumption: >
+      unknown status should enforce the same cross-field invariants as success/failure
+      (Decision A). Rationale: dispatched_via tells us which mode was attempted;
+      the corresponding identity field (cli_agent or primary_model) tells us against
+      what specific resource. This forensic information is valuable even when the
+      outcome is indeterminate. The dispatcher must have resolved cli_agent/primary_model
+      before attempting dispatch, so it can populate these fields even in unknown state.
+    verified: true
+    note: >
+      Decision documented in output.py module docstring and model_validator docstring.
+      Two new death tests pin this explicitly:
+      test_unknown_status_with_cli_dispatch_and_no_cli_agent_raises and
+      test_unknown_status_with_sdk_dispatch_and_no_primary_model_raises.
+    deferred_to_feature_iteration: false
+
+debt_registered: false
+
+resolved_items:
+  - original_section: known_shortcuts
+    original_description: >
+      OutputBehaviorFlag and analysis.schemas.BehaviorFlag are structurally identical
+      but defined as separate pydantic types. The separation was justified as minimizing
+      blast radius and avoiding circular imports, but the "circular import" claim was
+      structurally inaccurate — output.py already imported from schemas.py. If BehaviorFlag
+      gained a new field, OutputBehaviorFlag would silently diverge.
+    resolution: >
+      Removed OutputBehaviorFlag entirely from output.py and __all__.
+      AnalysisOutput.behavior_flags now typed as list[BehaviorFlagDraft] — the
+      authoritative LLM-emittable shape from schemas.py. BehaviorFlagDraft carries only
+      flag_type, event_ids, reason, confidence: the four fields the LLM can actually
+      produce. No DB identity fields. The parallel-type debt is eliminated. Module
+      docstring updated: removed "circular import" justification, replaced with accurate
+      rationale (BehaviorFlagDraft is the LLM-emittable shape; no circular import risk
+      since schemas.py was already imported). TestOutputBehaviorFlagConstruction class
+      replaced with TestBehaviorFlagDraftConstruction, including a new test that
+      explicitly verifies DB identity fields are rejected by BehaviorFlagDraft.
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      DC4 MUST constraint (error_details with both provider errors) was prose-only.
+      A status='failure' + dispatched_via='sdk' + fallback_used=True with
+      error_details=None or missing a key passed validation silently.
+    resolution: >
+      Extended check_cross_fields validator to enforce DC4: when status='failure' AND
+      dispatched_via='sdk' AND fallback_used=True, error_details must be present AND
+      must contain both 'primary_error' and 'fallback_error' keys. Three ValueError
+      cases handled (None, missing primary_error, missing fallback_error), each
+      message containing "DC4" for grep-ability. Two death tests added:
+      test_dc4_failure_with_fallback_used_requires_error_details (match="DC4") and
+      test_dc4_failure_with_fallback_used_requires_both_keys (match="fallback_error").
+      Both pass.
+
+  - original_section: assumptions_made
+    original_description: >
+      unknown status cross-field invariants had no death tests — a future early-out
+      for 'unknown' in the validator would silently break Decision A with all tests passing.
+    resolution: >
+      Added two death tests explicitly pinning Decision A for unknown status:
+      test_unknown_status_with_cli_dispatch_and_no_cli_agent_raises and
+      test_unknown_status_with_sdk_dispatch_and_no_primary_model_raises.
+      These verify the validator fires for unknown status — any future early-out
+      for unknown would cause these tests to fail loudly.
+
+  - original_section: known_shortcuts
+    original_description: >
+      Sentinel comment missing from validator if-chain: if a third dispatched_via
+      value is added, the validator silently passes all identity invariants for it.
+    resolution: >
+      Added sentinel comment at top of check_cross_fields docstring: "# NOTE: when
+      adding a third dispatched_via value (e.g. 'hosted'), add a branch here for
+      its identity-field invariants. The Literal type at the field definition is the
+      type-level bet; this validator is the behavior-level bet. Both must be updated
+      together."
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      model_construct() bypass undocumented at the model level.
+    resolution: >
+      Added explicit comment in module docstring: "model_construct() bypass:
+      model_construct() skips all pydantic validation, including cross-field invariants
+      and DC4 checks. Use AnalysisOutput.model_validate(...) for any untrusted or
+      externally-sourced input. Call-site discipline is required; no model-level guard
+      can close this gap."
+
+  - original_section: known_shortcuts
+    original_description: >
+      schema_version migration path undocumented.
+    resolution: >
+      Added migration comment in module docstring: "Migration note: when rotating
+      schema_version to '2.0', add a versioned parser + provide intelligence.db
+      migration for rows stored under '1.0'. Do not silently coerce versions in
+      this validator — surface them as parse failures."
+
+  - original_section: assumptions_made
+    original_description: >
+      analysis.schemas.BehaviorFlag is a pydantic v2 BaseModel (not stdlib @dataclass).
+      Verified at original Task 2 implementation. Now superseded by the BehaviorFlagDraft
+      verification.
+    resolution: >
+      Superseded. The relevant check is now BehaviorFlagDraft (lines 104-120 of schemas.py),
+      which is confirmed as pydantic v2 BaseModel with extra="forbid" and only the
+      four LLM-emittable fields. No conversion helper needed.
+
+narrative: >
+  Task 2 (revision 2) resolves all three Critical issues from the Yin and Quality reviewers.
+
+  Critical Fix 1: OutputBehaviorFlag removed. It was a dishonest name — it claimed to be
+  an LLM-output shape but required id, project_id, session_id, segment_index, created_at
+  that the LLM cannot produce. BehaviorFlagDraft from schemas.py is the correct type:
+  four fields only, all LLM-producible. The "circular import" justification in the original
+  scar was inaccurate (output.py:48 already imported from schemas.py). The parallel type
+  tree is now eliminated — one authoritative LLM-output shape, one DB-row shape.
+
+  Critical Fix 2: Decision A death tests added. Two tests now explicitly pin the invariant
+  that unknown status enforces the same cross-field rules as success/failure. Before this
+  fix, a future refactor adding an early-out for unknown would break Decision A with all
+  tests still passing. Now it fails loudly.
+
+  Critical Fix 3: DC4 MUST constraint enforced. The validator now rejects status=failure +
+  dispatched_via=sdk + fallback_used=True unless error_details contains both 'primary_error'
+  and 'fallback_error'. Two death tests cover both failure modes. The JSON schema cannot
+  express this cross-field conditional — documented as accepted limitation.
+
+  Suggestion Fix 4: Sentinel comment added to validator docstring marking the inheritor gap
+  for future dispatched_via values.
+
+  Accepted deferrals: (1) DC4 cross-field constraint invisible in JSON schema — runtime
+  enforcement only, accepted as JSON schema limitation. (2) error_details typed loosely as
+  dict[str, Any] — DC4 keys now enforced by validator, typed sub-model deferred.
+  (3) model_construct() bypass — documented in module docstring, call-site discipline.
+
+  Total tests: 32 in test_output_contract.py (+7 new), 239 in tests/analysis/ suite.
+  All pass. No regression.

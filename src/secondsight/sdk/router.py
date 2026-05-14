@@ -59,6 +59,10 @@ import pydantic
 import pydantic_ai
 import pydantic_ai.exceptions
 from pydantic_ai import Agent
+from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.providers.anthropic import AnthropicProvider
+from pydantic_ai.providers.openai import OpenAIProvider
 
 from secondsight.analysis.agent import AnalysisAgentError
 from secondsight.sdk._specs import ModelSpec
@@ -195,6 +199,7 @@ class LLMRouter:
         *,
         primary: ModelSpec,
         fallbacks: list[ModelSpec],
+        resolved_keys: dict[str, str],
         per_call_timeout_s: float = 60.0,
         chain_total_timeout_s: float = 90.0,
         agent_factory: Callable[[ModelSpec], Any] | None = None,
@@ -203,7 +208,24 @@ class LLMRouter:
         self._fallbacks = fallbacks
         self._per_call_timeout_s = per_call_timeout_s
         self._chain_total_timeout_s = chain_total_timeout_s
-        self._agent_factory = agent_factory or _default_agent_factory
+        # Snapshot the resolved keys at construction time (DC8: cache-once contract).
+        # Mid-flight os.environ mutations have NO effect after this point.
+        # Key rotation requires server restart so this snapshot is re-created.
+        self._resolved_keys: dict[str, str] = dict(resolved_keys)
+
+        # Decision E1: validate that at least one key is non-empty AND that the
+        # primary's provider has a configured key. Fail at construction time, not
+        # at first dispatch. Silent failure mode: if we skip this check, the first
+        # dispatch would get a 401 from the provider API, producing an AnalysisOutput
+        # with status='failure' and no process-level exception to alert monitoring.
+        self._validate_provider_keys_at_init(primary, fallbacks, self._resolved_keys)
+
+        if agent_factory is not None:
+            self._agent_factory: Callable[[ModelSpec], Any] = agent_factory
+        else:
+            # Build the default factory with the snapshot keys closed over.
+            # This closure ensures the factory never reads os.environ directly.
+            self._agent_factory = _make_explicit_agent_factory(self._resolved_keys)
 
         if len(fallbacks) == 0:
             logger.warning(
@@ -212,6 +234,46 @@ class LLMRouter:
                 f"A transport error on the primary will raise immediately "
                 f"with no retry. "
                 f"primary={primary.name!r}"
+            )
+
+    @staticmethod
+    def _validate_provider_keys_at_init(
+        primary: ModelSpec,
+        fallbacks: list[ModelSpec],
+        resolved_keys: dict[str, str],
+    ) -> None:
+        """Validate that the primary provider has a configured key.
+
+        Raises RouterTerminalError at construction time (not at dispatch time)
+        when the primary's provider key is empty or all keys are empty.
+
+        Decision E1: the ONLY injection path is ${VAR} interpolation in TOML.
+        Empty string = not configured. We reject this here explicitly.
+
+        Silent failure mode we're preventing: if this check were absent,
+        LLMRouter would construct successfully, dispatch would fire, the provider
+        would receive api_key=None or api_key="", and the API would return a 401.
+        That 401 manifests as AnalysisOutput(status='failure') with no process-level
+        exception — monitoring that looks for exceptions would miss it entirely.
+        """
+        all_empty = all(not v for v in resolved_keys.values())
+        if all_empty:
+            raise RouterTerminalError(
+                "no provider keys resolvable: all resolved_keys are empty. "
+                "Set at least one provider key via ${VAR} interpolation in config.toml "
+                "[providers.*] section. "
+                "Direct env fallback is disabled (Decision E1). "
+                f"primary_provider={primary.provider!r}"
+            )
+
+        primary_key = resolved_keys.get(primary.provider, "")
+        if not primary_key:
+            raise RouterTerminalError(
+                f"no provider keys resolvable: primary provider {primary.provider!r} "
+                f"has empty key in resolved_keys. "
+                f"Set [providers.{primary.provider}] key via ${{VAR}} interpolation. "
+                f"Direct env fallback is disabled (Decision E1). "
+                f"primary_model={primary.name!r}"
             )
 
     @property
@@ -227,6 +289,18 @@ class LLMRouter:
             per_call_timeout_s=self._per_call_timeout_s,
             chain_total_timeout_s=self._chain_total_timeout_s,
         )
+
+    @property
+    def resolved_keys(self) -> dict[str, str]:
+        """Snapshot of resolved provider keys at router construction time.
+
+        Returns a copy to prevent external mutation of the internal snapshot.
+        This is the DC8 cache-once contract: the snapshot is fixed at construction;
+        callers who need the keys should access them here, not via os.environ.
+
+        Use this property instead of accessing router._resolved_keys directly.
+        """
+        return dict(self._resolved_keys)
 
     async def call(
         self,
@@ -597,20 +671,55 @@ def _build_exhausted_message(
     )
 
 
-def _default_agent_factory(spec: ModelSpec) -> Agent:  # type: ignore[type-arg]
-    """Construct a PydanticAI Agent for ``spec``.
+def _make_explicit_agent_factory(
+    resolved_keys: dict[str, str],
+) -> Callable[[ModelSpec], Agent]:  # type: ignore[type-arg]
+    """Return an agent factory that constructs PydanticAI Agents with explicit providers.
 
-    Uses the model name directly as the model identifier for PydanticAI.
-    For non-OpenAI-compatible providers, the caller should pass a custom
-    agent_factory that sets up LiteLLM or another provider (D6 escape hatch).
+    Decision E1: API keys are injected explicitly via resolved_keys (snapshot from
+    config load). This factory NEVER reads os.environ. The keys are closed over at
+    factory-creation time — this is the DC8 cache-once mechanism.
 
-    This implementation assumes:
-      - The PydanticAI model name convention: "{provider}:{model_name}" or
-        just the model name for OpenAI-compatible providers.
-      - API keys are picked up from environment variables (standard convention).
+    Supported providers (explicit PydanticAI model classes):
+      - "anthropic": AnthropicModel + AnthropicProvider(api_key=...)
+      - "openai": OpenAIModel + OpenAIProvider(api_key=...)
+
+    Unsupported providers raise RouterTerminalError with an actionable message.
+    The D6 LiteLLM escape hatch is available by passing a custom agent_factory
+    to LLMRouter — the built-in factory does not attempt LiteLLM routing.
+
+    Args:
+        resolved_keys: Snapshot dict of provider API keys at config load time.
+            Keys: "anthropic", "openai", "custom". Values: resolved key strings.
+            Empty string = provider not configured.
+
+    Returns:
+        A callable ModelSpec -> Agent.
     """
-    model_id = f"{spec.provider}:{spec.name}" if spec.provider != "openai" else spec.name
-    return Agent(model_id)
+    # Close over a copy (not a reference) to prevent external mutation.
+    _keys = dict(resolved_keys)
+
+    def factory(spec: ModelSpec) -> Agent:  # type: ignore[type-arg]
+        if spec.provider == "anthropic":
+            api_key = _keys.get("anthropic", "")
+            provider = AnthropicProvider(api_key=api_key)
+            model = AnthropicModel(spec.name, provider=provider)
+            return Agent(model=model, defer_model_check=True)
+
+        if spec.provider == "openai":
+            api_key = _keys.get("openai", "")
+            provider = OpenAIProvider(api_key=api_key)
+            model = OpenAIModel(spec.name, provider=provider)
+            return Agent(model=model, defer_model_check=True)
+
+        raise RouterTerminalError(
+            f"terminal_error: unsupported provider {spec.provider!r}. "
+            f"Built-in factory supports 'anthropic' and 'openai'. "
+            f"For other providers, pass a custom agent_factory to LLMRouter (D6 escape hatch). "
+            f"model={spec.name!r}"
+        )
+
+    return factory
 
 
 # ---------------------------------------------------------------------------
@@ -625,4 +734,5 @@ __all__ = [
     "RouterChainTimeoutError",
     "RouterConfig",
     "RouterTerminalError",
+    "_make_explicit_agent_factory",
 ]

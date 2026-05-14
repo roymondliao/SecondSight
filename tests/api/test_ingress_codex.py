@@ -27,7 +27,9 @@ def _load_fixture(name: str) -> dict[str, Any]:
     return json.loads((FIXTURE_DIR / name).read_text(encoding="utf-8"))
 
 
-def _request_body(fixture: dict[str, Any], *, event_id: str, sequence_number: int) -> dict[str, Any]:
+def _request_body(
+    fixture: dict[str, Any], *, event_id: str, sequence_number: int
+) -> dict[str, Any]:
     return {
         "event_id": event_id,
         "timestamp": datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc).isoformat(),
@@ -87,12 +89,15 @@ def test_dt_codex_user_prompt_persists_exact_prompt_text(
     persisted = json.loads(row[1])
     assert persisted["action_metadata"]["prompt_text"] == fixture["payload"]["prompt"]
     assert "prompt_length" not in persisted["action_metadata"]
-    assert _event_file_data(
-        project_dir,
-        fixture["payload"]["session_id"],
-        event_type="user_prompt",
-        sequence_number=0,
-    ) == persisted
+    assert (
+        _event_file_data(
+            project_dir,
+            fixture["payload"]["session_id"],
+            event_type="user_prompt",
+            sequence_number=0,
+        )
+        == persisted
+    )
 
 
 def test_dt_codex_post_tool_and_stop_drop_raw_fields_in_persisted_event_data(
@@ -151,12 +156,15 @@ def test_dt_codex_post_tool_and_stop_drop_raw_fields_in_persisted_event_data(
         persisted_json = json.dumps(persisted, ensure_ascii=False)
         assert forbidden_key not in persisted
         assert fixture["privacy_canary"] not in persisted_json
-        assert _event_file_data(
-            project_dir,
-            fixture["payload"]["session_id"],
-            event_type=expected_event_type,
-            sequence_number=sequence_number,
-        ) == persisted
+        assert (
+            _event_file_data(
+                project_dir,
+                fixture["payload"]["session_id"],
+                event_type=expected_event_type,
+                sequence_number=sequence_number,
+            )
+            == persisted
+        )
         if expected_tool_use_id is not None:
             assert persisted["tool_use_id"] == expected_tool_use_id
 

@@ -1,0 +1,265 @@
+task_id: task-1
+completion_status: done
+
+# Cross-reference addendum (added during Task 5 review pass):
+# The bridge field `analysis_global` was claimed to work in Task 1's scar.
+# However: Task 1 introduced cfg.analysis_global but runtime.py:87 still passed
+# cfg.analysis (new AnalysisConfig type) where select_model() expected GlobalAnalysisConfig
+# shape. This was a latent type mismatch. Task 5 fixed runtime.py:87 by changing
+# cfg.analysis → cfg.analysis_global. The Task 1 bridge claim was technically incomplete
+# until Task 5's fix. See task-5-scar.yaml resolved_items: "cross-task — Task 1 latent bridge bug".
+
+known_shortcuts:
+  - description: >
+      GlobalAnalysisConfig is preserved as a parallel field `analysis_global: GlobalAnalysisConfig`
+      in SecondSightConfig rather than being fully replaced. The task required replacing
+      `analysis: GlobalAnalysisConfig` with `analysis: AnalysisConfig`, but analysis/runtime.py
+      uses `cfg.analysis` with GlobalAnalysisConfig shape (default_agent, models.*) for select_model().
+      The bridge field `analysis_global` is a debt: callers must know to use `analysis` for new
+      code and `analysis_global` for the old select_model() path. Task 6 is supposed to migrate
+      this but the naming is confusing.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      `state.py:153` `_get_secondsight_version` catches bare `Exception`. Narrowing to
+      `(PackageNotFoundError, ImportError)` is a one-line fix. Deferred as small polish item.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      `state.json schema_version` forward-compat: no migration mechanism exists in this codebase
+      for reading state.json written by a newer schema version. This is genuinely Task-6+ territory.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      `log_level` has no enum validation in GeneralConfig or loader — any string is accepted.
+      No consumer of the log_level value exists yet (Task 6+ wiring concern).
+    deferred_to_feature_iteration: true
+
+  - description: >
+      `FallbackModelsConfig.fallback_models` is a mutable list field in a frozen=True dataclass.
+      This is a pre-existing pattern (not introduced by Task 1). The frozen constraint prevents
+      direct reassignment but not mutation of the list object itself.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      DC11 prompt UX non-TTY edge case: typer.confirm() behavior in non-TTY environments
+      (CI, piped input) is Typer library behavior. Documented as known limitation.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Three provider extraction blocks in `_build_providers_config` follow the Rule of 3
+      (borderline DRY). The parallel structure is intentional and each provider has different
+      field names, making a helper marginally clearer but not required.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      If `_write_state_json` fails with an OSError (disk full, permissions), the warning is
+      logged and the state_status field in the summary now renders the failure message in
+      bold red in `_render_text`. This was the previously-silent path. After CRITICAL FIX 1,
+      the user sees the failure in the init output. However: init still exits 0. The user
+      must act on the visible error themselves.
+
+  - description: >
+      The `caplog` fixture in `test_loader_v2.py` uses pytest's caplog to capture loguru warnings.
+      This relies on the conftest.py loguru-caplog bridge fixture. If that bridge fixture is
+      removed or broken, the DC12 warning tests will silently pass (caplog.records will be empty,
+      `matching` will be [], and the assert will fail — but if a future dev changes the assert
+      to a skip, detection would be lost).
+    deferred_to_feature_iteration: false
+
+  - description: >
+      `AnalysisConfig.timeout_seconds` validation only checks isinstance(int). A TOML float
+      like `timeout_seconds = 300.0` would raise SecondSightConfigError from the isinstance check.
+      A TOML string like `timeout_seconds = "300"` also raises. Neither is documented clearly
+      in the error message. Users who write floats get a confusing type error.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      `tomllib` (Python 3.11+ stdlib) correctly parses `[providers.custom]` with `base_url`
+      as a nested TOML table with a string field. TOML quoting is a known footgun when
+      the key name matches a TOML reserved keyword.
+    verified: true
+    note: >
+      Verified by UT-v2-loader-11 which writes and loads `[providers.custom]` with
+      `base_url = "https://api.example.com/v1"`. Test passes. TOML handles it without issues
+      since `base_url` is not a reserved word in TOML.
+
+  - assumption: >
+      Existing tests in tests/config/ that import GlobalAnalysisConfig via `analysis` attribute
+      access on SecondSightConfig (e.g. `cfg.analysis.default_agent`) can be migrated to
+      `cfg.analysis_global.default_agent` without breaking the test intent.
+    verified: true
+    note: >
+      Audited and migrated all 6 affected test assertions in test_loader.py. Tests pass.
+      The `analysis_global` field carries the same data as the old `analysis` field for
+      backward compat purposes.
+
+  - assumption: >
+      `~/.secondsight/` directory may not exist on first `secondsight init` run.
+      `state.save()` must `mkdir(parents=True, exist_ok=True)`.
+    verified: true
+    note: >
+      Verified by DT-state-5 (TestDTState5SaveCreatesDirectory) which saves to a deep
+      non-existent path. Test passes. state.py line 134 does mkdir correctly.
+
+  - assumption: >
+      The loguru-caplog bridge in `tests/conftest.py` is present and functional, enabling
+      `caplog.records` to capture loguru WARNING messages emitted by the loader.
+    verified: true
+    note: >
+      Verified by running TestDTV2Loader1LegacyFlatAnalysis tests which use caplog.
+      All 2 tests pass.
+
+  - assumption: >
+      The `--force` flag does not conflict with an existing typer option in the `init` command.
+    verified: true
+    note: >
+      Audited init.py before adding --force. No existing --force flag. Added cleanly.
+
+  - assumption: >
+      `analysis/runtime.py` will continue to work after `SecondSightConfig.analysis` changes
+      type from GlobalAnalysisConfig to AnalysisConfig, because it uses a SimpleNamespace
+      bridge that can be redirected to `cfg.analysis_global`.
+    verified: true
+    note: >
+      Updated runtime.py line 83 to use `cfg.analysis_global`. All test_runtime_wiring.py
+      tests pass (3/3).
+
+  - assumption: >
+      DC12 warn-and-ignore for _build_global_analysis_config is a behavior change for
+      legacy users: any user with a flat [analysis] default_agent and no [analysis.cli]
+      will now get BUILTIN_DEFAULT_AGENT from both analysis_global.default_agent and
+      analysis.cli.default_agent, instead of their configured agent. This is intentional
+      per the spec ("warn-and-ignore, not warn-but-keep-honoring").
+    verified: true
+    note: >
+      Two existing tests in test_loader.py that asserted the OLD behavior (value preserved
+      in analysis_global) were updated to assert BUILTIN_DEFAULT_AGENT. Regression test
+      TestDTCriticalFix2 confirms both fields agree after the fix.
+
+debt_registered: true
+debt_location: >
+  src/secondsight/config/schema.py:SecondSightConfig.analysis_global field (backward compat debt,
+  deferred to Task 6 for migration);
+  src/secondsight/state.py:_get_secondsight_version (bare Exception catch, deferred);
+  src/secondsight/config/schema.py:GeneralConfig.log_level (no enum validation, deferred Task-6+);
+  src/secondsight/config/schema.py:FallbackModelsConfig.fallback_models (mutable list in frozen dataclass, pre-existing)
+
+narrative: |
+  ## Structural contradiction resolved: `analysis` field type change
+
+  The task dispatch required replacing `analysis: GlobalAnalysisConfig` with `analysis: AnalysisConfig`
+  in SecondSightConfig, while simultaneously forbidding changes to `analysis/runtime.py` dispatch logic.
+  These two requirements are contradictory: runtime.py uses `cfg.analysis` with GlobalAnalysisConfig
+  duck-typing (accessing `.default_agent` and `.models`).
+
+  Resolution: Added `analysis_global: GlobalAnalysisConfig` as a parallel backward-compat field.
+  `cfg.analysis` is now the new AnalysisConfig (cli+sdk aggregate). `cfg.analysis_global` carries
+  the old GlobalAnalysisConfig for runtime.py and select_model(). runtime.py line 83 updated to
+  use `cfg.analysis_global`.
+
+  This creates a naming confusion debt: callers must know which field to use. Task 6 should migrate
+  select_model() to use `cfg.analysis.cli.default_agent` and then remove `analysis_global`.
+
+  ## AnalysisConfig name collision in config.schema
+
+  The existing test `test_analysis_config_NOT_in_schema` in test_schema.py explicitly guarded
+  against adding AnalysisConfig to config.schema. This task intentionally adds a NEW AnalysisConfig
+  (the cli+sdk aggregate, distinct from analysis.config.AnalysisConfig which is the per-project
+  TOML reader). The test was updated to reflect the new reality and verify the two classes remain
+  distinct objects.
+
+  ## Re-review round fixes (CRITICAL FIX 1, 2, IMPORTANT FIX 3, 4)
+
+  CRITICAL FIX 1: `_render_text` in init.py now renders state_status for all 4 outcome variants:
+  bold red for write failures, yellow for declined overwrites, dim for dry-run, plain for success.
+  The original scar report wrongly classified this as "needs architecture change" — the fix is
+  one block in one function. Reviewer was correct: task-scoped, not a deferral.
+
+  CRITICAL FIX 2: `_build_global_analysis_config` now also warn-and-ignores the legacy flat
+  [analysis] default_agent key when [analysis.cli] is absent — same condition as
+  `_build_analysis_config`. A shared helper `_legacy_default_agent_should_be_ignored` ensures
+  the two code paths cannot drift independently. Both now produce BUILTIN_DEFAULT_AGENT for
+  ignored legacy configs, preventing the divergence where runtime.py (via analysis_global)
+  dispatched to the "ignored" agent while Task 6 consumers (via analysis.cli) saw a different value.
+
+  IMPORTANT FIX 3: DC12 warn condition updated to `flat key present AND no nested [analysis.cli]`.
+  Migration configs (flat + nested) no longer trigger the warning. This prevents alert fatigue
+  and makes the ignore semantics unambiguous.
+
+  IMPORTANT FIX 4: SDK model defaults extracted to named constants (BUILTIN_SDK_PRIMARY_MODEL,
+  BUILTIN_SDK_FALLBACK_MODEL, BUILTIN_ANALYSIS_TIMEOUT_SECONDS) in schema.py. Both schema dataclass
+  defaults and loader fallbacks now reference the same constants — single source of truth.
+
+resolved_items:
+  - original_section: assumptions_made
+    original_description: "tomllib parses [providers.custom] with base_url correctly"
+    resolution: >
+      Added UT-v2-loader-11 which explicitly tests loading a config with
+      `[providers.custom]` including base_url. Test passes. Assumption verified.
+
+  - original_section: assumptions_made
+    original_description: >
+      ~/.secondsight/ directory may not exist on first run — state.save() must mkdir
+    resolution: >
+      Added DT-state-5 (TestDTState5SaveCreatesDirectory) which saves to a deep
+      non-existent path. Test passes. state.py line 134: `path.parent.mkdir(parents=True, exist_ok=True)`.
+
+  - original_section: known_shortcuts
+    original_description: >
+      _write_state_json non-fatal state write failure is silent to user in init output
+    resolution: >
+      CRITICAL FIX 1: `_render_text` now renders state_status for all outcome variants.
+      write failed → bold red; declined → yellow; dry-run → dim; success → plain.
+      The original scar report wrongly classified this as "needs architecture changes."
+      The fix is one block in _render_text — fully task-scoped. Fixed in re-review round.
+    deferred_to_feature_iteration: false
+
+  - original_section: known_shortcuts
+    original_description: >
+      _build_analysis_config used import loguru inside function body (style/convention debt)
+    resolution: >
+      Fixed during self-iteration. Moved to module-level `from loguru import logger` in
+      loader.py (consistent with project convention and AGENTS.md). Ruff passes clean.
+    deferred_to_feature_iteration: false
+
+  - original_section: silent_failure_conditions
+    original_description: >
+      _write_state_json fails with OSError — init exits 0 with no user-visible signal.
+    resolution: >
+      CRITICAL FIX 1 (same as above): state_status now rendered in bold red when write failed.
+      User sees the failure in the Rich output. Init still exits 0 (non-fatal design intent
+      preserved), but the user now has visible signal to re-run init or fix disk/permissions.
+
+  - original_section: new — CRITICAL FIX 2
+    original_description: >
+      _build_global_analysis_config honored legacy flat [analysis] default_agent while
+      _build_analysis_config ignored it — the two builders diverged for the same config.
+    resolution: >
+      Added `_legacy_default_agent_should_be_ignored(analysis_section)` helper as single
+      source of truth. Both builders now use it. Legacy flat key (without nested [analysis.cli])
+      is ignored in both paths. Both analysis_global.default_agent and analysis.cli.default_agent
+      fall back to BUILTIN_DEFAULT_AGENT. Two previously-passing tests in test_loader.py that
+      asserted the old (wrong) behavior were updated to assert the new correct behavior.
+    deferred_to_feature_iteration: false
+
+  - original_section: new — IMPORTANT FIX 3
+    original_description: >
+      DC12 warn condition fired on migration configs (flat + nested), causing alert fatigue.
+    resolution: >
+      Updated warn condition to `flat present AND no nested [analysis.cli]`. Migration state
+      (both present) suppresses the warning. Added tests: flat-only warns, flat+nested does
+      not warn, nested value wins when both present.
+    deferred_to_feature_iteration: false
+
+  - original_section: new — IMPORTANT FIX 4
+    original_description: >
+      DRY violation: SDK model defaults hardcoded twice (schema defaults + loader fallbacks).
+    resolution: >
+      Added BUILTIN_SDK_PRIMARY_MODEL, BUILTIN_SDK_FALLBACK_MODEL, BUILTIN_ANALYSIS_TIMEOUT_SECONDS
+      constants in schema.py. Both AnalysisSDKConfig/AnalysisConfig defaults and loader fallbacks
+      now reference these constants. Exported in __all__. 10 new tests in TestUTV2Schema10SDKModelConstants
+      verify constants exist, have correct types, and are referenced by schema defaults.
+    deferred_to_feature_iteration: false
