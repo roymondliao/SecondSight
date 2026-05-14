@@ -1,0 +1,143 @@
+task_id: iter-F5
+completion_status: done
+# Fix F5: loguru->caplog bridge sentinel test + DC12 defense-in-depth
+#
+# Scar item addressed (T1 silent_failure_conditions #1):
+#   The DC12 warning tests in test_loader_v2.py rely on the conftest.py
+#   loguru-caplog bridge fixture. If that bridge fixture is removed or broken,
+#   the DC12 warning tests silently lose coverage. Today the assert fails LOUDLY
+#   (any([]) = False), but the transitive risk is that a future maintainer who
+#   does not understand why could "fix" the failure by weakening the assertion or
+#   adding pytest.skip, making the bridge breakage permanently invisible.
+#
+# Approach 1 (mandatory) — meta-test sentinel:
+#   Added tests/test_conftest_bridge.py with a single probe test:
+#   test_loguru_caplog_bridge_is_wired emits a uniquely-keyed loguru warning
+#   (__loguru_caplog_bridge_probe_f5__) and asserts it appears in caplog.records.
+#   This test fails FIRST, before any DC12 test, with a specific actionable
+#   message naming the conftest.py fixture and telling maintainers NOT to skip.
+#
+# Approach 2 (applied) — DC12 defense-in-depth:
+#   Added a positive assert len(caplog.records) > 0 guard in the one DC12 test
+#   that checks caplog (test_legacy_flat_default_agent_warns_and_does_not_raise).
+#   The second DC12 test (test_legacy_flat_default_agent_mode_not_overridden)
+#   does not assert on caplog records, so Approach 2 was not applied there.
+#
+# Breakage simulation result:
+#   conftest.py loguru_logger.add() was temporarily commented out.
+#   test_loguru_caplog_bridge_is_wired FAILED with the expected message:
+#     "loguru->caplog bridge is NOT wired. Expected probe message
+#      '__loguru_caplog_bridge_probe_f5__' in caplog.records, got: [].
+#      Check tests/conftest.py -- the caplog fixture override must call
+#      loguru_logger.add(caplog.handler, ...) before yielding.
+#      Do NOT skip or weaken this test -- fix the bridge."
+#   conftest.py was reverted immediately.
+#
+# Full suite after fix: 1582 passed, 11 skipped, 6 pre-existing integration
+# failures (all in test_phase1_e2e.py, unchanged from before this fix).
+
+budget_spent:
+  validation_runs: 3
+  # run 1: meta-test passes with bridge intact (green)
+  # run 2: meta-test fails with bridge broken (red — expected, confirms detection)
+  # run 3: full suite after revert + approach 2 (1582 passed, 6 pre-existing fails)
+  reviewer_retries_consumed: 0
+
+evidence_gained:
+  - meta_test_green_with_bridge: true
+  - meta_test_red_when_bridge_broken: true
+  - failure_message_is_actionable: true
+  - dc12_approach2_guard_added: true
+  - dc12_tests_still_pass: true
+  - no_regression_introduced: true
+  # Pre-existing integration failures are unchanged (same 6 tests, same root cause
+  # — timing-dependent e2e tests unrelated to config/logging machinery).
+
+known_shortcuts:
+  - description: >
+      The meta-test probe uses `with caplog.at_level("WARNING")` which sets the
+      caplog handler level. The bridge fixture applies `level=0` to loguru but
+      filters with `record["level"].no >= caplog.handler.level`. If at_level
+      somehow failed to set the handler level, the filter could block the probe.
+      This is not a real risk (at_level is stdlib pytest, not loguru) but is
+      documented for completeness.
+    accepted: true
+    rationale: >
+      at_level("WARNING") on a pytest LogCaptureFixture is a stable stdlib API.
+      The bridge filter correctly reads caplog.handler.level which is set by
+      at_level. Verified by simulation.
+
+silent_failure_conditions:
+  - condition: >
+      The meta-test itself could fail to detect bridge breakage if loguru emits
+      to a *different* caplog sink (e.g., a global propagate path). In practice
+      loguru does not use Python's stdlib logging.root by default, so this path
+      does not exist unless someone adds a loguru->stdlib sink globally.
+    likelihood: very_low
+    detection: >
+      Verified by simulation: with the bridge commented out, caplog.records was
+      empty and the assert fired. The meta-test IS the detection.
+  - condition: >
+      The probe message "__loguru_caplog_bridge_probe_f5__" is collision-resistant
+      but not collision-proof. If application code ever logs this exact string,
+      the test could pass vacuously even with a broken bridge. This is
+      astronomically unlikely given the underscore-bracketed format.
+    likelihood: negligible
+    detection: none_needed
+
+assumptions_made:
+  - assumption: >
+      The 6 integration test failures in test_phase1_e2e.py are pre-existing and
+      not caused by this change.
+    verified: true
+    evidence: >
+      The same 6 tests fail on the main branch before this change (iter-F2-scar.yaml
+      documents "6 pre-existing integration failures unchanged"). The failures involve
+      hook shell script timing and daemon PID file writes, unrelated to logging.
+  - assumption: >
+      tests/conftest.py is a session-scoped conftest applying to all tests under
+      tests/. The meta-test file placed at tests/test_conftest_bridge.py will
+      automatically inherit the caplog fixture override.
+    verified: true
+    evidence: >
+      pytest collects tests/test_conftest_bridge.py and the bridge probe test
+      passes, confirming conftest.py fixture is in scope.
+
+debt_registered: false
+
+residual_risk:
+  - risk: >
+      A future maintainer could add a tests/config/conftest.py that overrides
+      caplog AGAIN, creating a nested fixture that breaks the bridge for config/
+      tests only while the meta-test (at tests/ root level) still passes.
+    likelihood: low
+    mitigation: >
+      The meta-test is at tests/ root. Any sub-conftest override would be
+      detectable if the DC12 positive guard (Approach 2) fires. The two layers
+      provide defense-in-depth for this scenario.
+  - risk: >
+      If the bridge fixture is replaced by a structurally different mechanism
+      (e.g., a pytest plugin), the meta-test will still pass, but only if the
+      replacement correctly routes loguru to caplog. The meta-test correctly
+      tests the observable behavior (records presence), not the mechanism.
+    likelihood: low
+    mitigation: acceptable — behavior-based test survives mechanism changes
+
+narrative: >
+  The F5 scar item was about transitive rot: today the failure is loud
+  (assert any([]) fires), but the detection path is fragile because it depends on
+  a human NOT weakening the assertion when they see it fail. The fix moves
+  detection upstream: the meta-test fails first with a message that names the
+  root cause and explicitly says "do not skip." The positive guard in the DC12
+  test adds a second layer that is hard to accidentally bypass. The breakage
+  simulation confirmed the detection chain works end-to-end.
+
+resolved_items:
+  - source_section: silent_failure_conditions
+    description: >
+      DC12 warning tests could silently lose loguru coverage if conftest.py
+      bridge fixture is removed or broken, with no obvious error message.
+    resolution: >
+      Added tests/test_conftest_bridge.py::test_loguru_caplog_bridge_is_wired
+      as a sentinel. Verified it fails with actionable message when bridge broken.
+      Added positive caplog.records guard in the primary DC12 warning test.

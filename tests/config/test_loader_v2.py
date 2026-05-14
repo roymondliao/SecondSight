@@ -78,6 +78,15 @@ class TestDTV2Loader1LegacyFlatAnalysis:
         # Must NOT raise
         cfg = load_global_config(home)
 
+        # POSITIVE: assert the bridge delivered SOMETHING before checking specifics.
+        # If caplog.records is empty here, the loguru->caplog bridge is broken --
+        # see tests/test_conftest_bridge.py which provides an actionable failure message.
+        assert len(caplog.records) > 0, (
+            "no log records captured at all; loguru->caplog bridge may be broken. "
+            "Run tests/test_conftest_bridge.py::test_loguru_caplog_bridge_is_wired "
+            "to diagnose. Do NOT skip this assert -- fix the bridge."
+        )
+
         # Must WARN with the specific substring
         warn_messages = [r.message for r in caplog.records if r.levelno >= 30]
         matching = [m for m in warn_messages if "legacy [analysis] default_agent" in str(m)]
@@ -519,7 +528,9 @@ class TestDTCriticalFix1StateStatusRendered:
 
         This is the critical path: silent write failure is invisible if not rendered.
         """
-        output = self._run_render_text("state.json write failed: [Errno 28] No space left on device")
+        output = self._run_render_text(
+            "state.json write failed: [Errno 28] No space left on device"
+        )
         assert "state.json" in output, (
             f"state_status 'failed' must appear in _render_text output. Got:\n{output}"
         )
@@ -623,9 +634,7 @@ class TestDTImportantFix3DC12WarnCondition:
     warnings, and real legacy-only configs also stop being noticed.
     """
 
-    def test_flat_only_warns(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_flat_only_warns(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         """Flat [analysis] default_agent with NO [analysis.cli] → MUST warn."""
         from secondsight.config.loader import load_global_config
 
@@ -639,8 +648,7 @@ class TestDTImportantFix3DC12WarnCondition:
         warn_messages = [r.message for r in caplog.records if r.levelno >= 30]
         matching = [m for m in warn_messages if "legacy [analysis] default_agent" in str(m)]
         assert matching, (
-            f"Flat-only legacy config must trigger DC12 warning. "
-            f"Got warnings: {warn_messages}"
+            f"Flat-only legacy config must trigger DC12 warning. Got warnings: {warn_messages}"
         )
 
     def test_flat_plus_nested_does_not_warn(
