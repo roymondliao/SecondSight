@@ -1,0 +1,56 @@
+task_id: iter-META
+completion_status: done
+
+# Pure scar-hygiene reconciliation. No source code touched. No test files touched.
+# Only updates: task-5-scar.yaml top-of-file note clarifying that 3 entries in
+# known_shortcuts/silent_failure_conditions ARE resolved in resolved_items section
+# (Level-2 iter aggregation over-counted them as remaining).
+
+budget_spent:
+  validation_runs: 0  # documentation-only; no tests run
+  reviewer_retries_consumed: 0
+evidence_gained:
+  - Read task-5-scar.yaml in full; confirmed resolved_items section (lines 180+) contains coverage for the 3 items
+  - Confirmed _infer_provider fix is in current code (model_selection.py raises ValueError for unknown)
+  - Confirmed _build_system_prompt is fatal (sdk_dispatcher.py:243-258 docstring + implementation re-raises)
+  - Confirmed attempts ordering assertion is in current code (sdk_dispatcher.py:196-201)
+residual_risk:
+  - Future iteration aggregation may still over-count if it doesn't recognize the dual-tracking pattern across older + newer resolved_items entry conventions (this scar mixes `original` and `original_description` field naming)
+  - Recommendation: standardize all resolved_items entries to use `original_description` field name in a future scar-hygiene pass
+
+known_shortcuts:
+  - description: >
+      task-5-scar.yaml uses two different field-name conventions in resolved_items
+      (older: `original` / newer: `original_description`). Standardization deferred
+      as out-of-scope for META (would touch many entries; pure hygiene with no
+      production impact).
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions: []
+
+assumptions_made:
+  - assumption: >
+      Future aggregation tools will recognize that an item in known_shortcuts +
+      its resolution in resolved_items together signal "RESOLVED" not "REMAINING".
+    verified: false
+    note: >
+      Cannot verify without re-running the aggregation script. If the next iteration
+      re-counts these as remaining, the META note in task-5-scar.yaml top will be
+      the signal to update aggregation logic, not the scar.
+
+debt_registered: true
+debt_location: >
+  task-5-scar.yaml field-naming inconsistency in resolved_items section.
+  Three items affected (lines 200-227 use `original`; lines 229+ use `original_description`).
+
+resolved_items:
+  - original_section: "task-5 known_shortcuts + silent_failure_conditions tracking gap"
+    original_description: >
+      The Level-2 iter aggregation flagged 3 items (T5 SH#2 _infer_provider, T5 SH#3
+      _build_system_prompt, T5 UA#1 attempts ordering) as remaining despite all 3
+      being resolved in the Task 5 round-2 review pass and tracked in resolved_items.
+    resolution: >
+      Added a META RECONCILIATION note at the top of task-5-scar.yaml explicitly
+      identifying which known_shortcuts/silent_failure entries are also resolved
+      in the resolved_items section. The original entries are kept as historical
+      record; future readers see the cross-reference at top of file.

@@ -2,6 +2,26 @@ task_id: task-5
 completion_status: done
 # Review pass completed: yin+quality reviewer findings addressed.
 # 1485 non-integration tests pass (28 new tests added in review pass).
+#
+# META RECONCILIATION (iter-META 2026-05-15):
+# Some items in `known_shortcuts:` and `silent_failure_conditions:` below were
+# resolved during the review pass — see the corresponding entries in
+# `resolved_items:` (lines 180+). The original entries are retained as
+# historical record (what was initially shipped + what was discovered in
+# review). For current state, the `resolved_items:` section is authoritative.
+#
+# Specifically resolved (now in resolved_items, not pending):
+#   - known_shortcuts[1] `_infer_provider` silent anthropic default
+#     → resolved_items entry around line 208-217 + line 266-276
+#     (TWO resolutions: round-1 logger.warning, round-2 DRY consolidation + ValueError)
+#   - known_shortcuts[2] `_build_system_prompt` inline fallback weakens output
+#     → resolved_items entry around line 243-254 (round-2 made fatal re-raise)
+#   - assumptions_made (round-1: RouterChainExhaustedError.attempts ordering)
+#     → resolved_items entry around line 278+ (round-2 added invariant assertion
+#     in _make_dual_failure_output: attempts[0].model_name == primary_spec.name)
+#
+# Earlier aggregation (Level-2 iter triage 2026-05-14) double-counted these.
+# Actual remaining = original list MINUS the 3 items above.
 
 known_shortcuts:
   - description: >
