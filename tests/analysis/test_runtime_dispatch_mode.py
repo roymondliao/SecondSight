@@ -182,12 +182,10 @@ def test_sweeper_module_does_not_reference_mode() -> None:
                 elif pattern in (r'"cli"', r'"sdk"'):
                     # Only flag exact "cli" or "sdk" string literals if used in mode comparison
                     # context. Search for the pattern in mode-comparison context specifically.
-                    mode_comparison_pattern = rf'(?:mode\s*==\s*{pattern}|{pattern}\s*==\s*mode)'
+                    mode_comparison_pattern = rf"(?:mode\s*==\s*{pattern}|{pattern}\s*==\s*mode)"
                     mode_matches = re.findall(mode_comparison_pattern, text)
                     if mode_matches:
-                        violations.append(
-                            f"{f.name}: mode comparison found: {mode_matches!r}"
-                        )
+                        violations.append(f"{f.name}: mode comparison found: {mode_matches!r}")
 
     assert not violations, (
         f"Sweeper module(s) contain forbidden mode references: {violations}. "
@@ -197,9 +195,7 @@ def test_sweeper_module_does_not_reference_mode() -> None:
 
 def test_manual_analyze_cli_does_not_reference_mode() -> None:
     """Architectural guardrail: analyze.py must NOT reference config.general.mode."""
-    analyze_file = Path(
-        "/Users/yuyu_liao/vicone/SecondSight/src/secondsight/cli/analyze.py"
-    )
+    analyze_file = Path("/Users/yuyu_liao/vicone/SecondSight/src/secondsight/cli/analyze.py")
     text = analyze_file.read_text()
 
     forbidden_patterns = [r"\.mode\b", r"mode\s*==", r"general\.mode"]
@@ -362,4 +358,116 @@ def test_project_analysis_runtime_has_mode_aware_dispatch_attribute() -> None:
     assert "mode_aware_dispatch" in field_names, (
         f"ProjectAnalysisRuntime must have a 'mode_aware_dispatch' field. "
         f"Found fields: {field_names}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# DEATH TESTS — F2 Part B: dispatch() emits INFO log naming resolved agent
+# (iter-F2 scar fix)
+#
+# Silent failure path: if dispatch() does not log the effective agent/model,
+# a config mismatch (state.json says opencode, config says claude_code) routes
+# to the wrong agent with ZERO trace in logs. Forensics are blind until a user
+# reports wrong output.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_death_f2_dispatch_cli_logs_effective_agent(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Death test F2 Part B: dispatch() for mode=cli must emit an INFO log that
+    names the effective agent (session_id, mode, agent).
+
+    If this log is absent, a mis-routed dispatch (config=claude_code, state=opencode)
+    produces no trace of which agent was actually invoked.
+    """
+    import logging
+
+    from secondsight.analysis.runtime import ModeAwareDispatch
+
+    config = _make_cli_config(default_agent="claude_code")
+    state = _make_state(agent="claude_code")
+
+    mock_output = _make_success_output("cli", "claude_code")
+    mock_dispatcher = MagicMock()
+    mock_dispatcher.dispatch = AsyncMock(return_value=mock_output)
+
+    mad = ModeAwareDispatch(
+        config=config,
+        state=state,
+        cli_dispatcher=mock_dispatcher,
+        sdk_dispatcher=None,
+    )
+
+    with caplog.at_level(logging.INFO):
+        await mad.dispatch("sess-log-cli", {}, project_root=tmp_path)
+
+    all_messages = " ".join(r.message for r in caplog.records)
+    assert "sess-log-cli" in all_messages, (
+        f"dispatch() INFO log must contain session_id. Got: {all_messages!r}"
+    )
+    assert "cli" in all_messages, (
+        f"dispatch() INFO log must contain mode. Got: {all_messages!r}"
+    )
+    # The key assertion: the agent NAME must appear in the dispatch-start log line.
+    # Searching for the word "agent" alone is vacuous — it appears in many messages.
+    # We require the actual agent value "claude_code" verbatim in the dispatch-start line.
+    dispatch_start_logs = [r for r in caplog.records if "dispatch start" in r.message.lower()]
+    assert len(dispatch_start_logs) > 0, (
+        f"No 'dispatch start' log line found. All log messages: {all_messages!r}"
+    )
+    assert "claude_code" in dispatch_start_logs[0].message, (
+        f"dispatch start log should name the agent verbatim; "
+        f"got: {dispatch_start_logs[0].message!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_death_f2_dispatch_sdk_logs_primary_model(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Death test F2 Part B: dispatch() for mode=sdk must emit an INFO log that
+    names the primary_model.
+
+    If this log is absent, we cannot trace which model was used during a session
+    post-mortem when results are anomalous.
+    """
+    import logging
+
+    from secondsight.analysis.runtime import ModeAwareDispatch
+
+    config = _make_sdk_config()
+
+    mock_output = _make_success_output("sdk", "claude-haiku-4-5-20251001")
+    mock_dispatcher = MagicMock()
+    mock_dispatcher.dispatch = AsyncMock(return_value=mock_output)
+
+    mad = ModeAwareDispatch(
+        config=config,
+        state=None,
+        cli_dispatcher=None,
+        sdk_dispatcher=mock_dispatcher,
+    )
+
+    with caplog.at_level(logging.INFO):
+        await mad.dispatch("sess-log-sdk", {}, project_root=tmp_path)
+
+    all_messages = " ".join(r.message for r in caplog.records)
+    assert "sess-log-sdk" in all_messages, (
+        f"dispatch() INFO log must contain session_id. Got: {all_messages!r}"
+    )
+    assert "sdk" in all_messages, (
+        f"dispatch() INFO log must contain mode. Got: {all_messages!r}"
+    )
+    # The key assertion: the primary_model NAME must appear in the dispatch-start log line.
+    # Searching for the word "primary_model" alone is vacuous — it could match a debug or
+    # error log from another subsystem. We require the actual model value verbatim.
+    dispatch_start_logs = [r for r in caplog.records if "dispatch start" in r.message.lower()]
+    assert len(dispatch_start_logs) > 0, (
+        f"No 'dispatch start' log line found. All log messages: {all_messages!r}"
+    )
+    assert "claude-haiku-4-5-20251001" in dispatch_start_logs[0].message, (
+        f"dispatch start log should name the primary_model verbatim; "
+        f"got: {dispatch_start_logs[0].message!r}"
     )

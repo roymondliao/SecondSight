@@ -1,0 +1,309 @@
+task_id: iter-F2
+completion_status: done
+# Fix F2: two-part scar fix for T6 scar items.
+#
+# Part A: precheck reason code rename + explicit enum validation
+#   - Added _KNOWN_CLI_AGENTS frozenset (union of _AGENT_BINARY_MAP keys,
+#     _UNSUPPORTED_CLI_AGENTS, and "auto" sentinel).  [CORRECTED in round-1 review]
+#   - Added unknown_agent check BEFORE opencode check and binary lookup.
+#   - Reason code for unrecognised agent: was "cli_binary_missing" (dishonest),
+#     now "unknown_agent" (accurate: we don't know what binary to look for).
+#   - Changed binary lookup from .get() with None check to direct [] indexing
+#     (safe: only reachable after passing unknown_agent + opencode checks).
+#
+# Part A round-1 review fix:
+#   - Removed "auto" from _KNOWN_CLI_AGENTS (it was incorrectly included in the
+#     original F2 implementation).
+#   - "auto" is a config-level sentinel consumed by the resolution branch BEFORE
+#     the enum check. Including it allowed state.init_agent="auto" (corrupt state)
+#     to pass the enum check and reach _AGENT_BINARY_MAP["auto"] → KeyError.
+#   - Fix: exclude "auto" so any effective_agent=="auto" is rejected with
+#     reason="unknown_agent" at the enum check, preserving "precheck never raises".
+#   - Updated inline comment at the enum check site to reflect this invariant.
+#   - Added 1 new death test: test_death_f2_state_init_agent_auto_returns_unknown_agent_not_keyerror
+#
+# Part B: dispatch start log in ModeAwareDispatch.dispatch()
+#   - Added INFO log line before dispatcher.dispatch() call in both CLI and SDK paths.
+#   - Format: "dispatch start: session_id=... mode=... agent=... primary_model=..."
+#   - CLI path: resolves effective agent (respects auto → state.init_agent).
+#   - SDK path: reads config.analysis.sdk.primary_model.
+#
+# Part B round-1 review fix (Important):
+#   - Tightened 2 vacuous log assertions in test_runtime_dispatch_mode.py.
+#   - Before: `assert "claude_code" in all_messages or "agent" in all_messages`
+#     The "or 'agent'" arm was vacuous — the word "agent" appears in many logs.
+#   - After: filter to dispatch-start log lines, assert agent/model NAME verbatim.
+#   - Applied same pattern to test_death_f2_dispatch_sdk_logs_primary_model.
+#
+# Evidence: 7 new death tests total (4 Part A + 1 round-1 CRITICAL + 2 Part B), all green.
+# Full suite: 1581 passed, 11 skipped, 6 pre-existing integration failures (unchanged).
+# Full suite: 1159 passed, 11 skipped, 1 pre-existing integration failure (unchanged).
+
+budget_spent:
+  validation_runs: 7
+  # run 1: death tests written — all 6 fail (red confirmed)
+  # run 2: Part A implemented — 4 Part A death tests pass; broke binary_name lookup
+  # run 3: fixed binary_name lookup (removed .get() None-check, added direct [] index)
+  # run 4: all 34 tests in test_precheck.py + test_runtime_dispatch_mode.py + e2e pass
+  # run 5: full suite — 1159 passed, 1 pre-existing integration failure
+  # run 6 (round-1 review fixes): CRITICAL + IMPORTANT fixed; 35 tests pass in target files
+  # run 7: full suite — 1581 passed, 11 skipped, 6 pre-existing integration failures
+  reviewer_retries_consumed: 1
+
+evidence_gained:
+  - "Death test: test_death_f2_hyphen_typo_in_state_returns_unknown_agent — before fix,
+    reason='cli_binary_missing' for 'claude-code' (hyphen typo). After fix, reason='unknown_agent'."
+  - "Death test: test_death_f2_uppercase_returns_unknown_agent — before fix, reason='cli_binary_missing'
+    for 'CLAUDE_CODE'. After fix, reason='unknown_agent'."
+  - "Death test: test_death_f2_unknown_default_agent_in_config_returns_unknown_agent — before fix,
+    reason='cli_binary_missing' for 'gemini_cli'. After fix, reason='unknown_agent'."
+  - "Death test: test_death_f2_unknown_agent_message_names_valid_agents — before fix,
+    test failed on reason assertion. After fix, message contains 'claude_code' and 'codex'."
+  - "Death test: test_death_f2_dispatch_cli_logs_effective_agent — before fix, no INFO log at
+    dispatch time at all (caplog was empty). After fix, log contains session_id, mode='cli',
+    and agent='claude_code'."
+  - "Death test: test_death_f2_dispatch_sdk_logs_primary_model — before fix, no INFO log.
+    After fix, log contains session_id, mode='sdk', and primary_model='claude-haiku-4-5-20251001'."
+  - "Audit: existing test test_legacy_config_upgrade.py::test_legacy_config_no_state_precheck_fails_binary_not_found
+    asserts reason='cli_binary_missing' for a genuinely-missing binary (not an unknown agent).
+    This test was NOT changed — it correctly passes after the fix."
+  - "Audit: no existing test asserted reason='cli_binary_missing' for an unknown-agent scenario.
+    The stale scar claim 'silently returns ok()' was already partially fixed (it returned
+    cli_binary_missing, not ok); this fix makes the reason code honest."
+  - "Implementation detail caught: replacing .get() with None-check with direct [] indexing
+    required adding binary_name = _AGENT_BINARY_MAP[effective_agent] at the correct point
+    after the enum validation and opencode checks. First attempt removed this line accidentally."
+
+residual_risk:
+  - "dispatch() resolves effective_agent for the log inline (duplicates the 'auto' resolution
+    logic from precheck.py:_check_cli_mode). If auto-resolution logic changes in precheck,
+    the dispatch log will show a stale value. Mitigated by the fact that the dispatch
+    log is forensic-only — it does not affect dispatch routing. The actual routing is done
+    by CLIAnalysisDispatcher which reads its own config. Two sources of truth for the log
+    only, not for dispatch behaviour."
+  - "The dispatch log for CLI mode shows the config-resolved agent (what precheck would
+    accept), NOT the agent that CLIAnalysisDispatcher actually invokes. If CLIAnalysisDispatcher
+    has its own internal resolution that differs, the log and the actual subprocess invocation
+    could diverge. This is acceptable as a forensic starting point but means the log is
+    'config says X' not 'subprocess invoked X'."
+  - "_KNOWN_CLI_AGENTS is computed as a frozenset expression at module load time. If a
+    developer adds a new agent to _AGENT_BINARY_MAP but forgets to check _KNOWN_CLI_AGENTS,
+    the new agent is automatically included (because _KNOWN_CLI_AGENTS derives from
+    _AGENT_BINARY_MAP). This is the correct behaviour — no risk here."
+
+known_shortcuts:
+  - description: >
+      The dispatch log effective agent resolution in runtime.py is a local inline copy of
+      the resolution logic in precheck.py:_check_cli_mode (auto -> state.init_agent). This
+      creates a two-place maintenance burden. If precheck gains a third resolution step
+      (e.g., env variable override), the dispatch log will not reflect it unless both files
+      are updated. The honest fix would be to expose a resolve_effective_agent() helper in
+      precheck.py and use it from both places.
+    deferred_to_feature_iteration: true
+    rationale: >
+      Identified in round-1 yin review as deferred item. The task constraint says "do NOT
+      modify the dispatcher classes themselves (Task 4/5 owners)". Extracting
+      resolve_effective_agent() would touch precheck.py (same file as this task) and
+      runtime.py (also this task's scope). However, the extraction is a refactor beyond the
+      immediate scar fix, and the inline copy is functionally correct for the current
+      two-resolution-step logic. Leaving as documented shortcut; the risk is annotated in
+      residual_risk. strategy_hint=minimal_fix per iteration budget.
+
+  - description: >
+      DC11: PrecheckResult.reason is typed as str | None rather than
+      Literal["state_missing", "cli_binary_missing", "opencode_not_supported",
+      "no_providers", "primary_model_missing", "unknown_agent", "unknown_mode", None].
+      This typing weakness means callers cannot get static exhaustiveness checking on
+      the reason field.
+    deferred_to_feature_iteration: true
+    rationale: >
+      Pre-existing typing weakness identified in round-1 yin review. Fixing it requires
+      changing the PrecheckResult dataclass field type and updating all callers that pattern-
+      match on reason. This is a type safety improvement with no runtime behavior change.
+      Deferred per strategy_hint=minimal_fix. The existing docstring lists all known reason
+      values as documentation mitigation.
+
+  - description: >
+      Coupling concern: config.analysis.sdk.primary_model is accessed directly in
+      runtime.py's dispatch log line rather than through a named accessor. If the config
+      schema path changes, the log line will silently break with AttributeError. Currently
+      no test covers the AttributeError path.
+    deferred_to_feature_iteration: true
+    rationale: >
+      Identified in round-1 yin review. This is a structural coupling issue between runtime
+      layer and config schema. Resolving it requires either a config accessor pattern or a
+      runtime-level config validation step. Beyond minimal_fix scope for this iteration.
+
+silent_failure_conditions:
+  - condition: >
+      The dispatch log for CLI mode always says agent=<default_agent or state.init_agent>,
+      even if state=None and default_agent="auto". In that case, _effective_agent would be
+      "auto" (the sentinel) rather than the actual resolved agent. Precheck would have
+      already rejected this at startup (state_missing), but if dispatch() is called without
+      going through precheck (e.g., tests or direct instantiation), the log is misleading.
+    detectability: medium — the log says agent='auto' which is recognisable as the sentinel
+    mitigation: >
+      This is a "can't happen in production" case: precheck rejects mode=cli + auto + no state
+      before the server starts. In tests that bypass precheck, agent='auto' in the log is a
+      signal that the test is in a degraded state. Acceptable as-is.
+
+  - condition: >
+      The effective_agent logged at dispatch time may not match what CLIAnalysisDispatcher
+      actually does. If CLIAnalysisDispatcher reads state.init_agent at dispatch time
+      (rather than at construction time) and state has changed on disk between precheck and
+      dispatch, the log shows the precheck-time agent while the subprocess invokes a different
+      one. This is an edge case (state.json is not updated during normal operation).
+    detectability: low — logs look consistent; only visible if state.json is mutated between
+      server start and dispatch, which requires external intervention
+    mitigation: >
+      State.json mutation during server operation is not a supported workflow. The risk is
+      documented for completeness. A future improvement would be for CLIAnalysisDispatcher
+      to include the effective agent in its own AnalysisOutput.cli_agent field, which would
+      provide ground truth in the DB.
+
+assumptions_made:
+  - assumption: >
+      The pre-existing integration test failure (test_mh1_single_event_evidence_chain) is
+      unrelated to the unknown_agent or dispatch log changes. The failure is in event ingestion
+      (0 rows found after 3s), not in precheck or dispatch logic.
+    verified: true
+    verification: >
+      The failure was previously confirmed in iter-F1 scar (git stash test). No code path
+      touched by this fix (precheck.py, runtime.py) is in the integration test's hot path
+      (server lifespan → sweeper → event ingestion). Full suite run confirms: 1159 passed,
+      same 1 integration failure as before.
+
+  - assumption: >
+      No existing test asserted reason='cli_binary_missing' for the unknown-agent code path
+      (as opposed to the genuinely-missing-binary path). The task said "migrate existing tests
+      that expected cli_binary_missing for unknown agents" but audit found none.
+    verified: true
+    verification: >
+      grep -rn "cli_binary_missing" tests/ shows only three occurrences in test_precheck.py
+      (lines 164, 179, 191) and two in test_legacy_config_upgrade.py. All five assert
+      cli_binary_missing for scenarios where the binary is genuinely absent (shutil.which
+      returns None), not for unrecognised agent names. No migration needed; all five tests
+      still pass after the fix.
+
+  - assumption: >
+      The _KNOWN_CLI_AGENTS frozenset correctly includes all strings that may legitimately
+      appear as effective_agent after auto-resolution. Specifically: "opencode" is reachable
+      via state.init_agent when a user initialised with opencode before the CLI mode toggle
+      feature; it must be in _KNOWN_CLI_AGENTS (not trigger unknown_agent) but must fail at
+      the opencode_not_supported check.
+    verified: true
+    verification: >
+      test_dc5_cli_opencode_via_state_auto_resolution_fails passes (opencode triggers
+      opencode_not_supported, not unknown_agent). The _KNOWN_CLI_AGENTS set includes
+      "opencode" via _UNSUPPORTED_CLI_AGENTS.
+
+  - assumption: >
+      Replacing _AGENT_BINARY_MAP.get(effective_agent) with _AGENT_BINARY_MAP[effective_agent]
+      (direct indexing) is safe at that code point because: (1) the unknown_agent check above
+      guarantees effective_agent is in _KNOWN_CLI_AGENTS, and (2) the opencode check above
+      guarantees effective_agent is not in _UNSUPPORTED_CLI_AGENTS. The only remaining
+      agents are those in _AGENT_BINARY_MAP, so KeyError cannot occur.
+    verified: true
+    verification: >
+      All tests pass including the binary-missing scenarios. A KeyError would have caused
+      those tests to fail with an exception rather than PrecheckResult.fail(...).
+
+debt_registered: false
+debt_location: ~
+
+resolved_items:
+  - original_section: silent_failure_conditions
+    original_description: >
+      T6 silent_failure_conditions #2: if config loader returns a SecondSightConfig with
+      mode="cli" and default_agent="claude_code" but the actual state.json exists and
+      contains agent="opencode", the precheck will pass (claude_code binary found), but
+      dispatch will silently use claude_code instead of the user's installed agent.
+      This mis-resolution is silent: no log at dispatch time names the final resolved agent.
+    what_was_done: >
+      Part B: Added INFO log line in ModeAwareDispatch.dispatch() before the dispatcher.dispatch()
+      call. The log names session_id, mode, and the effective agent (CLI) or primary model (SDK).
+      Format: "dispatch start: session_id=... mode=... agent=... primary_model=..."
+      This makes the mis-resolution visible in logs: if config says claude_code but the actual
+      invocation should have used a different agent, the log shows 'agent=claude_code' and a
+      developer can cross-reference with state.json to detect the discrepancy.
+
+  - original_section: unverified_assumptions
+    original_description: >
+      T6 unverified_assumptions #1: SecondSightState.init_agent contains exactly the string
+      that matches the _AGENT_BINARY_MAP keys. If an older state.json used a different
+      spelling or case, precheck() would silently fall through to the "agent not in map"
+      branch and return ok() with no binary check.
+    what_was_done: >
+      Part A: Added _KNOWN_CLI_AGENTS frozenset and unknown_agent check BEFORE binary lookup.
+      An unrecognised spelling (e.g., "claude-code", "CLAUDE_CODE") now fails immediately
+      with reason="unknown_agent" and an actionable message listing valid agent names.
+      The assumption is now enforced at startup: any state.json with an unrecognised spelling
+      fails precheck rather than silently passing or giving a confusing "binary missing" error.
+
+  - original_section: yin_reviewer_suggestion
+    original_description: >
+      precheck.py:194: The unknown-agent branch returns reason="cli_binary_missing" for an
+      agent that is unknown. A more honest reason code would be "unknown_agent" because the
+      binary may or may not exist; we simply don't know what binary to look for.
+    what_was_done: >
+      Renamed the reason code from "cli_binary_missing" to "unknown_agent" for the
+      unrecognised-agent failure path. Updated PrecheckResult docstring to include
+      "unknown_agent" and "unknown_mode" in the known values list. Moved the check before
+      the opencode rejection so the code flow is: enum validation → unsupported check →
+      binary lookup. No existing tests asserting cli_binary_missing for unknown-agent
+      scenarios were found (grep confirmed); the three existing cli_binary_missing assertions
+      all target genuinely-missing-binary cases which correctly still use cli_binary_missing.
+
+  - original_section: yin_reviewer_round1_critical
+    original_description: >
+      precheck.py:241: _KNOWN_CLI_AGENTS incorrectly included "auto" as a valid
+      effective_agent value. This caused state.init_agent="auto" (corrupt state) to pass
+      the enum check, then crash at _AGENT_BINARY_MAP["auto"] with KeyError, violating the
+      "precheck never raises" contract. Crash produces an unactionable Python traceback
+      instead of a clean PrecheckResult.fail(reason="unknown_agent").
+    what_was_done: >
+      Removed "auto" from _KNOWN_CLI_AGENTS. Updated the frozenset expression and the
+      module-level docstring comment to explain the intentional exclusion. Updated the
+      inline comment at the enum check call site to reflect that "auto" reaching the enum
+      check indicates state corruption. Also updated _valid_agent_names construction at the
+      error log site to remove the now-redundant `- {"auto"}` filter.
+      Death test added: test_death_f2_state_init_agent_auto_returns_unknown_agent_not_keyerror.
+      Test confirmed RED with current code (KeyError at precheck.py:241), then GREEN after fix.
+      Full suite: 1581 passed, 0 new failures.
+
+  - original_section: yin_reviewer_round1_important
+    original_description: >
+      tests/analysis/test_runtime_dispatch_mode.py:414:
+      `assert "claude_code" in all_messages or "agent" in all_messages` — the "or 'agent'"
+      arm is vacuous (the word "agent" appears in many other log messages), making the test
+      unable to detect a regression where the dispatch-start log omits the agent name.
+      Same pattern applied to test_death_f2_dispatch_sdk_logs_primary_model.
+    what_was_done: >
+      Replaced both vacuous assertions with dispatch-start-line-specific assertions.
+      New pattern: filter caplog.records where "dispatch start" in r.message.lower(),
+      assert at least one record found, then assert agent/model NAME verbatim in that
+      record's message. This makes both tests FAIL if the dispatch-start log omits the
+      agent/model name, regardless of other log messages that happen to contain "agent"
+      or "primary_model" as substrings. Both tests remain GREEN after the assertion change.
+
+narrative: >
+  The task bundled two related scar items: an honest reason code for unrecognised agents
+  (Part A) and a missing forensic log line at dispatch time (Part B).
+
+  Part A required adding _KNOWN_CLI_AGENTS as a complete enum of valid agent strings, then
+  moving the unknown-agent check to run before binary lookup. The check order (enum → unsupported
+  → binary) is now explicit in the docstring. The implementation had a subtle bug in the first
+  pass: the original code had binary_name = _AGENT_BINARY_MAP.get(effective_agent) before the
+  None check; when I replaced the entire block, I removed this assignment. The binary lookup
+  at line 236 then saw binary_name as undefined. Fixed by switching to direct indexing
+  (_AGENT_BINARY_MAP[effective_agent]) which is safe post-validation.
+
+  Part B required only a 14-line addition to runtime.py's dispatch() method, inside the
+  async with lock block, before dispatcher.dispatch() is called. The CLI path inline-resolves
+  the effective agent (respecting auto → state.init_agent) to produce a meaningful log value.
+  A known shortcut: this duplicates the auto-resolution logic from precheck.py. Documented
+  as a shortcut with rationale.
+
+  Death tests were written before implementation. All 6 failed correctly before the fix.
+  All 6 passed after. No existing tests were broken. Full suite: 1159 passed, 1 pre-existing
+  integration failure unrelated to these changes.

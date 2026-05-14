@@ -15,8 +15,6 @@ All bad config states produce PrecheckResult.fail(...), not exceptions.
 
 from __future__ import annotations
 
-import shutil
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -290,7 +288,9 @@ def test_dc7_sdk_fail_message_hints_at_env_injection() -> None:
     assert not result.is_ok
     assert result.reason == "no_providers"
     # Must mention environment variable injection pattern
-    assert "${" in result.message or "env" in result.message.lower() or "ANTHROPIC" in result.message
+    assert (
+        "${" in result.message or "env" in result.message.lower() or "ANTHROPIC" in result.message
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -447,3 +447,148 @@ def test_precheck_never_raises_on_unexpected_agent_name() -> None:
         assert not result.is_ok
     except Exception as exc:
         pytest.fail(f"precheck() raised unexpectedly: {type(exc).__name__}: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# DEATH TESTS — F2 Part A: unknown agent names return reason="unknown_agent"
+# (not "cli_binary_missing") — iter-F2 scar fix
+# ---------------------------------------------------------------------------
+
+
+def test_death_f2_hyphen_typo_in_state_returns_unknown_agent() -> None:
+    """Death test F2: state.init_agent='claude-code' (hyphen typo) with default_agent='auto'
+    must return fail(reason='unknown_agent'), NOT ok() and NOT cli_binary_missing.
+
+    Silent failure path: if this returns ok(), dispatch proceeds with a string that
+    no dispatcher recognises, and the session is silently mis-routed or crashes at
+    subprocess invocation time with a cryptic error.
+    """
+    from secondsight.config.precheck import precheck
+
+    config = _make_cli_config(mode="cli", default_agent="auto")
+    state = _make_state(agent="claude-code")  # hyphen typo — not in _AGENT_BINARY_MAP
+
+    result = precheck(config=config, state=state)
+
+    assert not result.is_ok, (
+        "precheck() must fail for unknown agent 'claude-code' (hyphen typo). "
+        "If it returns ok(), dispatch will silently mis-route the session."
+    )
+    assert result.reason == "unknown_agent", (
+        f"Expected reason='unknown_agent' for unrecognised agent name. "
+        f"Got reason={result.reason!r}. "
+        f"'cli_binary_missing' is dishonest: we don't know which binary to look for."
+    )
+
+
+def test_death_f2_uppercase_returns_unknown_agent() -> None:
+    """Death test F2: state.init_agent='CLAUDE_CODE' (case mismatch) must return
+    fail(reason='unknown_agent').
+
+    Silent failure path: if this returns ok() due to a case-insensitive lookup,
+    dispatch uses the wrong agent string. If it returns cli_binary_missing, the
+    operator misdiagnoses the problem as a missing binary rather than a config typo.
+    """
+    from secondsight.config.precheck import precheck
+
+    config = _make_cli_config(mode="cli", default_agent="auto")
+    state = _make_state(agent="CLAUDE_CODE")  # uppercase — not in _AGENT_BINARY_MAP
+
+    result = precheck(config=config, state=state)
+
+    assert not result.is_ok, (
+        "precheck() must fail for unknown agent 'CLAUDE_CODE' (case mismatch)."
+    )
+    assert result.reason == "unknown_agent", (
+        f"Expected reason='unknown_agent' for unrecognised agent name. "
+        f"Got reason={result.reason!r}."
+    )
+
+
+def test_death_f2_unknown_default_agent_in_config_returns_unknown_agent() -> None:
+    """Death test F2: default_agent='gemini_cli' (unknown) must return fail(reason='unknown_agent').
+
+    Silent failure path: if this returns cli_binary_missing, the user sees 'install gemini_cli binary'
+    when the real problem is that gemini_cli is not a supported agent at all.
+    """
+    from secondsight.config.precheck import precheck
+
+    config = _make_cli_config(mode="cli", default_agent="gemini_cli")
+    # No state needed — default_agent is explicitly set (not "auto")
+
+    result = precheck(config=config, state=None)
+
+    assert not result.is_ok, (
+        "precheck() must fail for unsupported agent 'gemini_cli'."
+    )
+    assert result.reason == "unknown_agent", (
+        f"Expected reason='unknown_agent' for completely unrecognised agent. "
+        f"Got reason={result.reason!r}."
+    )
+
+
+def test_death_f2_unknown_agent_message_names_valid_agents() -> None:
+    """Death test F2: the failure message for unknown_agent must name the valid options.
+
+    Diagnostic quality test: if the message doesn't name valid agents, the operator
+    cannot fix the problem without reading source code.
+    """
+    from secondsight.config.precheck import precheck
+
+    config = _make_cli_config(mode="cli", default_agent="my_custom_agent")
+
+    result = precheck(config=config, state=None)
+
+    assert not result.is_ok
+    assert result.reason == "unknown_agent"
+    # Message must guide the operator — mention at least one valid agent
+    assert "claude_code" in result.message or "codex" in result.message, (
+        f"Failure message for unknown_agent must list valid agent names. "
+        f"Got: {result.message!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# DEATH TESTS — F3: state.init_agent="auto" (corrupt state) must NOT raise KeyError
+# (iter-F2 round-1 yin-review CRITICAL fix)
+# ---------------------------------------------------------------------------
+
+
+def test_death_f2_state_init_agent_auto_returns_unknown_agent_not_keyerror() -> None:
+    """state.init_agent='auto' must fail with unknown_agent, NOT raise KeyError.
+
+    This is corrupted state: the 'auto' sentinel should only appear in
+    config-level default_agent, never in state.init_agent. If it does,
+    the enum check must reject it cleanly per the 'precheck never raises' contract.
+
+    Silent failure path before this fix:
+      1. default_agent="auto" → resolution branch reads state.init_agent
+      2. state.init_agent="auto" → effective_agent remains "auto"
+      3. "auto" was in _KNOWN_CLI_AGENTS → enum check PASSES
+      4. "auto" not in _UNSUPPORTED_CLI_AGENTS → opencode check PASSES
+      5. _AGENT_BINARY_MAP["auto"] → KeyError: "auto" is not a binary map key
+      6. KeyError propagates → violates "precheck never raises" contract
+      7. Server crashes with raw KeyError traceback instead of actionable fail message
+    """
+    from secondsight.config.precheck import precheck
+
+    config = _make_cli_config(mode="cli", default_agent="auto")
+    state = _make_state(agent="auto")  # corrupt: "auto" should never appear in state.init_agent
+
+    # MUST NOT raise KeyError — precheck never raises
+    result = precheck(config=config, state=state)
+
+    assert result.is_ok is False, (
+        "precheck() must return a failure result for corrupted state.init_agent='auto', "
+        "not raise an exception."
+    )
+    assert result.reason == "unknown_agent", (
+        f"Expected reason='unknown_agent' for corrupted state.init_agent='auto'. "
+        f"Got reason={result.reason!r}. "
+        f"The 'auto' sentinel must be caught at the enum check with a clean failure, "
+        f"not cause a KeyError in _AGENT_BINARY_MAP."
+    )
+    assert "auto" in result.message, (
+        f"The failure message must name the problematic value 'auto' so the operator "
+        f"knows what was in state.init_agent. Got: {result.message!r}"
+    )

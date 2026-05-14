@@ -304,8 +304,24 @@ class ModeAwareDispatch:
 
             if mode == "cli":
                 dispatcher = self._get_cli_dispatcher()
+                # Resolve effective agent for the log: prefer explicit default_agent,
+                # fall back to state.init_agent when default_agent="auto".
+                _default_agent = self._config.analysis.cli.default_agent
+                if _default_agent == "auto" and self._state is not None:
+                    _effective_agent = self._state.init_agent
+                else:
+                    _effective_agent = _default_agent
+                logger.info(
+                    f"dispatch start: session_id={session_id!r} mode={mode!r} "
+                    f"agent={_effective_agent!r} primary_model=None"
+                )
             elif mode == "sdk":
                 dispatcher = self._get_sdk_dispatcher()
+                _primary_model = self._config.analysis.sdk.primary_model
+                logger.info(
+                    f"dispatch start: session_id={session_id!r} mode={mode!r} "
+                    f"agent=None primary_model={_primary_model!r}"
+                )
             else:
                 # Unknown mode — defensive path (loader validates, but in case bypassed)
                 logger.error(

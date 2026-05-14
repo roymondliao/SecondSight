@@ -20,6 +20,7 @@ Death cases closed here:
     DC5: state.json missing when mode=cli + default_agent="auto" → state_missing
     DC5: CLI binary not in PATH → cli_binary_missing
     DC5: default_agent="opencode" (explicit or via state) → opencode_not_supported
+    DC5: agent name not in _KNOWN_CLI_AGENTS (typo, case mismatch, foreign agent) → unknown_agent
     DC7: All provider keys empty in mode=sdk → no_providers
     DC-PRIMARY-MISSING: sdk.primary_model is empty → primary_model_missing
 
@@ -57,6 +58,19 @@ _AGENT_BINARY_MAP: dict[str, str] = {
 # Agents that are explicitly not supported by CLI dispatch
 _UNSUPPORTED_CLI_AGENTS: frozenset[str] = frozenset({"opencode"})
 
+# Complete set of valid agent strings that may appear as effective_agent AFTER auto-resolution.
+# Includes: supported agents and unsupported-but-recognised agents.
+# Any string NOT in this set is unknown and precheck fails with reason="unknown_agent".
+#
+# NOTE: 'auto' is intentionally EXCLUDED from this set.
+#   'auto' is a config-level sentinel consumed by the resolution branch in _check_cli_mode
+#   BEFORE the enum check runs. The only way effective_agent=='auto' can reach the enum
+#   check is if state.init_agent=='auto' (state corruption). That should fail cleanly with
+#   reason='unknown_agent', not cause a KeyError in _AGENT_BINARY_MAP.
+_KNOWN_CLI_AGENTS: frozenset[str] = (
+    frozenset(_AGENT_BINARY_MAP.keys()) | _UNSUPPORTED_CLI_AGENTS
+)
+
 
 @dataclass(frozen=True)
 class PrecheckResult:
@@ -66,7 +80,8 @@ class PrecheckResult:
         is_ok: True if precheck passed; False if it failed.
         reason: Short machine-readable failure reason. None on success.
             Known values: "state_missing", "cli_binary_missing",
-            "opencode_not_supported", "no_providers", "primary_model_missing".
+            "opencode_not_supported", "no_providers", "primary_model_missing",
+            "unknown_agent", "unknown_mode".
         message: Human-readable description. Non-empty on failure; may be empty/
             "ok" on success. Should be actionable: tell the user what to do.
     """
@@ -152,11 +167,14 @@ def _check_cli_mode(
     2. If default_agent == "auto": read state.init_agent.
        If state is None: fail with state_missing.
 
-    Then:
-    3. If effective agent is "opencode": fail with opencode_not_supported.
-    4. Look up binary in PATH via shutil.which.
+    Then (enum-first validation):
+    3. If effective agent is NOT in _KNOWN_CLI_AGENTS: fail with unknown_agent.
+       This catches typos ("claude-code"), case mismatches ("CLAUDE_CODE"), and
+       completely unknown agents ("gemini_cli") BEFORE any binary lookup.
+    4. If effective agent is "opencode": fail with opencode_not_supported.
+    5. Look up binary in PATH via shutil.which.
        If not found: fail with cli_binary_missing.
-    5. Log resolved binary path at INFO for DC6 forensics.
+    6. Log resolved binary path at INFO for DC6 forensics.
     """
     default_agent = config.analysis.cli.default_agent
 
@@ -180,7 +198,32 @@ def _check_cli_mode(
     else:
         effective_agent = default_agent
 
-    # Reject opencode
+    # Step 0: enum validation — reject any agent string not in the known set.
+    # This runs BEFORE the opencode check and before binary lookup, so the failure
+    # reason is honest: "unknown_agent" means we don't recognise the name at all,
+    # not that a binary is missing (we don't even know what binary to look for).
+    # Catches: typos ("claude-code"), case mismatches ("CLAUDE_CODE"), and
+    # completely foreign agents ("gemini_cli").
+    # NOTE: "auto" is NOT in _KNOWN_CLI_AGENTS (intentionally excluded — see module-level comment).
+    # If effective_agent is "auto" here, it means state.init_agent was "auto" (state corruption).
+    # That will be caught here and rejected with reason="unknown_agent", which is correct.
+    if effective_agent not in _KNOWN_CLI_AGENTS:
+        _valid_agent_names = sorted(_KNOWN_CLI_AGENTS)
+        logger.error(
+            f"precheck [mode=cli]: agent={effective_agent!r} is not a recognised agent name. "
+            f"Valid agent values: {_valid_agent_names}. "
+            f"Check state.json or [analysis.cli].default_agent in config.toml."
+        )
+        return PrecheckResult.fail(
+            reason="unknown_agent",
+            message=(
+                f"agent={effective_agent!r} is not a recognised agent name. "
+                f"Valid: {_valid_agent_names}. "
+                f"Check state.json or [analysis.cli].default_agent in config.toml."
+            ),
+        )
+
+    # Reject opencode (known but not supported in CLI mode)
     if effective_agent in _UNSUPPORTED_CLI_AGENTS:
         logger.error(
             f"precheck [mode=cli]: agent={effective_agent!r} is not supported. "
@@ -195,23 +238,12 @@ def _check_cli_mode(
             ),
         )
 
-    # Look up binary in PATH
-    binary_name = _AGENT_BINARY_MAP.get(effective_agent)
-    if binary_name is None:
-        # Unknown agent name — not opencode, but also not a known agent.
-        # Return a generic failure so the user knows what's wrong.
-        logger.error(
-            f"precheck [mode=cli]: agent={effective_agent!r} is not a recognized agent. "
-            f"Known agents: {sorted(_AGENT_BINARY_MAP.keys())}."
-        )
-        return PrecheckResult.fail(
-            reason="cli_binary_missing",
-            message=(
-                f"agent={effective_agent!r} is not recognized. "
-                f"Valid agents: {sorted(_AGENT_BINARY_MAP.keys())}. "
-                f"Set [analysis.cli].default_agent in config.toml."
-            ),
-        )
+    # Look up binary in PATH — effective_agent is guaranteed to be in _AGENT_BINARY_MAP
+    # at this point: we have passed the unknown_agent check (not in _KNOWN_CLI_AGENTS
+    # implies not in _AGENT_BINARY_MAP), and we have passed the opencode check
+    # (_UNSUPPORTED_CLI_AGENTS agents don't have binaries and are rejected above).
+    # The only remaining agents are those in _AGENT_BINARY_MAP ("claude_code", "codex").
+    binary_name = _AGENT_BINARY_MAP[effective_agent]
 
     resolved_path = shutil.which(binary_name)
     if resolved_path is None:
