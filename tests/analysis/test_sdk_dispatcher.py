@@ -20,8 +20,6 @@ from secondsight.config.schema import (
     AnalysisConfig,
     AnalysisCLIConfig,
     AnalysisSDKConfig,
-    BUILTIN_SDK_FALLBACK_MODEL,
-    BUILTIN_SDK_PRIMARY_MODEL,
 )
 from secondsight.sdk.router import RouterTerminalError
 
@@ -30,10 +28,18 @@ from secondsight.sdk.router import RouterTerminalError
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Test-only model sentinels. We can't use BUILTIN_SDK_PRIMARY_MODEL /
+# BUILTIN_SDK_FALLBACK_MODEL here because those constants are intentionally
+# empty strings (post-2026-05-15 — see test_schema_v2.py for the rationale).
+# The dispatcher needs a model name that _infer_provider() can resolve, so
+# we pick concrete strings whose prefix maps to a known provider.
+_TEST_PRIMARY_MODEL = "claude-haiku-4-5-20251001"
+_TEST_FALLBACK_MODEL = "gpt-4o-mini"
+
 
 def _make_sdk_config(
-    primary_model: str = BUILTIN_SDK_PRIMARY_MODEL,
-    fallback_model: str = BUILTIN_SDK_FALLBACK_MODEL,
+    primary_model: str = _TEST_PRIMARY_MODEL,
+    fallback_model: str = _TEST_FALLBACK_MODEL,
     timeout_seconds: int = 30,
 ) -> AnalysisConfig:
     return AnalysisConfig(
@@ -49,7 +55,7 @@ def _make_sdk_config(
 def _make_valid_output_dict(
     session_id: str = "sess-001",
     status: str = "success",
-    primary_model: str = BUILTIN_SDK_PRIMARY_MODEL,
+    primary_model: str = _TEST_PRIMARY_MODEL,
     fallback_used: bool = False,
     error_details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -244,7 +250,7 @@ async def test_fallback_engaged_when_primary_fails():
         _make_valid_output_dict(
             session_id="sess-fallback",
             status="success",
-            primary_model=BUILTIN_SDK_PRIMARY_MODEL,
+            primary_model=_TEST_PRIMARY_MODEL,
             fallback_used=True,
         )
     )
@@ -318,7 +324,7 @@ def test_make_success_output_dropped_flag_is_counted_and_logged(caplog):
     from secondsight.analysis.schemas import BehaviorFlagDraft
 
     dispatcher = SDKAnalysisDispatcher.__new__(SDKAnalysisDispatcher)
-    dispatcher._primary_model_name = BUILTIN_SDK_PRIMARY_MODEL
+    dispatcher._primary_model_name = _TEST_PRIMARY_MODEL
 
     # 3 flags: 2 valid BehaviorFlagDraft, 1 dict with invalid flag_type
     valid_flag_1 = BehaviorFlagDraft(
@@ -380,7 +386,7 @@ def test_make_success_output_no_drop_gives_no_error_details():
     from secondsight.analysis.schemas import BehaviorFlagDraft
 
     dispatcher = SDKAnalysisDispatcher.__new__(SDKAnalysisDispatcher)
-    dispatcher._primary_model_name = BUILTIN_SDK_PRIMARY_MODEL
+    dispatcher._primary_model_name = _TEST_PRIMARY_MODEL
 
     valid_flag = BehaviorFlagDraft(
         flag_type="unnecessary_read",
@@ -565,16 +571,16 @@ async def test_dc4_attempt_ordering_assertion_fires_on_wrong_order():
 
     dispatcher = SDKAnalysisDispatcher(config=config, resolved_keys=resolved_keys)
 
-    # Primary model name is BUILTIN_SDK_PRIMARY_MODEL ("claude-haiku-4-5-20251001")
+    # Primary model name is _TEST_PRIMARY_MODEL ("claude-haiku-4-5-20251001")
     # Inject wrong order: fallback model appears at attempts[0], primary at attempts[1]
     wrong_order_attempts = [
         AttemptRecord(
-            model_name=BUILTIN_SDK_FALLBACK_MODEL,  # fallback model first — WRONG
+            model_name=_TEST_FALLBACK_MODEL,  # fallback model first — WRONG
             exception_class="ConnectionError",
             duration_ms=100.0,
         ),
         AttemptRecord(
-            model_name=BUILTIN_SDK_PRIMARY_MODEL,  # primary at index 1 — WRONG
+            model_name=_TEST_PRIMARY_MODEL,  # primary at index 1 — WRONG
             exception_class="ConnectionError",
             duration_ms=50.0,
         ),

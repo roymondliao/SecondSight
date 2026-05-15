@@ -97,8 +97,15 @@ BUILTIN_FALLBACK_MODELS: list[str] = ["gpt-4o-mini", "gemini-2.0-flash"]
 # SDK model defaults — single source of truth referenced by both AnalysisSDKConfig
 # defaults and _build_analysis_config fallbacks in loader.py. Updating one of these
 # constants changes both the schema default and the loader fallback simultaneously.
-BUILTIN_SDK_PRIMARY_MODEL: str = "claude-haiku-4-5-20251001"
-BUILTIN_SDK_FALLBACK_MODEL: str = "gpt-4o-mini"
+#
+# Both defaults are empty strings on purpose (2026-05-15 revision):
+# SDK mode calls provider APIs directly, so the operator's provider/model id is
+# not predictable from SecondSight's side. Shipping a non-empty default would
+# silently bind every SDK user to one specific provider's model id — wrong by
+# construction. Empty default → precheck (config/precheck.py:279) rejects sdk mode
+# until the operator explicitly sets a model. Explicit failure beats silent bind.
+BUILTIN_SDK_PRIMARY_MODEL: str = ""
+BUILTIN_SDK_FALLBACK_MODEL: str = ""
 BUILTIN_ANALYSIS_TIMEOUT_SECONDS: int = 300
 
 
@@ -289,11 +296,15 @@ class AnalysisSDKConfig:
 
     Attributes:
         primary_model: Primary model for PydanticAI agent. Required when mode == "sdk".
+            Default "" — see BUILTIN_SDK_PRIMARY_MODEL for why we ship no default.
         fallback_model: Single fallback model. Empty = no fallback (Decision E3:
             collapsed from list to single string).
+            Default "" — same rationale as primary_model.
 
     Defaults reference BUILTIN_SDK_PRIMARY_MODEL and BUILTIN_SDK_FALLBACK_MODEL constants
     so the schema default and loader fallback remain in sync (single source of truth).
+    Both constants are empty strings post-2026-05-15: SDK mode requires explicit
+    operator choice because provider/model is not predictable; precheck enforces.
     """
 
     primary_model: str = BUILTIN_SDK_PRIMARY_MODEL

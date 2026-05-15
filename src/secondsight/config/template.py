@@ -133,10 +133,16 @@ timeout_seconds = 300
 default_agent = "auto"
 
 [analysis.cli.models]
-# 各 agent 的 model 覆蓋。空字串 = 用 agent 自己的預設 model（不傳 --model）。
-# 非空 = 傳 `--model <value>` 給該 agent CLI；同時記錄於 analysis-row metadata。
-claude_code = ""
-codex = ""
+# 各 agent 的 model 覆蓋。空字串 = 用 agent 自己的預設 model（不傳 --model）；
+# 非空 = 傳 `--model <value>` 給該 agent CLI，同時記錄於 analysis-row metadata。
+#
+# 預設 pin 到便宜 model（haiku / mini）：analysis 是高頻支出路徑（每 session、
+# 每批 observation 都跑），若繼承 CLI 自身 default，互動用 Opus/Sonnet 的使用者
+# 會被 analysis 帳單打穿。互動路徑（你用 claude/codex 寫 code）與 analysis 路徑
+# （SecondSight 跑 trace）解耦，各自選自己的 model。
+# 更換前請評估「每筆 analysis 預估 token × 跑頻」對成本的影響。
+claude_code = "claude-haiku-4-5-20251001"
+codex = "gpt-5.4-mini"
 opencode = ""
 
 # -----------------------------------------------------------------------------
@@ -144,9 +150,13 @@ opencode = ""
 # -----------------------------------------------------------------------------
 [analysis.sdk]
 # Primary model for PydanticAI agent. Required when mode == "sdk".
-primary_model = "claude-haiku-4-5-20251001"
+# 空字串為預設值——SDK 模式呼叫 LLM provider API 是 provider-specific 的，
+# 我們不能預判你有哪家 provider credential 或要用什麼 model id，所以不放
+# hardcoded default（CLI 模式不同：CLI 自帶 auth、可放心 pin model）。
+# 切到 sdk 模式前必須在此填入實際 model id；precheck 會擋未填情形。
+primary_model = ""
 # Single fallback model. 空字串 = 不 fallback。
-fallback_model = "gpt-4o-mini"
+fallback_model = ""
 
 # =============================================================================
 # [observation] — Hook capture and session lifecycle

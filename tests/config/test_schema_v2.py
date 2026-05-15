@@ -332,19 +332,25 @@ class TestUTV2Schema4AnalysisCLIConfigDefaults:
 
 
 class TestUTV2Schema5AnalysisSDKConfigDefaults:
-    """UT-v2-schema-5: AnalysisSDKConfig defaults match config.example.toml."""
+    """UT-v2-schema-5: AnalysisSDKConfig defaults match config.example.toml.
+
+    Contract revision 2026-05-15: both defaults are empty strings — SDK mode
+    refuses to ship a provider-bound default (see TestUTV2Schema10... class
+    docstring for the full rationale). precheck enforces explicit operator
+    choice before sdk mode can start.
+    """
 
     def test_primary_model_default(self) -> None:
         from secondsight.config.schema import AnalysisSDKConfig
 
         cfg = AnalysisSDKConfig()
-        assert cfg.primary_model == "claude-haiku-4-5-20251001"
+        assert cfg.primary_model == ""
 
     def test_fallback_model_default(self) -> None:
         from secondsight.config.schema import AnalysisSDKConfig
 
         cfg = AnalysisSDKConfig()
-        assert cfg.fallback_model == "gpt-4o-mini"
+        assert cfg.fallback_model == ""
 
     def test_frozen(self) -> None:
         from secondsight.config.schema import AnalysisSDKConfig
@@ -468,8 +474,8 @@ class TestUTV2Schema10SDKModelConstants:
     """UT-v2-schema-10: SDK model defaults are named constants (single source of truth).
 
     DRY violation from original implementation:
-    - AnalysisSDKConfig.primary_model default: hardcoded "claude-haiku-4-5-20251001"
-    - loader.py _build_analysis_config fallback: hardcoded "claude-haiku-4-5-20251001"
+    - AnalysisSDKConfig.primary_model default: hardcoded model id
+    - loader.py _build_analysis_config fallback: hardcoded model id
     - Same for fallback_model and timeout_seconds
 
     After fix: constants BUILTIN_SDK_PRIMARY_MODEL, BUILTIN_SDK_FALLBACK_MODEL,
@@ -477,6 +483,16 @@ class TestUTV2Schema10SDKModelConstants:
     schema defaults and loader fallbacks.
 
     Death test: before fix, these constants do not exist → ImportError.
+
+    Contract reversal 2026-05-15 — both SDK model constants MUST be empty strings:
+    SDK mode calls provider APIs directly. SecondSight cannot predict which
+    provider/model the operator has access to, so any non-empty default would
+    silently bind every SDK user to one specific provider. The fix is to ship
+    empty defaults and let precheck (config/precheck.py:279) force explicit
+    operator choice. If a future PR repopulates the constants with a real model
+    id, the assertions below break — that's the point.
+    BUILTIN_ANALYSIS_TIMEOUT_SECONDS stays non-zero (timeout has a sane default;
+    provider/model does not).
     """
 
     def test_builtin_sdk_primary_model_constant_exists(self) -> None:
@@ -488,17 +504,32 @@ class TestUTV2Schema10SDKModelConstants:
     def test_builtin_analysis_timeout_seconds_constant_exists(self) -> None:
         from secondsight.config.schema import BUILTIN_ANALYSIS_TIMEOUT_SECONDS  # noqa: F401
 
-    def test_sdk_primary_model_constant_value(self) -> None:
+    def test_sdk_primary_model_constant_is_empty(self) -> None:
+        """Contract: BUILTIN_SDK_PRIMARY_MODEL MUST be empty so precheck forces
+        operator choice. A non-empty default silently binds SDK users to a single
+        provider/model — wrong by construction (see class docstring).
+        """
         from secondsight.config.schema import BUILTIN_SDK_PRIMARY_MODEL
 
         assert isinstance(BUILTIN_SDK_PRIMARY_MODEL, str)
-        assert BUILTIN_SDK_PRIMARY_MODEL  # non-empty
+        assert BUILTIN_SDK_PRIMARY_MODEL == "", (
+            f"BUILTIN_SDK_PRIMARY_MODEL must be '' (empty) so SDK mode requires "
+            f"explicit operator choice. Got {BUILTIN_SDK_PRIMARY_MODEL!r}. "
+            "If you intentionally added a default, also update precheck and "
+            "the rationale comments in schema.py and config.example.toml."
+        )
 
-    def test_sdk_fallback_model_constant_value(self) -> None:
+    def test_sdk_fallback_model_constant_is_empty(self) -> None:
+        """Contract: BUILTIN_SDK_FALLBACK_MODEL MUST be empty for the same
+        reason as primary_model — and additionally because "no fallback" is a
+        valid sdk-mode posture (per Decision E3 collapse to single fallback).
+        """
         from secondsight.config.schema import BUILTIN_SDK_FALLBACK_MODEL
 
         assert isinstance(BUILTIN_SDK_FALLBACK_MODEL, str)
-        assert BUILTIN_SDK_FALLBACK_MODEL  # non-empty
+        assert BUILTIN_SDK_FALLBACK_MODEL == "", (
+            f"BUILTIN_SDK_FALLBACK_MODEL must be '' (empty). Got {BUILTIN_SDK_FALLBACK_MODEL!r}."
+        )
 
     def test_analysis_timeout_constant_value(self) -> None:
         from secondsight.config.schema import BUILTIN_ANALYSIS_TIMEOUT_SECONDS

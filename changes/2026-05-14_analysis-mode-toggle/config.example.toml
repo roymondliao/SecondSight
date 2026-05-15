@@ -18,6 +18,13 @@
 # - E4: Retention defaults shortened (90/365 → 30/60)
 # - E5: [analysis.cli.models] empty values OK — let coding agent use its own
 # default model (refined after E5 superseded by "auto" semantics)
+# - E5 (revised 2026-05-15): pin claude_code/codex defaults to cheap models
+# (haiku-4-5 / gpt-5.4-mini). Analysis is a high-frequency cost path
+# (every session, every observation batch); inheriting the CLI's default
+# means an operator who interactively uses Opus/Sonnet would silently get
+# billed those rates for every analysis run. Pinning decouples interactive
+# from analysis cost. SDK side stays empty because provider/model id
+# cannot be predicted across operator setups.
 # - E6: Per-project config (~/.secondsight/projects/<pid>/config.toml) entirely
 # deferred to follow-up effort (see TODO.md). Only one config.toml exists.
 # - E7: "auto" semantics — resolves to the agent selected at `secondsight init`
@@ -50,12 +57,12 @@ default_agent = "auto"
 # --model). Non-empty = pass `--model <value>` to that agent's CLI invocation.
 # Value is also recorded as analysis-row metadata for telemetry.
 #
-# SecondSight does NOT carry built-in model defaults here — the source of
-# truth for "what model does each agent use by default" lives in each
-# coding agent's own configuration.
+# Defaults pin to cheap models (haiku / mini) per Decision E5 (revised
+# 2026-05-15): analysis is the high-frequency cost path. See header for
+# rationale. To use the CLI's own default instead, set the field to "".
 [analysis.cli.models]
-claude_code = ""
-codex = ""
+claude_code = "claude-haiku-4-5-20251001"
+codex = "gpt-5.4-mini"
 opencode = "" # Schema slot preserved; CLI dispatch out of scope
 
 # -----------------------------------------------------------------------------
@@ -63,11 +70,17 @@ opencode = "" # Schema slot preserved; CLI dispatch out of scope
 # -----------------------------------------------------------------------------
 [analysis.sdk]
 # Primary model for the PydanticAI agent. Required when mode == "sdk".
-primary_model = "claude-haiku-4-5-20251001"
+# Default is empty: SDK mode calls LLM provider APIs directly, which is
+# provider-specific. We can't predict which provider credentials the operator
+# has, nor what cheap-model id their plan exposes — so we refuse to ship a
+# hardcoded default (unlike CLI mode where the bundled CLI carries its own
+# auth and we can safely pin a model). Operator MUST set this before
+# switching to sdk mode; precheck rejects empty primary_model.
+primary_model = ""
 # Single fallback model. Tried once if primary fails (timeout / rate limit /
 # terminal API error). Empty = no fallback. Per Decision B: collapsed from
 # multi-model chain to single fallback to avoid unverified-path rot.
-fallback_model = "gpt-4o-mini"
+fallback_model = ""
 
 # -----------------------------------------------------------------------------
 # [feedback] — Convention injection budgets

@@ -50,12 +50,16 @@ default_agent = "auto"
 # --model). Non-empty = pass `--model <value>` to that agent's CLI invocation.
 # Value is also recorded as analysis-row metadata for telemetry.
 #
-# SecondSight does NOT carry built-in model defaults here — the source of
-# truth for "what model does each agent use by default" lives in each
-# coding agent's own configuration.
+# Defaults pin to cheap models (haiku / mini) on purpose: analysis is the
+# high-frequency cost path (every session, every observation batch). If we
+# inherited the CLI's own default, an operator running Opus/Sonnet for
+# interactive coding would silently get billed Opus/Sonnet rates for every
+# analysis run too. Pinning here decouples the interactive path
+# (you typing into claude/codex) from the analysis path (SecondSight reading
+# traces) — each picks its own model. Evaluate cost impact before changing.
 [analysis.cli.models]
-claude_code = ""
-codex = ""
+claude_code = "claude-haiku-4-5-20251001"
+codex = "gpt-5.4-mini"
 opencode = "" # Schema slot preserved; CLI dispatch out of scope
 
 # -----------------------------------------------------------------------------
@@ -63,11 +67,17 @@ opencode = "" # Schema slot preserved; CLI dispatch out of scope
 # -----------------------------------------------------------------------------
 [analysis.sdk]
 # Primary model for the PydanticAI agent. Required when mode == "sdk".
-primary_model = "claude-haiku-4-5-20251001"
+# Default is empty: SDK mode calls LLM provider APIs directly, which is
+# provider-specific. We can't predict which provider credentials the operator
+# has, nor what cheap-model id their plan exposes — so we refuse to ship a
+# hardcoded default (unlike CLI mode where the bundled CLI carries its own
+# auth and we can safely pin a model). Operator MUST set this before
+# switching to sdk mode; precheck rejects empty primary_model.
+primary_model = ""
 # Single fallback model. Tried once if primary fails (timeout / rate limit /
 # terminal API error). Empty = no fallback. Per Decision B: collapsed from
 # multi-model chain to single fallback to avoid unverified-path rot.
-fallback_model = "gpt-4o-mini"
+fallback_model = ""
 
 # -----------------------------------------------------------------------------
 # [feedback] — Convention injection budgets
