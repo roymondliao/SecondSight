@@ -1,0 +1,85 @@
+feature: "analysis-mode-toggle"
+signal_lost_initial: 42
+
+budget:
+  max_rounds: 3
+  reviewer_retry_limit: 2
+
+rounds:
+  - round: 1
+    signal_lost_before: 42
+    budget_context:
+      remaining_rounds_at_start: 2
+      stagnation_count_at_start: 0
+      net_rot_previous_round: 0
+      strategy_hint: explore  # early round with full budget available
+    items_triaged: 42
+    triage_result:
+      fix:
+        - "F1 (T6 SF#3): analysis_outputs_table import-order silent miss"
+        - "F2 (T6 SF#2 + T6 UA#1 + yin Task 6 Suggestion): precheck unknown_agent reason rename + dispatch-time resolved-agent log"
+        - "F5 (T1 SF#1): loguru→caplog bridge robustness — meta-test + DC12 positive guard"
+        - "F6 (T7 SH#3): write e2e-results.md (documentation deliverable)"
+        - "META (T5 SH#2, SH#3, UA#1 reconciliation): task-5-scar dual-tracking note"
+      accept:
+        - description: "T2 SF#1, SF#2 — JSON schema cannot express cross-field invariants"
+          expiry_date: "2026-08-12"
+          rationale: "Standard JSON schema limitation; runtime validator IS the gate"
+        - description: "T2 SH#1 — error_details: dict[str, Any] not typed sub-model"
+          expiry_date: "2026-08-12"
+          rationale: "MVP simplicity; validator enforces required keys (primary_error, fallback_error for DC4)"
+        - description: "T4 SH#1 — PoC used 10-event payload; production sessions may be larger"
+          expiry_date: "2026-08-12"
+          rationale: "Cannot simulate production-scale traffic; needs real telemetry to validate"
+        - description: "T6 SF#1 — DC10 lock check-then-acquire pattern non-atomic"
+          expiry_date: "2026-08-12"
+          rationale: "asyncio single-thread safe; only unsafe if threading added (separate concern)"
+        - description: "T8 SH#1 — _get_cli_dispatcher caching asymmetry with _get_sdk_dispatcher"
+          expiry_date: "2026-08-12"
+          rationale: "CLI dispatcher construction is cheap (no LLMRouter); benign asymmetry"
+        - description: "T1 SH#5 — FallbackModelsConfig.fallback_models mutable list in frozen dataclass"
+          expiry_date: "2026-08-12"
+          rationale: "Pre-existing pattern not introduced this effort; frozen=True prevents reassignment, mutation possible"
+        - description: "T5 SF#2 — pydantic-ai UnexpectedModelBehavior falls to generic Exception handler"
+          expiry_date: "2026-08-12"
+          rationale: "Correct degradation path; less specific error message is acceptable trade-off"
+        - description: "Bundle: ~13 minor items (test name nits, port hardcoding, doc inconsistencies) across Tasks 6/7/8"
+          expiry_date: "2026-08-12"
+          rationale: "Pre-existing or cosmetic; documented in respective task scars; not blocking ship"
+      defer:
+        - "D1 (T1 SH#1): analysis_global bridge field removal → future analysis-config-cleanup effort after select_model() migrated"
+        - "D2 (T2 SF#3): behavior_flags=[] downstream warn for sessions with >N events → future orchestrator quality-layer effort"
+        - "D3 (T1 SH#3, SH#4): state.json schema_version forward-compat + log_level enum validation → future when log_level/migration mechanism lands"
+        - "D4 (T5 SH#1): fallback_used metric accuracy (router internal retry not exposed) → needs LLMRouter public API change"
+        - "D5 (T5 SH#3): SDKAnalysisDispatcher has no retry loop (asymmetric with CLI) → architectural decision, needs cross-task design"
+        - "D6 (T6 SH#1): _session_locks unbounded growth → needs session lifecycle management design"
+        - "D7 (T6 SH#2): build_project_analysis_runtime reconstruction per call → singleton/DI refactor scope"
+        - "D8 (T7 SF#1): DC4 fallback gated SDK test unverified in CI without SECONDSIGHT_TEST_REAL_LLM=1 → operator-side action (CI config + secrets)"
+    fixes_applied: 5  # F1, F2, F5, F6, META (each per-fix committed)
+    fixes_scar_count: 5  # one scar report per fix: iter-F1, iter-F2, iter-F5, iter-F6, iter-META
+    budget_spent:
+      implementer_dispatches: 6  # F1, F2 round-1, F2 round-2 critical fix, F5, F6, META (META was inline, but listed for accounting)
+      reviewer_dispatches: 10  # F1 (2), F2 r1 (2), F2 r2 (2), F5 (2), F6 (2); META no dispatch (doc hygiene)
+      reviewer_retries: 0
+      validation_runs: 11  # F1, F2 r1, F2 r2, F5, F6, META + 5 commits running test suite
+    evidence_gained:
+      - "F1: 13 new tests pinning storage table registration invariant (subprocess pre-fix verification confirmed silent rot)"
+      - "F1 bonus: analysis_runs had identical gap, fixed in same change"
+      - "F2: 7 new death tests (state.init_agent='auto' KeyError prevented; unknown_agent honest reason code; dispatch-time effective-agent log)"
+      - "F2 round-2: caught Critical regression introduced by F2 round-1 (state.init_agent='auto' triggers KeyError); removed 'auto' from _KNOWN_CLI_AGENTS"
+      - "F5: meta-test breakage simulation confirmed detection (loguru.add removed → test fails with actionable message)"
+      - "F6: e2e-results.md captures 16 non-gated + 2 gated CLI + 3 gated SDK skipped (honest PARTIAL status)"
+      - "META: task-5-scar dual-tracking pattern documented; aggregation over-count of 3 items corrected"
+    residual_risk:
+      - "Iteration aggregation across older + newer resolved_items conventions (field-name inconsistency in task-5-scar) — future iteration tools may re-trigger META reconciliation"
+      - "test_legacy_config_serve_passes_precheck_with_binary still has unused caplog parameter (yin reviewer's Important finding deferred per minimal_fix)"
+      - "test_dispatch_uses_codex_when_configured in test_cli_dispatcher.py is still vacuously passing (yin reviewer's Important finding from Task 4 round-2 — deferred)"
+      - "Test counts diverged across runs (1159 / 1485 / 1542 / 1581 / 1582 / 1812) — partly explained by test collection scope, partly unexplained"
+    signal_lost_after: 33
+    decision: stop
+    decision_reason: "Human gate (user chose B): all remaining 33 items are already triaged as Accept (with 2026-08-12 expiry) or Defer (to follow-up efforts). Round 2 has no Fix candidates. Per safety valve assessment: signal_lost decreased monotonically (42 → 33), no stagnation, net rot negative, within max_rounds. Proceeding to samsara:security-privacy-review."
+
+# Iteration ended after round 1 by human choice.
+# 5 fixes applied, 8 accepts with 2026-08-12 expiry, 8 defers carried forward.
+# signal_lost reduction: 42 → 33 (21%).
+# Next gate: security-privacy-review.
