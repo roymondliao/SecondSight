@@ -14,12 +14,13 @@ Death tests — silent failure paths first:
   DT-init-3: config.toml does not exist → write_config_if_needed() creates it
               and the result is parseable by tomllib.load() (valid TOML).
 
-  DT-init-4: generated config.toml contains all expected top-level sections:
-              [retention], [analysis], [analysis.models],
-              [analysis.models.fallback], [analysis.read_project_file].
-              This is tested against the template string directly (not through
-              write_config_if_needed, to keep template and writer independently
-              testable).
+  DT-init-4: generated config.toml contains all expected top-level sections.
+              The exhaustive schema-coverage check lives in
+              test_template_schema_contract.py (compares against the locked
+              config.example.toml). This test only smoke-checks that the
+              template has the major sections that operators need to find;
+              it gives a faster failure signal when generate_config_template()
+              is touched directly without running the full contract test.
 
   DT-init-5: config.toml exists and has ALL template keys already → diff is
               empty → write_config_if_needed() returns an "already up-to-date"
@@ -140,36 +141,39 @@ def test_death_generated_config_is_valid_toml(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+# Smoke-test list of top-level sections operators expect to see when they
+# `cat ~/.secondsight/config.toml` for the first time. The full schema
+# coverage check (key-set equality against the locked example) lives in
+# test_template_schema_contract.py; this constant is intentionally a SUBSET
+# focused on the most operator-visible sections.
 _EXPECTED_SECTIONS = [
-    "retention",
+    "general",
+    "providers",
     "analysis",
-    "analysis.models",
-    "analysis.models.fallback",
-    "analysis.read_project_file",
+    "retention",
+    "server",
 ]
 
 
 def test_death_generated_config_contains_all_expected_sections(tmp_path: Path) -> None:
-    """The generated config.toml must contain all sections required by the schema.
+    """The generated config.toml must contain the major operator-facing sections.
     A missing section would mean operators have no template to edit and would
-    be silently unable to configure that subsystem.
+    be silently unable to configure that subsystem. This is a smoke test —
+    test_template_schema_contract.py owns the exhaustive schema match.
     """
     from secondsight.config.template import generate_config_template
 
     template_str = generate_config_template()
-
-    # Parse the template to verify sections
     data = tomllib.loads(template_str)
 
-    assert "retention" in data, "template must have [retention] section"
+    assert "general" in data, "template must have [general] section (mode + log_level)"
+    assert "mode" in data["general"], "template must have general.mode (cli|sdk dispatch)"
+    assert "providers" in data, "template must have [providers.*] sections (SDK auth)"
     assert "analysis" in data, "template must have [analysis] section"
-    assert "models" in data["analysis"], "template must have [analysis.models] section"
-    assert "fallback" in data["analysis"]["models"], (
-        "template must have [analysis.models.fallback] section"
-    )
-    assert "read_project_file" in data["analysis"], (
-        "template must have [analysis.read_project_file] section"
-    )
+    assert "cli" in data["analysis"], "template must have [analysis.cli] subsection"
+    assert "sdk" in data["analysis"], "template must have [analysis.sdk] subsection"
+    assert "retention" in data, "template must have [retention] section"
+    assert "server" in data, "template must have [server] section (host/port/auto_start)"
 
 
 # ---------------------------------------------------------------------------
@@ -310,18 +314,28 @@ def test_get_template_keys_contains_expected_leaf_keys() -> None:
     from secondsight.config.template import get_template_keys
 
     keys = get_template_keys()
+    # Sentinel keys spanning every major section of the locked schema. The
+    # exhaustive set match lives in test_template_schema_contract.py; this set
+    # is a smaller hand-picked sample (one or two per section) for fast
+    # localized failure when only get_template_keys() is touched.
     expected = {
+        "general.mode",
+        "general.log_level",
+        "providers.anthropic.ANTHROPIC_API_KEY",
+        "providers.openai.OPENAI_API_KEY",
+        "providers.custom.API_KEY",
+        "analysis.timeout_seconds",
+        "analysis.cli.default_agent",
+        "analysis.cli.models.claude_code",
+        "analysis.sdk.primary_model",
+        "analysis.sdk.fallback_model",
+        "observation.session_timeout_minutes",
+        "server.host",
+        "server.port",
+        "storage.sqlite.cache_size_mb",
+        "feedback.convention_injection_budget",
         "retention.raw_traces_ttl_days",
         "retention.analysis_ttl_days",
-        "retention.cleanup_after_analysis",
-        "analysis.default_agent",
-        "analysis.models.claude_code",
-        "analysis.models.codex",
-        "analysis.models.opencode",
-        "analysis.models.fallback.fallback_models",
-        "analysis.read_project_file.enabled",
-        "analysis.read_project_file.size_cap_kb",
-        "analysis.read_project_file.denylist",
     }
     missing_from_keys = expected - keys
     assert not missing_from_keys, (

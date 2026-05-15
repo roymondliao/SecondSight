@@ -1,0 +1,55 @@
+bug_id: init-template-schema-drift
+
+reproduction:
+  steps:
+    - "rm ~/.secondsight/config.toml"
+    - "uv run secondsight init"
+    - "diff <(tomllib.loads ~/.secondsight/config.toml | flatten keys) <(SecondSightConfig dataclass field paths)"
+  expected: "key sets 一致"
+  actual: "template 缺 ~13 個 schema field paths；template 多出 ~3 個 schema 已廢除的 path"
+
+root_cause:
+  primary: |
+    src/secondsight/config/template.py:_TEMPLATE 是 hardcoded TOML 字串，
+    在 2026-05-13 config-unification task-4 寫定。
+    2026-05-14 analysis-mode-toggle task-1 重構 schema.py 加入新 dataclass
+    (GeneralConfig, ProvidersConfig, AnalysisConfig.cli/sdk, etc.) 並產出
+    changes/2026-05-14_analysis-mode-toggle/config.example.toml 作為新真相，
+    但**未同步更新 template.py 的 _TEMPLATE 字串**。
+
+structural_cause: |
+  Template 與 schema 是兩個獨立的真相來源 (two sources of truth)。
+  schema.py 是 dataclass 真相（runtime loader 用）；template.py 是 init 真相
+  （operator 看到的 onboarding 範本）。兩者沒有任何 enforced contract —
+  既無 test 強制覆蓋率，也無 codegen 自動序列化，更無編譯期/import 期 check。
+  Schema 改動時 template 是「人類記憶責任」，這在多人/多輪迭代下必然腐爛。
+
+why_hidden_so_long:
+  - "Loader 對缺失欄位有兼容性 fallback：unknown sections 被忽略，缺失 sections 走 builtin defaults — 沒有 raise，沒有 warn 到 operator 視野"
+  - "DT-init-4 (tests/config/test_template.py:17-22) 把舊 section 寫死為期待值，等於 template 自己跟自己對齊，永遠 pass"
+  - "write_config_if_needed 的 diff-protection 單向比對 (template ⊆ existing)：template 自己過時時，既有檔案匹配舊 template 反而回報 up-to-date"
+  - "兩個 task-1 (config-unification 與 analysis-mode-toggle) 共用相同 file 名 (schema.py, loader.py)，但 template.py 只屬於前者 — 後者 task-1 沒有顯式 'must update template' 條目"
+
+timeline:
+  - "2026-05-13: config-unification task-4 lands → _TEMPLATE 初稿"
+  - "2026-05-14: analysis-mode-toggle 1-kickoff 鎖定新 schema (Decisions A-E)"
+  - "2026-05-14: analysis-mode-toggle task-1 lands schema dataclass 重構 + config.example.toml"
+  - "2026-05-14~15: 後續 task 接 loader / precheck，皆未碰 template.py"
+  - "2026-05-15: operator 注意到 init 產出與 example 不符 → bug report"
+
+hypothesis_for_fix:
+  statement: |
+    若把 _TEMPLATE 重寫為符合 mode-toggle locked schema，且加入一個 contract
+    test「SecondSightConfig 的所有 field path == get_template_keys() 的所有
+    leaf key」，下一次 schema 改動時若 template 沒跟上，contract test 立刻
+    fail，防止 silent rot 復發。
+  death_test:
+    location: tests/config/test_template_schema_contract.py (new)
+    description: |
+      新測試列舉 SecondSightConfig dataclass 樹的所有 leaf field path，
+      呼叫 get_template_keys() 取得 template 的 leaf paths，assert 兩者
+      完全相等（不是子集關係，是雙向 set equality）。
+      在 fix 前，此 test 必須 fail (因為 template 缺 ~13 個 path 且多 ~3 個)。
+      在 fix 後，此 test 必須 pass。
+
+next_phase: hypothesis-and-death-test

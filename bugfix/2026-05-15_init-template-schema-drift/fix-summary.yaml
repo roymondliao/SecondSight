@@ -1,0 +1,132 @@
+bug_id: init-template-schema-drift
+fixed_at: "2026-05-15"
+fix_scale: "medium (~155 LoC changed across 3 files)"
+fix_type: inline  # < 200 LoC, root cause clear, no new packages/abstractions
+
+changes:
+  - file: src/secondsight/config/template.py
+    lines_changed: ~90
+    summary: |
+      Replaced _TEMPLATE TOML string. New shape mirrors the locked schema in
+      changes/2026-05-14_analysis-mode-toggle/config.example.toml (sections:
+      [general], [providers.anthropic|openai|custom], [analysis] with
+      timeout_seconds + [analysis.cli] + [analysis.sdk], [observation],
+      [server], [storage.sqlite], [feedback], [retention] with 30/60 defaults).
+      Removed obsolete sections ([analysis.models], [analysis.models.fallback],
+      [analysis.read_project_file]) and obsolete key (retention.cleanup_after_analysis).
+      Reordered sections into operator-reading order (mode → secrets → analysis
+      → runtime → storage → retention). Operator-facing comment header preserved.
+
+  - file: tests/config/test_template_schema_contract.py
+    lines_changed: ~120 (new file)
+    summary: |
+      Contract test pinning generate_config_template() against the locked
+      example file: tomllib.loads(template) leaf keys MUST equal
+      tomllib.loads(LOCKED_EXAMPLE_PATH) leaf keys. Failure messages list
+      missing/extra keys in the diff for fast triage. LOCKED_EXAMPLE_PATH is
+      a module constant near the top of the test for easy update if the
+      change folder is later archived.
+
+  - file: tests/config/test_template.py
+    lines_changed: ~45
+    summary: |
+      Updated DT-init-4 + _EXPECTED_SECTIONS smoke-test constant to reflect
+      new top-level sections (general, providers, analysis, retention, server).
+      Updated test_get_template_keys_contains_expected_leaf_keys hand-picked
+      sentinel set to one or two keys per section. Docstring now explicitly
+      notes that test_template_schema_contract.py owns the exhaustive check.
+
+verification:
+  death_test_runs:
+    - "Before fix: test_template_keys_equal_locked_example_keys FAILED with 20 missing + 9 obsolete keys"
+    - "After fix: test_template_keys_equal_locked_example_keys PASSED"
+  full_suite: "258 passed, 0 failed in tests/config/"
+  round_trip:
+    - "secondsight init against tmp home → config loads via load_global_config() → all new fields resolve correctly (mode=cli, retention=30/60, analysis.sdk.primary_model=claude-haiku-4-5-20251001)"
+    - "Second init against same home → 'up-to-date' message (idempotent)"
+    - "init against user's existing old config → 20 new keys listed, file NOT overwritten (case 4 protection works)"
+
+silent_failure_conditions:
+  - condition: |
+      Schema dataclass adds a new field but the matching key is NOT added to
+      changes/2026-05-14_analysis-mode-toggle/config.example.toml.
+    effect: |
+      Contract test will NOT catch this — it pins template against the example
+      file, not against the dataclass tree. The new field will fall through
+      to its dataclass default at runtime, silently. The next schema-changing
+      effort should establish the new locked example file as part of its
+      planning gate (same pattern as 2026-05-14_analysis-mode-toggle).
+    mitigation: |
+      Loader tests (test_loader_v2.py) exercise individual dataclass fields
+      and will fail if the loader cannot construct the dataclass — but the
+      schema → example linkage is human responsibility per effort.
+
+  - condition: |
+      The example file is moved/renamed/archived without updating
+      LOCKED_EXAMPLE_PATH in test_template_schema_contract.py.
+    effect: |
+      Test fails with FileNotFoundError (loud failure, NOT silent). The
+      error message includes update instructions.
+    mitigation: "Test owns its own clear failure mode — acceptable risk."
+
+  - condition: |
+      A future schema effort creates a NEW locked example file (e.g.
+      changes/2026-06-XX_next-effort/config.example.toml) and considers it
+      the new truth, but LOCKED_EXAMPLE_PATH still points to the 2026-05-14
+      file.
+    effect: |
+      Template + old example stay in sync; template silently drifts from
+      the new locked truth. Contract test gives false confidence.
+    mitigation: |
+      Convention: every effort that locks a new config schema MUST update
+      LOCKED_EXAMPLE_PATH in test_template_schema_contract.py (and ideally
+      delete the obsolete example file or mark it 'superseded'). Document
+      this in CLAUDE.md or AGENTS.md when next effort starts.
+
+  - condition: |
+      Template has all the right keys but wrong default VALUES (e.g.
+      retention.raw_traces_ttl_days = 90 when example says 30).
+    effect: |
+      Contract test does NOT catch value drift — only key presence. Operator
+      onboarding gets wrong defaults silently. Acceptable risk: value drift
+      breaks loader-side default tests (test_schema_v2.py, test_loader_v2.py)
+      when they reference the same constants from schema.py.
+
+  - condition: |
+      Template has key X at TYPE A (string), schema/example has key X at
+      TYPE B (list). Same key path, different type.
+    effect: |
+      Contract test does NOT catch type drift. Operator config will parse
+      but the loader will raise SecondSightConfigError at runtime. Documented
+      as Scar-1 in scar-reports/task-4-scar.yaml from config-unification.
+
+accepted_risks:
+  - risk: "LOCKED_EXAMPLE_PATH lives in a changes/ folder. Path will need a one-line update when that folder is archived."
+    accepted_by: human
+    expires: "2026-11-15"
+
+  - risk: "Contract test does not enforce default-value or type equality (see silent_failure_conditions)."
+    accepted_by: human
+    expires: "2026-11-15"
+
+  - risk: |
+      The user's existing ~/.secondsight/config.toml still has the OLD shape
+      (90/365 retention, [analysis.models], [analysis.read_project_file]).
+      `secondsight init` now reports 20 new keys available but DOES NOT
+      auto-merge. Operator must manually copy missing sections from a fresh
+      template or delete the file and re-init. Per user decision: keep file
+      as-is, no auto-migration.
+    accepted_by: human
+    expires: "2026-08-15"
+
+structural_followup:
+  - "Consider replacing the hardcoded _TEMPLATE string with a bundled .toml file (`src/secondsight/config/_template.toml`) so the template is a viewable file rather than a Python string literal. Would also let CI lint the file as TOML. Not required for this fix; logged for future cleanup."
+  - "Consider an `secondsight config migrate` subcommand that takes an old-shape config.toml and emits a new-shape file (with operator-friendly diff prompts). The current 'new keys available, merge manually' UX is honest but unfriendly. Logged for follow-up effort."
+
+related_artifacts:
+  - bugfix/2026-05-15_init-template-schema-drift/bug-report.yaml
+  - bugfix/2026-05-15_init-template-schema-drift/root-cause.yaml
+  - changes/2026-05-14_analysis-mode-toggle/config.example.toml (locked source of truth)
+  - tests/config/test_template_schema_contract.py (anti-rot guard)
+
+phase_status: complete

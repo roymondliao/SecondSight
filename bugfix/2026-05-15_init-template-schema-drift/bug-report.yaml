@@ -1,0 +1,48 @@
+bug_id: init-template-schema-drift
+observed_at: "2026-05-15"
+observer: yuyu_liao
+
+symptom: |
+  `secondsight init` 生成的 ~/.secondsight/config.toml 與 schema.py
+  在 2026-05-14_analysis-mode-toggle 鎖定的最終 schema 不一致。
+  生成的檔案缺少 [general]、[providers.*]、[analysis.cli]、[analysis.sdk]、
+  [observation]、[server]、[storage.sqlite]、[feedback] 等新 sections；
+  且保留了已被廢除的 [analysis.read_project_file] 與 cleanup_after_analysis；
+  retention 的預設值仍是 90/365 而非鎖定的 30/60。
+
+evidence:
+  - "~/.secondsight/config.toml mtime: 2026-05-15 10:42:45 (今天剛 init)"
+  - "檔案內容逐字 == src/secondsight/config/template.py:_TEMPLATE (lines 81-120)"
+  - "src/secondsight/config/schema.py:181-321 定義了 GeneralConfig / ProvidersConfig / AnalysisConfig(cli|sdk) — template 未含"
+  - "changes/2026-05-14_analysis-mode-toggle/config.example.toml = locked schema 真相，與 template 結構差異巨大"
+
+failure_classification:
+  level: 4
+  level_name: "silent rot"
+  rationale: |
+    init 命令正常返回 exit 0、無錯誤訊息、檔案存在且可被 tomllib 解析。
+    write_config_if_needed() 的 diff-protection 對既有檔案回報 "up-to-date"，
+    因為它檢查的是「template 的 key 都在 existing file 裡嗎」，而非「schema 的
+    field 都在 template 裡嗎」。Template 自身腐爛時，protection 邏輯完全失能。
+
+impact_scope:
+  - "每個跑 `secondsight init` 的 operator 在 mode-toggle 後得到的是舊 schema config"
+  - "Server / CLI loader 對缺失 sections 走 builtin defaults (warn-and-ignore 兼容層) — operator 以為自己有控制權，實際被 fallback"
+  - "Onboarding flow 教 operator 對舊欄位修改 (e.g. cleanup_after_analysis)，這些欄位 schema 已不存在"
+
+duration:
+  broken_since: "2026-05-14 (analysis-mode-toggle ship 後)"
+  detection_delay_days: 1
+  detection_method: "operator manual review (非自動偵測)"
+
+accomplices:
+  - file: src/secondsight/config/template.py
+    role: "hardcoded _TEMPLATE 字串，與 schema.py 雙真相分離"
+  - file: tests/config/test_template.py
+    line: "17-22 (DT-init-4)"
+    role: "把舊 section list 寫死為期待值，自己跟自己對齊；不檢查 schema 覆蓋率"
+  - file: src/secondsight/config/template.py
+    function: diff_against_template
+    role: "單向比對 (template ⊆ existing)，無法偵測 schema → template 的腐爛方向"
+
+next_phase: root-cause-tracing
