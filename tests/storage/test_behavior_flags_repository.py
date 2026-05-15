@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Literal
 
 import pytest
 
@@ -23,7 +23,7 @@ def _flag(
     *,
     id: str = "flag-1",
     flag_type: BehaviorFlagType = BehaviorFlagType.UNNECESSARY_READ,
-    confidence: str = "high",
+    confidence: Literal["high", "medium", "low"] = "high",
     project_id: str = "proj-1",
     session_id: str = "sess-1",
     event_ids: list[str] | None = None,
@@ -37,7 +37,7 @@ def _flag(
         event_ids=event_ids if event_ids is not None else ["e1", "e2"],
         intent_summary="fix bug",
         reason="extraneous read",
-        confidence=confidence,  # type: ignore[arg-type]
+        confidence=confidence,
         created_at=_now(),
     )
 

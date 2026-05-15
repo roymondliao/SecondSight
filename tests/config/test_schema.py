@@ -28,6 +28,8 @@ Unit tests:
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 
 
@@ -159,7 +161,7 @@ class TestUTProjectAnalysisConfigDefaults:
 
         cfg = ProjectAnalysisConfig(model="gpt-4o")
         with pytest.raises((AttributeError, TypeError)):
-            cfg.model = "other"  # type: ignore[misc]
+            cast(Any, cfg).model = "other"
 
 
 class TestUTGlobalAnalysisConfigDefaults:

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Iterator
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -44,7 +45,7 @@ def storage_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def storage(storage_dir: Path) -> DualLayerStorage:
+def storage(storage_dir: Path) -> Iterator[DualLayerStorage]:
     """Provide a configured DualLayerStorage instance with on-disk SQLite."""
     config = StorageConfig(
         base_dir=str(storage_dir),
@@ -56,7 +57,7 @@ def storage(storage_dir: Path) -> DualLayerStorage:
 
 
 @pytest.fixture
-def memory_storage(storage_dir: Path) -> DualLayerStorage:
+def memory_storage(storage_dir: Path) -> Iterator[DualLayerStorage]:
     """Provide a storage instance with in-memory SQLite (for fast unit tests only)."""
     config = StorageConfig(
         base_dir=str(storage_dir),
@@ -92,6 +93,11 @@ def _make_event(
     )
 
 
+def _session_id(event: SecondSightEvent) -> str:
+    assert event.session_id is not None
+    return event.session_id
+
+
 # ===========================================================================
 # DEATH TESTS -- Silent failure paths
 # ===========================================================================
@@ -115,7 +121,7 @@ class TestDeathSyncFailure:
         storage.store_event(event)
 
         # Verify event is in both layers
-        events = storage.query_session_events(event.session_id)
+        events = storage.query_session_events(_session_id(event))
         assert len(events) == 1
 
         # Manually delete from SQLite to simulate partial write
@@ -127,7 +133,7 @@ class TestDeathSyncFailure:
 
         # Query through normal path -- should this return 0 events?
         # If it does, we silently lost the event. The filesystem still has it.
-        events_after_delete = storage.query_session_events(event.session_id)
+        events_after_delete = storage.query_session_events(_session_id(event))
 
         # This is the death case: the event EXISTS on filesystem but
         # query returns empty because it only checks SQLite index.
@@ -137,7 +143,7 @@ class TestDeathSyncFailure:
         )
 
         # But the filesystem file should still exist
-        fs_events = storage.scan_filesystem_events(event.session_id)
+        fs_events = storage.scan_filesystem_events(_session_id(event))
         assert len(fs_events) >= 1, "Filesystem should still have the event even if SQLite lost it"
 
     def test_sqlite_write_succeeds_but_filesystem_missing(self, storage: DualLayerStorage) -> None:
@@ -149,22 +155,22 @@ class TestDeathSyncFailure:
         event = _make_event()
         storage.store_event(event)
 
-        events = storage.query_session_events(event.session_id)
+        events = storage.query_session_events(_session_id(event))
         assert len(events) == 1
 
         # Delete the filesystem file
-        session_dir = storage._session_events_dir(event.session_id)
+        session_dir = storage._session_events_dir(_session_id(event))
         for f in Path(session_dir).glob("*.json"):
             f.unlink()
 
         # Query should still work (from SQLite indexed data)
         # but fetching the full event from filesystem should fail gracefully
-        events_after = storage.query_session_events(event.session_id)
+        events_after = storage.query_session_events(_session_id(event))
         # SQLite query should still return indexed data
         assert len(events_after) == 1
 
         # But attempting to load full event from filesystem should report the gap
-        full_event = storage.load_full_event(event.session_id, events_after[0]["filesystem_path"])
+        full_event = storage.load_full_event(_session_id(event), events_after[0]["filesystem_path"])
         assert full_event is None, (
             "load_full_event should return None when filesystem file is missing, "
             "not raise an exception silently swallowed"
@@ -344,11 +350,11 @@ class TestDeathRealTraceData:
         storage.store_event(event)
 
         # Read it back
-        events = storage.query_session_events(event.session_id)
+        events = storage.query_session_events(_session_id(event))
         assert len(events) == 1
 
         # Full event from filesystem should have the complete result
-        full_event = storage.load_full_event(event.session_id, events[0]["filesystem_path"])
+        full_event = storage.load_full_event(_session_id(event), events[0]["filesystem_path"])
         assert full_event is not None
         assert full_event.tool_result == large_output
 
@@ -365,8 +371,8 @@ class TestDeathRealTraceData:
         storage.store_event(event)
 
         # Read back from filesystem and verify nesting is preserved
-        events = storage.query_session_events(event.session_id)
-        full_event = storage.load_full_event(event.session_id, events[0]["filesystem_path"])
+        events = storage.query_session_events(_session_id(event))
+        full_event = storage.load_full_event(_session_id(event), events[0]["filesystem_path"])
         assert full_event is not None
         assert full_event.tool_args == nested_args
 
@@ -394,8 +400,8 @@ class TestDeathRealTraceData:
         storage.store_event(event)
 
         # Read back
-        events = storage.query_session_events(event.session_id)
-        full_event = storage.load_full_event(event.session_id, events[0]["filesystem_path"])
+        events = storage.query_session_events(_session_id(event))
+        full_event = storage.load_full_event(_session_id(event), events[0]["filesystem_path"])
         assert full_event is not None
         assert full_event.content == content_with_unicode
 
@@ -498,11 +504,11 @@ class TestDeathRealTraceData:
         storage.store_event(pre)
         storage.store_event(post)
 
-        events = storage.query_session_events(pre.session_id)
+        events = storage.query_session_events(_session_id(pre))
         assert len(events) == 2
 
         for ev_row in events:
-            full = storage.load_full_event(pre.session_id, ev_row["filesystem_path"])
+            full = storage.load_full_event(_session_id(pre), ev_row["filesystem_path"])
             assert full is not None
 
     def test_real_opencode_db_event_through_storage(
@@ -518,10 +524,10 @@ class TestDeathRealTraceData:
 
         storage.store_event(event)
 
-        events = storage.query_session_events(event.session_id)
+        events = storage.query_session_events(_session_id(event))
         assert len(events) == 1
 
-        full = storage.load_full_event(event.session_id, events[0]["filesystem_path"])
+        full = storage.load_full_event(_session_id(event), events[0]["filesystem_path"])
         assert full is not None
         assert full.token_usage is not None
         assert full.token_usage.cost == 0.0042
@@ -647,7 +653,7 @@ class TestStoreAndQuery:
         event = _make_event()
         storage.store_event(event)
 
-        events = storage.query_session_events(event.session_id)
+        events = storage.query_session_events(_session_id(event))
         assert len(events) == 1
         assert events[0]["session_id"] == event.session_id
         assert events[0]["event_type"] == event.event_type
@@ -712,7 +718,7 @@ class TestStoreAndQuery:
         event.timestamp = None
         storage.store_event(event)
 
-        events = storage.query_session_events(event.session_id)
+        events = storage.query_session_events(_session_id(event))
         assert len(events) == 1
         assert events[0]["timestamp"] is not None
 

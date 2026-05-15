@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator, cast
 
 import pytest
 
@@ -149,7 +149,7 @@ class TestDeathPaths:
         """update_status requires a DirectiveStatus enum, not a string."""
         repo.insert(_directive())
         with pytest.raises(ValueError) as exc:
-            repo.update_status("dir-1", "active")  # type: ignore[arg-type]
+            repo.update_status("dir-1", cast(Any, "active"))
         assert "DirectiveStatus" in str(exc.value)
 
     def test_dt_3_7_insert_rejects_active_with_disabled_metadata(

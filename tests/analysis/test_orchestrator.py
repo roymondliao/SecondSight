@@ -33,7 +33,7 @@ from unittest.mock import patch
 
 import pytest
 
-from secondsight.analysis.agent import AnalysisAgentError
+from secondsight.analysis.agent import AnalysisAgent, AnalysisAgentError
 from secondsight.analysis.prompts.aggregate import AggregateOutput, AggregatePattern
 from secondsight.analysis.prompts.summary import SummaryOutput
 from secondsight.analysis.schemas import (
@@ -218,7 +218,7 @@ def _make_orchestrator(
     directives_repo: DirectivesRepository,
     runs_repo: AnalysisRunsRepository,
     reports_repo: SessionReportsRepository,
-    agent: FakeAnalysisAgent,
+    agent: AnalysisAgent,
     *,
     fake_segmenter=None,
     on_analysis_complete=None,

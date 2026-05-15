@@ -10,6 +10,8 @@ Death tests:
 
 from __future__ import annotations
 
+from typing import cast
+
 import json
 from pathlib import Path
 
@@ -40,7 +42,7 @@ def _secondsight_entry(entries: list[dict[str, object]]) -> dict[str, object]:
         first = hooks[0]
         if not isinstance(first, dict):
             continue
-        command = first.get("command")
+        command = cast(dict[str, object], first).get("command")
         if isinstance(command, str) and SECONDSIGHT_MARKER in command:
             return entry
     raise AssertionError(f"missing SecondSight entry in {entries!r}")

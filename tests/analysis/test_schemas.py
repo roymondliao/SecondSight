@@ -12,6 +12,7 @@ Directive.disabled_at / disabled_reason).
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
@@ -37,8 +38,8 @@ def _now() -> datetime:
     return datetime(2026, 5, 6, 12, 0, 0, tzinfo=timezone.utc)
 
 
-def _flag_kwargs(**overrides: object) -> dict[str, object]:
-    base: dict[str, object] = {
+def _flag_kwargs(**overrides: object) -> dict[str, Any]:
+    base: dict[str, Any] = {
         "id": "flag-1",
         "project_id": "proj-1",
         "session_id": "sess-1",
@@ -54,8 +55,8 @@ def _flag_kwargs(**overrides: object) -> dict[str, object]:
     return base
 
 
-def _directive_kwargs(**overrides: object) -> dict[str, object]:
-    base: dict[str, object] = {
+def _directive_kwargs(**overrides: object) -> dict[str, Any]:
+    base: dict[str, Any] = {
         "id": "dir-1",
         "project_id": "proj-1",
         "type": DirectiveType.CONVENTION,
@@ -352,7 +353,7 @@ class TestRoundTrip:
                 flag_type=BehaviorFlagType.UNNECESSARY_READ,
                 event_ids=[],
                 reason="x",
-                confidence="very-high",  # not in Literal
+                confidence=cast(Any, "very-high"),  # not in Literal
             )
 
     def test_segment_analysis_validates_sd_example(self) -> None:

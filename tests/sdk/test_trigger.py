@@ -670,8 +670,8 @@ async def test_pipeline_callback_fires_on_session_end(
 
     # Build a minimal pipeline with a fake RawTraceStore
     class _FakeRTS:
-        async def write(self, event: Event) -> str:
-            return "/fake/path"
+        async def write(self, event: Event) -> Path:
+            return Path("/fake/path")
 
     class _FakeSyncLog:
         def record_failure(self, *a: object, **kw: object) -> None:
@@ -724,8 +724,8 @@ async def test_pipeline_callback_does_not_fire_on_non_session_end(
     )
 
     class _FakeRTS:
-        async def write(self, event: Event) -> str:
-            return "/fake/path"
+        async def write(self, event: Event) -> Path:
+            return Path("/fake/path")
 
     class _FakeSyncLog:
         def record_failure(self, *a: object, **kw: object) -> None:
@@ -774,8 +774,8 @@ async def test_pipeline_callback_registration_is_idempotent(
     )
 
     class _FakeRTS:
-        async def write(self, event: Event) -> str:
-            return "/fake/path"
+        async def write(self, event: Event) -> Path:
+            return Path("/fake/path")
 
     class _FakeSyncLog:
         def record_failure(self, *a: object, **kw: object) -> None:

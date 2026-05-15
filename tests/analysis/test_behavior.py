@@ -31,7 +31,7 @@ Assumptions:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Literal
 
 import pytest
 
@@ -103,14 +103,14 @@ def _minimal_metrics() -> SegmentMetrics:
 def _make_valid_draft(
     flag_type: BehaviorFlagType = BehaviorFlagType.UNNECESSARY_READ,
     event_ids: list[str] | None = None,
-    confidence: str = "high",
+    confidence: Literal["high", "medium", "low"] = "high",
 ) -> BehaviorFlagDraft:
     """Construct a valid BehaviorFlagDraft through Pydantic (validated)."""
     return BehaviorFlagDraft(
         flag_type=flag_type,
         event_ids=event_ids or ["evt-001"],
         reason="extraneous read",
-        confidence=confidence,  # type: ignore[arg-type]
+        confidence=confidence,
     )
 
 

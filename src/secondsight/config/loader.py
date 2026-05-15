@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import re
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -120,7 +121,7 @@ _VAR_PATTERN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 # ---------------------------------------------------------------------------
 
 
-def _interpolate_vars(value: str, env: dict[str, str]) -> str:
+def _interpolate_vars(value: str, env: Mapping[str, str]) -> str:
     """Expand ${VAR_NAME} references in a single string using env.
 
     Only UPPERCASE variable names are matched ([A-Z_][A-Z0-9_]*). Lowercase
@@ -156,7 +157,7 @@ def _interpolate_vars(value: str, env: dict[str, str]) -> str:
 
 def _interpolate_dict(
     doc: dict[str, Any],
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Recursively expand ${VAR} patterns in all string leaf values of doc.
 
@@ -178,7 +179,7 @@ def _interpolate_dict(
     """
     import os
 
-    resolved_env: dict[str, str] = os.environ if env is None else env
+    resolved_env: Mapping[str, str] = os.environ if env is None else env
     result: dict[str, Any] = {}
     for key, val in doc.items():
         if isinstance(val, str):
@@ -194,7 +195,7 @@ def _interpolate_dict(
 
 def _interpolate_list(
     lst: list[Any],
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> list[Any]:
     """Expand ${VAR} in string elements of a list. Recurses for nested structures.
 
@@ -204,7 +205,7 @@ def _interpolate_list(
     """
     import os
 
-    resolved_env: dict[str, str] = os.environ if env is None else env
+    resolved_env: Mapping[str, str] = os.environ if env is None else env
     out: list[Any] = []
     for item in lst:
         if isinstance(item, str):
@@ -234,7 +235,7 @@ def _load_dotenv_if_exists(dotenv_path: Path) -> None:
         load_dotenv(dotenv_path=dotenv_path, override=False)
 
 
-def _parse_toml(path: Path, env: dict[str, str] | None = None) -> dict[str, Any] | None:
+def _parse_toml(path: Path, env: Mapping[str, str] | None = None) -> dict[str, Any] | None:
     """Read and parse a TOML file, then interpolate ${VAR} patterns.
 
     Args:
@@ -264,7 +265,7 @@ def _parse_toml(path: Path, env: dict[str, str] | None = None) -> dict[str, Any]
 
 def _parse_toml_both(
     path: Path,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Read a TOML file once, returning both the raw and interpolated dicts.
 
@@ -573,8 +574,14 @@ def _build_global_analysis_config(doc: dict[str, Any]) -> GlobalAnalysisConfig:
         fallback_section = {}
 
     fallback_models_raw = fallback_section.get("fallback_models")
-    if isinstance(fallback_models_raw, list):
-        fallback_config = FallbackModelsConfig(fallback_models=list(fallback_models_raw))
+    if isinstance(fallback_models_raw, list) and all(
+        isinstance(model_name, str) for model_name in fallback_models_raw
+    ):
+        fallback_config = FallbackModelsConfig(
+            fallback_models=[
+                model_name for model_name in fallback_models_raw if isinstance(model_name, str)
+            ]
+        )
     else:
         fallback_config = FallbackModelsConfig()
 

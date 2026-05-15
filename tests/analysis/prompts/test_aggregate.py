@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 from pydantic import ValidationError
 
@@ -35,7 +37,7 @@ class TestDeathPaths:
         from the SD vocabulary. The builder rejects with TypeError.
         """
         with pytest.raises(TypeError):
-            build_aggregate_prompt("unnecessary_read", [])  # type: ignore[arg-type]
+            build_aggregate_prompt(cast(Any, "unnecessary_read"), [])
 
     def test_dt_a2_aggregate_pattern_rejects_zero_occurrence_count(
         self,

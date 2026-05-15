@@ -223,9 +223,10 @@ def directive(
             output_format=format,
         )
     elif disable is not None:
+        assert reason is not None
         _handle_disable(
             directive_id=disable,
-            reason=reason,  # type: ignore[arg-type]  # already validated non-empty above
+            reason=reason,
             project_id=project_id,
             secondsight_home=secondsight_home_path,
             no_server=no_server,

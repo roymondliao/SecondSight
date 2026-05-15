@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from secondsight.feedback.hint import Hint, HintSelector
 
 
@@ -19,7 +21,7 @@ class TestHint:
     def test_hint_is_frozen(self) -> None:
         hint = Hint(id="h-1", instruction="test", trigger_pattern="*", confidence=0.5)
         try:
-            hint.id = "h-2"  # type: ignore[misc]
+            cast(Any, hint).id = "h-2"
             assert False, "Should have raised FrozenInstanceError"
         except AttributeError:
             pass

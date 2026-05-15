@@ -25,6 +25,8 @@ shared module. The behaviour is identical.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 
 import pytest
 
@@ -108,7 +110,7 @@ class TestDeathPaths:
         fail at call time, not at construction time.
         """
         with pytest.raises(TypeError):
-            AnalysisAgent()  # type: ignore[abstract]
+            cast(Any, AnalysisAgent)()
 
     def test_dt_2_2_isinstance_conformant_class_true(self) -> None:
         """DT-2.2 — isinstance works for conformant class, rejects bare object.
@@ -186,14 +188,17 @@ class TestDeathPaths:
         with pytest.raises((ValidationError, ValueError)):
             SegmentAnalysis(
                 segment_summary="Bad flag",
-                flags=[
-                    {
-                        "flag_type": "not_a_real_flag_type",
-                        "event_ids": ["evt-001"],
-                        "reason": "some reason",
-                        "confidence": "high",
-                    }
-                ],
+                flags=cast(
+                    Any,
+                    [
+                        {
+                            "flag_type": "not_a_real_flag_type",
+                            "event_ids": ["evt-001"],
+                            "reason": "some reason",
+                            "confidence": "high",
+                        }
+                    ],
+                ),
                 total_events=1,
                 flagged_events=1,
             )

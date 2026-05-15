@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 import pytest
 
@@ -253,7 +253,7 @@ def test_dt7_inject_hint_returns_empty_string() -> None:
     should be updated to verify real formatting logic.
     """
     adapter = ClaudeCodeAdapter()
-    result = adapter.inject_hint(object())  # type: ignore[arg-type]
+    result = adapter.inject_hint(cast(Any, object()))
     assert result == "", f"DT-7: inject_hint should return empty string, got {result!r}"
 
 

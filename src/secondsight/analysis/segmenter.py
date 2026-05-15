@@ -32,19 +32,22 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from typing import Any
+from typing import Any, Protocol
 
 from secondsight.analysis.schemas import SegmentData, ToolUseSpan
 from secondsight.event import Event, EventType
-from secondsight.storage.events_repository import EventsRepository
 
 _logger = logging.getLogger(__name__)
+
+
+class EventsRepoProtocol(Protocol):
+    def get_session_events(self, session_id: str) -> list[Event]: ...
 
 
 class Segmenter:
     """Read-side assembler from events table to SegmentData list."""
 
-    def __init__(self, events_repo: EventsRepository) -> None:
+    def __init__(self, events_repo: EventsRepoProtocol) -> None:
         self._events_repo = events_repo
 
     def segment_session(self, session_id: str) -> list[SegmentData]:

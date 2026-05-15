@@ -933,6 +933,7 @@ class TestMH4LatencyBudget:
         # capture config. Also print to sys.stderr so capture can see it
         # if needed.
         print(histogram_line, file=sys.stderr)
+        assert sys.__stderr__ is not None
         sys.__stderr__.write(histogram_line + "\n")
         sys.__stderr__.flush()
 

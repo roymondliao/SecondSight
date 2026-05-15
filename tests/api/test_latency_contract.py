@@ -372,7 +372,7 @@ def test_death_adapter_valueerror_returns_422(tmp_secondsight_home: Path) -> Non
     from secondsight.adapters import AdapterRegistry, AgentAdapter
     from secondsight.api.server import create_app
     from secondsight.api.registry import ProjectRegistry
-    from secondsight.api.schemas import HookEnvelope
+    from secondsight.api.schemas import IngressEnvelope
     from secondsight.event import EventType
     from secondsight.observation.tracker import PartialEvent
 
@@ -380,7 +380,7 @@ def test_death_adapter_valueerror_returns_422(tmp_secondsight_home: Path) -> Non
         def supports(self, agent: str, event_type: str) -> bool:
             return agent == "test"
 
-        def normalize(self, envelope: HookEnvelope, event_type: str) -> PartialEvent:
+        def normalize(self, envelope: IngressEnvelope, event_type: str) -> PartialEvent:
             raise ValueError("missing required field: test_field")
 
         def supported_event_types(self) -> set[str]:

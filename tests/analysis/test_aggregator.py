@@ -33,7 +33,7 @@ import hashlib
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator, cast
 
 import pytest
 import sqlalchemy as sa
@@ -528,7 +528,7 @@ class TestDT44FlagsReadDisclosure:
 
         result = await aggregate_project_flags(
             _PROJECT_ID,
-            behavior_flags_repo=fake_repo,  # type: ignore[arg-type]
+            behavior_flags_repo=cast(Any, fake_repo),
             directives_repo=directives_repo,
             agent=agent,
         )

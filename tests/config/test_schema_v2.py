@@ -28,6 +28,8 @@ Unit tests (happy path):
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 
 
@@ -260,7 +262,7 @@ class TestUTV2Schema1GeneralConfigDefaults:
 
         cfg = GeneralConfig()
         with pytest.raises((AttributeError, TypeError)):
-            cfg.mode = "sdk"  # type: ignore[misc]
+            cast(Any, cfg).mode = "sdk"
 
     def test_custom_mode(self) -> None:
         from secondsight.config.schema import GeneralConfig
@@ -286,7 +288,7 @@ class TestUTV2Schema2ProviderAnthropicConfigDefaults:
 
         cfg = ProviderAnthropicConfig()
         with pytest.raises((AttributeError, TypeError)):
-            cfg.ANTHROPIC_API_KEY = "sk-test"  # type: ignore[misc]
+            cast(Any, cfg).ANTHROPIC_API_KEY = "sk-test"
 
 
 class TestUTV2Schema3AnalysisCLIModelsConfigDefaults:
@@ -305,7 +307,7 @@ class TestUTV2Schema3AnalysisCLIModelsConfigDefaults:
 
         cfg = AnalysisCLIModelsConfig()
         with pytest.raises((AttributeError, TypeError)):
-            cfg.claude_code = "claude-opus"  # type: ignore[misc]
+            cast(Any, cfg).claude_code = "claude-opus"
 
 
 class TestUTV2Schema4AnalysisCLIConfigDefaults:
@@ -328,7 +330,7 @@ class TestUTV2Schema4AnalysisCLIConfigDefaults:
 
         cfg = AnalysisCLIConfig()
         with pytest.raises((AttributeError, TypeError)):
-            cfg.default_agent = "claude_code"  # type: ignore[misc]
+            cast(Any, cfg).default_agent = "claude_code"
 
 
 class TestUTV2Schema5AnalysisSDKConfigDefaults:
@@ -357,7 +359,7 @@ class TestUTV2Schema5AnalysisSDKConfigDefaults:
 
         cfg = AnalysisSDKConfig()
         with pytest.raises((AttributeError, TypeError)):
-            cfg.primary_model = "other"  # type: ignore[misc]
+            cast(Any, cfg).primary_model = "other"
 
 
 class TestUTV2Schema6AnalysisConfigDefaults:
@@ -386,7 +388,7 @@ class TestUTV2Schema6AnalysisConfigDefaults:
 
         cfg = AnalysisConfig()
         with pytest.raises((AttributeError, TypeError)):
-            cfg.timeout_seconds = 600  # type: ignore[misc]
+            cast(Any, cfg).timeout_seconds = 600
 
 
 class TestUTV2Schema7ProvidersConfigDefaults:
@@ -418,7 +420,7 @@ class TestUTV2Schema7ProvidersConfigDefaults:
 
         cfg = ProvidersConfig()
         with pytest.raises((AttributeError, TypeError)):
-            cfg.anthropic = None  # type: ignore[misc]
+            cast(Any, cfg).anthropic = None
 
 
 class TestUTV2Schema8SecondSightConfigNewFields:
@@ -455,14 +457,14 @@ class TestUTV2Schema9AllDataclassesFrozen:
 
         cfg = ProviderOpenAIConfig()
         with pytest.raises((AttributeError, TypeError)):
-            cfg.OPENAI_API_KEY = "test"  # type: ignore[misc]
+            cast(Any, cfg).OPENAI_API_KEY = "test"
 
     def test_provider_custom_config_frozen(self) -> None:
         from secondsight.config.schema import ProviderCustomConfig
 
         cfg = ProviderCustomConfig()
         with pytest.raises((AttributeError, TypeError)):
-            cfg.API_KEY = "test"  # type: ignore[misc]
+            cast(Any, cfg).API_KEY = "test"
 
 
 # ---------------------------------------------------------------------------

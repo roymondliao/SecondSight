@@ -148,7 +148,7 @@ class TestCursorFlow:
 
         with _client(home) as client:
             for _ in range(10):  # safety bound; real loop should terminate <=4 hops
-                params: dict[str, object] = {"project_id": "p1", "limit": 2}
+                params: dict[str, str | int] = {"project_id": "p1", "limit": 2}
                 if cursor is not None:
                     params["cursor"] = cursor
                 r = client.get("/api/sessions", params=params)

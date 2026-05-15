@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import threading
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 import sqlalchemy as sa
@@ -51,7 +52,7 @@ def test_death_wal_mode_silently_rejected_raises(tmp_path: Path) -> None:
 def test_death_settings_is_frozen(tmp_path: Path) -> None:
     s = StorageSettings(cache_size_mb=64)
     with pytest.raises(dataclasses.FrozenInstanceError):
-        s.cache_size_mb = 128  # type: ignore[misc]
+        cast(Any, s).cache_size_mb = 128
 
 
 def test_death_settings_validates_cache_size_positive() -> None:

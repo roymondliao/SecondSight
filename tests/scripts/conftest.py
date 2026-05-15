@@ -77,7 +77,7 @@ class _FakeHandler(BaseHTTPRequestHandler):
         response = json.dumps({"status": "ok"}).encode()
         self.wfile.write(response)
 
-    def log_message(self, fmt: str, *args: object) -> None:  # noqa: D102
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A002,D102
         pass  # suppress default request logging in test output
 
 

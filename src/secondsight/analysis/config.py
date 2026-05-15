@@ -208,7 +208,7 @@ def _read_string_list(section: dict, key: str, config_path: Path) -> list[str]:
                 f"[analysis.read_project_file].{key}[{i}] in {config_path} must be a string, "
                 f"got {type(item).__name__}: {item!r}"
             )
-    return list(value)
+    return [item for item in value if isinstance(item, str)]
 
 
 __all__ = [

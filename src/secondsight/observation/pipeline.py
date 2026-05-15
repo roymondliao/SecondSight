@@ -29,17 +29,37 @@ This file is intentionally short. The contract IS the implementation.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Awaitable
+from collections.abc import Callable, Coroutine
+from pathlib import Path
+from typing import Protocol
 
 from loguru import logger
 from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 
 from secondsight.event import Event
-from secondsight.storage.events_repository import EventsRepository
 from secondsight.storage.ingress_record import IngressRecord
-from secondsight.storage.raw_ingress_store import RawIngressStore
-from secondsight.storage.raw_trace_store import RawTraceStore
-from secondsight.storage.sync_log import SyncLog
+
+
+class RawIngressStoreProtocol(Protocol):
+    async def write(self, ingress_record: IngressRecord, /) -> object: ...
+
+
+class RawTraceStoreProtocol(Protocol):
+    async def write(self, event: Event, /) -> Path: ...
+
+
+class EventsRepositoryProtocol(Protocol):
+    def insert(self, event: Event, /) -> None: ...
+
+
+class SyncLogProtocol(Protocol):
+    def record_failure(
+        self,
+        event_id: str,
+        raw_trace_path: Path,
+        db_err: BaseException,
+        /,
+    ) -> None: ...
 
 
 class ObservationPipeline:
@@ -58,10 +78,10 @@ class ObservationPipeline:
 
     def __init__(
         self,
-        raw_trace_store: RawTraceStore,
-        events_repository: EventsRepository,
-        sync_log: SyncLog,
-        raw_ingress_store: RawIngressStore | None = None,
+        raw_trace_store: RawTraceStoreProtocol,
+        events_repository: EventsRepositoryProtocol,
+        sync_log: SyncLogProtocol,
+        raw_ingress_store: RawIngressStoreProtocol | None = None,
     ) -> None:
         self._rts = raw_trace_store
         self._repo = events_repository
@@ -69,9 +89,12 @@ class ObservationPipeline:
         self._ris = raw_ingress_store
         # Per-instance callback list. Not class-level to avoid cross-instance
         # contamination in tests. Type: list of async callables.
-        self._post_ingest_callbacks: list[Callable[[Event], Awaitable[None]]] = []
+        self._post_ingest_callbacks: list[Callable[[Event], Coroutine[object, object, None]]] = []
 
-    def add_post_ingest_callback(self, cb: Callable[[Event], Awaitable[None]]) -> None:
+    def add_post_ingest_callback(
+        self,
+        cb: Callable[[Event], Coroutine[object, object, None]],
+    ) -> None:
         """Register an async post-ingest callback.
 
         cb will be called (via asyncio.create_task) after each event is

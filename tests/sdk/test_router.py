@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -259,7 +259,8 @@ class TestDeathPaths:
             ), f"Attempt missing duration_ms: {attempt}"
 
         model_names = [
-            a["model_name"] if isinstance(a, dict) else a.model_name for a in err.attempts
+            cast(dict[str, object], a)["model_name"] if isinstance(a, dict) else a.model_name
+            for a in err.attempts
         ]
         assert "gpt-4o-mini" in model_names
 

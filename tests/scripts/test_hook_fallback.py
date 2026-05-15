@@ -925,7 +925,7 @@ def _make_convention_server(conventions_body: str) -> tuple[int, Any]:
             self.end_headers()
             self.wfile.write(conventions_body.encode())
 
-        def log_message(self, fmt: str, *args: object) -> None:
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
             pass
 
     server = HTTPServer(("127.0.0.1", 0), _Handler)

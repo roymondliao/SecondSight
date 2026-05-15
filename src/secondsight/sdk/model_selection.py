@@ -119,6 +119,31 @@ class EventsRepoProtocol(Protocol):
         ...
 
 
+class FallbackConfigProtocol(Protocol):
+    fallback_models: list[str]
+
+
+class ModelsConfigProtocol(Protocol):
+    claude_code: str
+    codex: str
+    opencode: str
+    fallback: FallbackConfigProtocol
+
+
+class AnalysisConfigProtocol(Protocol):
+    model: str
+    default_agent: str
+    models: ModelsConfigProtocol
+
+
+class ProjectConfigProtocol(Protocol):
+    analysis: AnalysisConfigProtocol
+
+
+class GlobalConfigProtocol(Protocol):
+    analysis: AnalysisConfigProtocol
+
+
 # ---------------------------------------------------------------------------
 # Adapter defaults — SD §5.7.1
 # ---------------------------------------------------------------------------
@@ -311,8 +336,8 @@ def _parse_fallback_models(model_names: list[str]) -> list[ModelSpec]:
 
 def select_model(
     project_id: str,
-    project_config: object,
-    global_config: object,
+    project_config: ProjectConfigProtocol,
+    global_config: GlobalConfigProtocol,
     events_repo: EventsRepoProtocol,
 ) -> tuple[ModelSpec, list[ModelSpec]]:
     """Resolve the primary and fallback model specs for one analysis run.
@@ -347,17 +372,17 @@ def select_model(
         - fallback_models is a list[str], never None (empty list is valid).
     """
     # Step 1: Per-project model override takes highest precedence.
-    project_model: str = project_config.analysis.model  # type: ignore[attr-defined]
+    project_model = project_config.analysis.model
     if project_model:
         primary = ModelSpec(
             name=project_model,
             provider=_infer_provider(project_model),
         )
-        fallback_names: list[str] = global_config.analysis.models.fallback.fallback_models  # type: ignore[attr-defined]
+        fallback_names = global_config.analysis.models.fallback.fallback_models
         return primary, _parse_fallback_models(fallback_names)
 
     # Step 2: Resolve agent_type from global default_agent.
-    agent_type: str = global_config.analysis.default_agent  # type: ignore[attr-defined]
+    agent_type = global_config.analysis.default_agent
 
     # Step 3: If 'auto', detect from most-recent session.
     if agent_type == "auto":
@@ -393,7 +418,7 @@ def select_model(
 
     # Step 4: Look up global per-agent model override, or fall back to adapter default.
     agent_model: str = getattr(
-        global_config.analysis.models,  # type: ignore[attr-defined]
+        global_config.analysis.models,
         agent_type,
         "",
     )
@@ -406,7 +431,5 @@ def select_model(
         primary = _resolve_adapter_default(agent_type)
 
     # Step 5: Resolve fallbacks from global config.
-    fallback_names = (
-        global_config.analysis.models.fallback.fallback_models  # type: ignore[attr-defined]
-    )
+    fallback_names = global_config.analysis.models.fallback.fallback_models
     return primary, _parse_fallback_models(fallback_names)

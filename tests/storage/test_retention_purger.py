@@ -300,12 +300,6 @@ class TestMixedBatchPartialSuccess:
 
         from secondsight.storage import retention as ret_mod
 
-        def selective_boom(repo, session_id):
-            if session_id == "s2":
-                raise sa.exc.OperationalError("DELETE", {}, Exception("synthetic"))
-            return ret_mod._delete_db_events_for_session.__wrapped__(repo, session_id)  # type: ignore[attr-defined]
-
-        # Easier: wrap in a closure that calls the original directly.
         original = ret_mod._delete_db_events_for_session
 
         def gated(repo, session_id):

@@ -17,6 +17,7 @@ is exactly the failure these tests catch.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
@@ -67,14 +68,16 @@ class TestSessionSummary:
 
     def test_rejects_unknown_field(self) -> None:
         with pytest.raises(ValidationError):
-            SessionSummary(
-                session_id="s1",
-                project_id="p1",
-                first_event_at=_ts(0),
-                last_event_at=_ts(10),
-                event_count=5,
-                segment_count=2,
-                bogus_field="x",  # type: ignore[call-arg]
+            SessionSummary.model_validate(
+                {
+                    "session_id": "s1",
+                    "project_id": "p1",
+                    "first_event_at": _ts(0),
+                    "last_event_at": _ts(10),
+                    "event_count": 5,
+                    "segment_count": 2,
+                    "bogus_field": "x",
+                }
             )
 
     def test_is_frozen(self) -> None:
@@ -102,22 +105,26 @@ class TestSessionSummary:
 
     def test_session_id_required(self) -> None:
         with pytest.raises(ValidationError):
-            SessionSummary(  # type: ignore[call-arg]
-                project_id="p1",
-                first_event_at=_ts(0),
-                last_event_at=_ts(0),
-                event_count=0,
-                segment_count=0,
+            SessionSummary.model_validate(
+                {
+                    "project_id": "p1",
+                    "first_event_at": _ts(0),
+                    "last_event_at": _ts(0),
+                    "event_count": 0,
+                    "segment_count": 0,
+                }
             )
 
     def test_project_id_required(self) -> None:
         with pytest.raises(ValidationError):
-            SessionSummary(  # type: ignore[call-arg]
-                session_id="s1",
-                first_event_at=_ts(0),
-                last_event_at=_ts(0),
-                event_count=0,
-                segment_count=0,
+            SessionSummary.model_validate(
+                {
+                    "session_id": "s1",
+                    "first_event_at": _ts(0),
+                    "last_event_at": _ts(0),
+                    "event_count": 0,
+                    "segment_count": 0,
+                }
             )
 
     def test_json_round_trip_preserves_timestamp(self) -> None:
@@ -147,14 +154,16 @@ class TestSessionDetail:
 
     def test_rejects_unknown_field(self) -> None:
         with pytest.raises(ValidationError):
-            SessionDetail(
-                session_id="s1",
-                project_id="p1",
-                first_event_at=_ts(0),
-                last_event_at=_ts(0),
-                event_count=0,
-                segment_count=0,
-                extra="x",  # type: ignore[call-arg]
+            SessionDetail.model_validate(
+                {
+                    "session_id": "s1",
+                    "project_id": "p1",
+                    "first_event_at": _ts(0),
+                    "last_event_at": _ts(0),
+                    "event_count": 0,
+                    "segment_count": 0,
+                    "extra": "x",
+                }
             )
 
 
@@ -230,7 +239,7 @@ class TestSegmentDetail:
             SegmentDetail(
                 session_id="s1",
                 segment_index=0,
-                events=[{"not_an_event": True}],  # type: ignore[list-item]
+                events=cast(Any, [{"not_an_event": True}]),
             )
 
 
@@ -259,7 +268,7 @@ class TestListSessionsResponse:
 
     def test_rejects_unknown_field(self) -> None:
         with pytest.raises(ValidationError):
-            ListSessionsResponse(sessions=[], total=0)  # type: ignore[call-arg]
+            ListSessionsResponse.model_validate({"sessions": [], "total": 0})
 
 
 class TestListSegmentsResponse:
@@ -268,4 +277,4 @@ class TestListSegmentsResponse:
 
     def test_no_cursor_field(self) -> None:
         with pytest.raises(ValidationError):
-            ListSegmentsResponse(segments=[], next_cursor="x")  # type: ignore[call-arg]
+            ListSegmentsResponse.model_validate({"segments": [], "next_cursor": "x"})

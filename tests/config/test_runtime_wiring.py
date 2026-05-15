@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 
@@ -82,7 +83,7 @@ def _build_agent_for_test(
     return _build_analysis_agent(
         secondsight_home=secondsight_home,
         project_id=project_id,
-        events_repository=_make_fake_events_repo(),
+        events_repository=cast(Any, _make_fake_events_repo()),
         flags_repository=MagicMock(),
         directives_repository=MagicMock(),
     )
@@ -97,7 +98,7 @@ def _primary_model_name(agent: object) -> str:
 
     Access path: agent._segment_router.config.primary.name
     """
-    return agent._segment_router.config.primary.name  # type: ignore[attr-defined]
+    return cast(Any, agent)._segment_router.config.primary.name
 
 
 def _write_project_config(home: Path, project_id: str, content: str) -> None:

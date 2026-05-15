@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 import pytest
 
@@ -165,7 +165,7 @@ def test_dt6_drop_list_raw_values_absent_from_data(path: Path) -> None:
 
 def test_dt7_inject_hint_returns_empty_string() -> None:
     adapter = CodexAdapter()
-    result = adapter.inject_hint(object())  # type: ignore[arg-type]
+    result = adapter.inject_hint(cast(Any, object()))
     assert result == ""
 
 

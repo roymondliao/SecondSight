@@ -25,11 +25,11 @@ from secondsight.analysis.schemas import (
 )
 
 
-def _segment(events: list = (), user_prompt=None) -> SegmentData:
+def _segment(events: list | None = None, user_prompt=None) -> SegmentData:
     return SegmentData(
         segment_index=1,
         user_prompt=user_prompt,
-        events=list(events),
+        events=list(events or []),
         session_id="sess-1",
         project_id="proj-1",
     )

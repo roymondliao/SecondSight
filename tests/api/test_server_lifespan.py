@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -54,8 +55,8 @@ async def test_death_lifespan_shutdown_disposes_all_engines(
         disposed_ids.append("proj-b")
         original_dispose_b()
 
-    res_a.db_engine.dispose = patched_dispose_a  # type: ignore[method-assign]
-    res_b.db_engine.dispose = patched_dispose_b  # type: ignore[method-assign]
+    cast(Any, res_a.db_engine).dispose = patched_dispose_a
+    cast(Any, res_b.db_engine).dispose = patched_dispose_b
 
     # Suppress the unused variable warning; app is needed for lifespan context
     _ = app

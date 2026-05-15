@@ -65,7 +65,7 @@ from secondsight.analysis.prompts.aggregate import AggregateOutput
 from secondsight.analysis.prompts.summary import SummaryOutput
 from secondsight.analysis.schemas import SegmentAnalysis
 from secondsight.sdk._specs import ModelSpec
-from secondsight.sdk.router import LLMRouter, RouterTerminalError
+from secondsight.sdk.router import LLMRouter, RouterConfig, RouterTerminalError
 
 if TYPE_CHECKING:
     from secondsight.analysis.tools import AnalysisTools
@@ -243,7 +243,7 @@ class PydanticAIAnalysisAgent:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _extract_router_config(router: LLMRouter):  # type: ignore[return]
+    def _extract_router_config(router: LLMRouter) -> RouterConfig:
         """Extract the model chain and timeout config from the router's public API.
 
         Uses router.config (RouterConfig dataclass) — the public read API added
@@ -345,17 +345,31 @@ class PydanticAIAnalysisAgent:
                 resolved_keys=resolved_keys,
             )
 
-        common = dict(
-            primary=primary,
-            fallbacks=fallbacks,
-            per_call_timeout_s=per_call_timeout_s,
-            chain_total_timeout_s=chain_total_timeout_s,
-            resolved_keys=resolved_keys,
-        )
         return (
-            LLMRouter(**common, agent_factory=segment_factory),
-            LLMRouter(**common, agent_factory=aggregate_factory),
-            LLMRouter(**common, agent_factory=summary_factory),
+            LLMRouter(
+                primary=primary,
+                fallbacks=fallbacks,
+                per_call_timeout_s=per_call_timeout_s,
+                chain_total_timeout_s=chain_total_timeout_s,
+                resolved_keys=resolved_keys,
+                agent_factory=segment_factory,
+            ),
+            LLMRouter(
+                primary=primary,
+                fallbacks=fallbacks,
+                per_call_timeout_s=per_call_timeout_s,
+                chain_total_timeout_s=chain_total_timeout_s,
+                resolved_keys=resolved_keys,
+                agent_factory=aggregate_factory,
+            ),
+            LLMRouter(
+                primary=primary,
+                fallbacks=fallbacks,
+                per_call_timeout_s=per_call_timeout_s,
+                chain_total_timeout_s=chain_total_timeout_s,
+                resolved_keys=resolved_keys,
+                agent_factory=summary_factory,
+            ),
         )
 
     # ------------------------------------------------------------------

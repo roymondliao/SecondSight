@@ -338,6 +338,8 @@ class DirectivesRepository:
                 .mappings()
                 .first()
             )
+            if refreshed_row is None:
+                raise LookupError(f"directive {directive_id!r} disappeared after update")
             return self._row_to_directive(refreshed_row), False
 
     @staticmethod
@@ -392,11 +394,11 @@ class DirectivesRepository:
             )
 
     @staticmethod
-    def _enum_value(value: object, enum_cls: type) -> str:
+    def _enum_value(value: object, enum_cls: type[DirectiveType] | type[DirectiveStatus]) -> str:
         """Coerce enum or raw string into the canonical enum value."""
         if isinstance(value, enum_cls):
-            return value.value  # type: ignore[attr-defined]
-        return enum_cls(value).value  # type: ignore[no-any-return]
+            return value.value
+        return enum_cls(value).value
 
     @classmethod
     def _directive_to_row(cls, d: Directive) -> dict[str, Any]:

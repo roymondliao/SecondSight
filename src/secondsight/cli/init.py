@@ -44,7 +44,9 @@ Exit codes:
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Protocol, cast
 
 import typer
 from loguru import logger
@@ -63,7 +65,7 @@ from secondsight.installer import (
     CodexHooksPatcher,
     HookInstaller,
 )
-from secondsight.installer.claude_settings import InvalidSettingsError
+from secondsight.installer.claude_settings import InvalidSettingsError, PatchPlan
 from secondsight.installer.hook_install import HookBundleNotFoundError
 from secondsight.state import SecondSightState, SecondSightStateError, make_state
 
@@ -71,6 +73,12 @@ app = typer.Typer(name="init", help="Install SecondSight hook scripts into Claud
 _console = Console()
 
 _SUPPORTED_AGENTS = frozenset({"claude_code", "codex"})
+
+
+class RegistrationPatcher(Protocol):
+    def plan(self, hook_dir: Path) -> PatchPlan: ...
+
+    def apply(self, hook_dir: Path) -> PatchPlan: ...
 
 
 @app.callback(invoke_without_command=True)
@@ -303,7 +311,7 @@ def _emit_error(output_format: str, code: str, message: str) -> None:
         _console.print(f"[red]error[/red] ({code}): {message}")
 
 
-def _render_text(summary: dict[str, object]) -> None:
+def _render_text(summary: Mapping[str, object]) -> None:
     title = "[cyan]Dry run[/cyan]" if summary["dry_run"] else "[cyan]Installed[/cyan]"
     _console.print(title)
     _console.print(f"  agent:         {summary['agent']}")
@@ -316,9 +324,9 @@ def _render_text(summary: dict[str, object]) -> None:
     skipped = summary["scripts_skipped_identical"]
     if copied:
         verb = "would copy" if summary["dry_run"] else "copied"
-        _console.print(f"  hooks {verb}: {', '.join(copied)}")
+        _console.print(f"  hooks {verb}: {', '.join(cast(list[str], copied))}")
     if skipped:
-        _console.print(f"  hooks unchanged: {', '.join(skipped)}")
+        _console.print(f"  hooks unchanged: {', '.join(cast(list[str], skipped))}")
 
     actions = summary["settings_actions"]
     if isinstance(actions, dict):
@@ -363,6 +371,9 @@ def _render_text(summary: dict[str, object]) -> None:
     # immediately rather than silently losing coloring at runtime.
     config_status = summary.get("config_status", "")
     if isinstance(config_status, str) and config_status:
+        secondsight_home_prefix = summary.get("secondsight_home", "__no_match__")
+        if not isinstance(secondsight_home_prefix, str):
+            secondsight_home_prefix = "__no_match__"
         # Use yellow for malformed or diff messages, normal for the rest
         if MSG_MALFORMED in config_status.lower():
             _console.print(f"  [yellow]config:[/yellow] {config_status.splitlines()[0]}")
@@ -370,9 +381,7 @@ def _render_text(summary: dict[str, object]) -> None:
             for line in config_status.splitlines():
                 _console.print(
                     f"  [yellow]config:[/yellow] {line}"
-                    if line.startswith(
-                        summary.get("secondsight_home", "__no_match__")  # type: ignore[arg-type]
-                    )
+                    if line.startswith(secondsight_home_prefix)
                     else f"  {line}"
                 )
         else:
@@ -418,7 +427,7 @@ def _resolve_agent_home(
     return resolve_codex_home(chosen)
 
 
-def _registration_target(agent: str, agent_home: Path) -> tuple[Path, object]:
+def _registration_target(agent: str, agent_home: Path) -> tuple[Path, RegistrationPatcher]:
     if agent == "claude_code":
         settings_path = agent_home / "settings.json"
         return settings_path, ClaudeSettingsPatcher(settings_path=settings_path)

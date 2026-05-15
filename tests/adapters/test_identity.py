@@ -32,7 +32,9 @@ Unit tests preserve the IdentityNormalizer behavioural surface:
 
 from __future__ import annotations
 
+import importlib
 from datetime import datetime, timezone
+from typing import Any, cast
 
 import pytest
 
@@ -66,7 +68,7 @@ def test_dt1_legacy_normalizer_module_is_gone() -> None:
         # complains via [import-untyped] / [import-not-found] depending on
         # the resolver state. Suppress both — the runtime ModuleNotFoundError
         # is the death-test signal we actually care about.
-        import secondsight.api.normalizer  # type: ignore[import-not-found,import-untyped]  # noqa: F401
+        importlib.import_module("secondsight.api.normalizer")
     assert "secondsight.api.normalizer" in str(exc_info.value), (
         f"DT-1: ModuleNotFoundError must name the deleted module. Got: {exc_info.value!r}"
     )
@@ -95,7 +97,7 @@ def test_dt4_inject_hint_returns_empty_string() -> None:
     NotImplementedError. The hint engine is reserved for future use.
     """
     adapter = IdentityAdapter()
-    result = adapter.inject_hint(object())  # type: ignore[arg-type]
+    result = adapter.inject_hint(cast(Any, object()))
     assert result == "", f"DT-4 inject_hint: should return empty string, got {result!r}"
 
 
@@ -105,7 +107,7 @@ def test_dt4_inject_convention_loud_failure_is_inherited() -> None:
     so the base class NotImplementedError fires with the adapter's class name."""
     adapter = IdentityAdapter()
     with pytest.raises(NotImplementedError) as exc_info:
-        adapter.inject_convention(object())  # type: ignore[arg-type]
+        adapter.inject_convention(cast(Any, object()))
     msg = str(exc_info.value)
     assert "IdentityAdapter" in msg, f"DT-4 inject_convention: missing class name — {msg!r}"
     assert "inject_convention" in msg, f"DT-4 inject_convention: missing method name — {msg!r}"

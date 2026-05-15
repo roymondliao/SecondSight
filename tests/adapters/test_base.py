@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -35,7 +36,7 @@ from secondsight.adapters.base import (
     AgentAdapter,
     NoAdapterError,
 )
-from secondsight.api.schemas import HookEnvelope
+from secondsight.api.schemas import HookEnvelope, IngressEnvelope
 from secondsight.event import EventType
 from secondsight.observation.tracker import PartialEvent
 
@@ -111,7 +112,9 @@ class _StubAdapter(AgentAdapter):
     def supports(self, agent: str, event_type: str) -> bool:
         return agent == self._agent and event_type in self._types
 
-    def normalize(self, envelope: HookEnvelope, event_type: str) -> PartialEvent:
+    def normalize(self, envelope: IngressEnvelope, event_type: str) -> PartialEvent:
+        assert envelope.session_id is not None
+        assert envelope.project_id is not None
         return PartialEvent(
             id=envelope.event_id,
             session_id=envelope.session_id,
@@ -138,7 +141,7 @@ class _DishonestAdapter(AgentAdapter):
         return agent == "dishonest"  # claims to handle anything
 
     def normalize(
-        self, envelope: HookEnvelope, event_type: str
+        self, envelope: IngressEnvelope, event_type: str
     ) -> PartialEvent:  # pragma: no cover - never reached if DT-6 enforces
         pytest.fail(
             "_DishonestAdapter.normalize() was reached — DT-6 registry consistency "
@@ -183,7 +186,7 @@ def test_dt3_inject_hint_returns_empty_string() -> None:
     requiring a real Hint implementation.
     """
     adapter = _StubAdapter()
-    result = adapter.inject_hint(object())  # type: ignore[arg-type]
+    result = adapter.inject_hint(cast(Any, object()))
     assert result == "", f"DT-3: inject_hint should return empty string, got {result!r}"
 
 
@@ -195,7 +198,7 @@ def test_dt4_inject_convention_raises_with_required_phrases() -> None:
     """
     adapter = _StubAdapter()
     with pytest.raises(NotImplementedError) as exc_info:
-        adapter.inject_convention(object())  # type: ignore[arg-type]
+        adapter.inject_convention(cast(Any, object()))
     msg = str(exc_info.value)
     assert "_StubAdapter" in msg, f"DT-4: missing adapter class name — message was {msg!r}"
     assert "inject_convention" in msg, f"DT-4: missing method name — message was {msg!r}"

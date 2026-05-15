@@ -49,21 +49,70 @@ Silent failure conditions (documented in scar report):
 from __future__ import annotations
 
 import asyncio
-from loguru import logger
+from collections.abc import Callable, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, AsyncGenerator, Literal
+from typing import TYPE_CHECKING, AsyncGenerator, Literal, Protocol, cast
+
+from loguru import logger
 
 from secondsight.analysis.schemas import AnalysisRunStage, TERMINAL_STAGES
 from secondsight.event import Event, EventType
 
 if TYPE_CHECKING:
-    from secondsight.analysis.orchestrator import Orchestrator
-    from secondsight.analysis.runtime import ModeAwareDispatch
-    from secondsight.observation.pipeline import ObservationPipeline
-    from secondsight.storage.analysis_runs_repository import AnalysisRunsRepository
-    from secondsight.storage.events_repository import EventsRepository
+    pass
+
+
+class AnalysisRunRecordProtocol(Protocol):
+    id: str
+    stage: AnalysisRunStage
+    updated_at: datetime
+    completed_at: datetime | None
+
+
+class AnalysisRunsRepositoryProtocol(Protocol):
+    def get_latest_for_session(self, session_id: str) -> AnalysisRunRecordProtocol | None: ...
+
+
+class EventsRepositoryProtocol(Protocol):
+    def find_stale_session_candidates(
+        self,
+        *,
+        project_id: str | None,
+        last_event_before: datetime,
+    ) -> list[tuple[str, str, datetime]]: ...
+
+
+class OrchestratorProtocol(Protocol):
+    async def analyze_and_aggregate(self, session_id: str, *, force: bool = False) -> object: ...
+
+
+class ModeAwareDispatchProtocol(Protocol):
+    async def dispatch(
+        self,
+        session_id: str,
+        *,
+        project_id: str | None = None,
+    ) -> object: ...
+
+
+class ObservationPipelineProtocol(Protocol):
+    def add_post_ingest_callback(
+        self,
+        cb: Callable[[Event], Coroutine[object, object, None]],
+    ) -> None: ...
+
+
+class TriggerDispatchProtocol(Protocol):
+    async def dispatch(
+        self,
+        project_id: str,
+        session_id: str,
+        *,
+        source: Literal["event", "timeout", "manual"],
+        force: bool = False,
+    ) -> "DispatchResult": ...
 
 
 def _ensure_utc(dt: datetime) -> datetime:
@@ -228,12 +277,12 @@ class Trigger:
 
     def __init__(
         self,
-        orchestrator: "Orchestrator",
-        analysis_runs_repo: "AnalysisRunsRepository",
-        events_repo: "EventsRepository",
+        orchestrator: OrchestratorProtocol,
+        analysis_runs_repo: AnalysisRunsRepositoryProtocol,
+        events_repo: EventsRepositoryProtocol,
         lock_registry: "LockRegistry",
         trigger_lock_seconds: int = _DEFAULT_TRIGGER_LOCK_SECONDS,
-        mode_aware_dispatch: "ModeAwareDispatch | None" = None,
+        mode_aware_dispatch: ModeAwareDispatchProtocol | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._analysis_runs_repo = analysis_runs_repo
@@ -392,7 +441,8 @@ class Trigger:
                         reason=f"dispatch-error: {exc}",
                         run_id=None,
                     )
-                if output.status == "failure":
+                output_status = cast(str | None, getattr(output, "status", None))
+                if output_status == "failure":
                     logger.warning(
                         f"dispatch: analysis completed with failure status "
                         f"session_id={session_id!r} source={source!r}"
@@ -402,7 +452,7 @@ class Trigger:
                         reason="analysis-failed",
                         run_id=None,
                     )
-                if output.status == "unknown":
+                if output_status == "unknown":
                     logger.warning(
                         f"dispatch: analysis completed with unknown status "
                         f"session_id={session_id!r} source={source!r}"
@@ -463,7 +513,7 @@ class Trigger:
                 f"source={source!r}: {type(exc).__name__}: {exc}"
             )
 
-    def register_pipeline_callback(self, pipeline: "ObservationPipeline") -> None:
+    def register_pipeline_callback(self, pipeline: ObservationPipelineProtocol) -> None:
         """Register a SESSION_END callback on the given ObservationPipeline.
 
         The callback fires after the DB write succeeds in pipeline.ingest().
@@ -543,9 +593,9 @@ class Sweeper:
 
     def __init__(
         self,
-        trigger: "Trigger",
-        events_repo: "EventsRepository",
-        analysis_runs_repo: "AnalysisRunsRepository",
+        trigger: TriggerDispatchProtocol,
+        events_repo: EventsRepositoryProtocol,
+        analysis_runs_repo: AnalysisRunsRepositoryProtocol,
         interval_seconds: int = _DEFAULT_SWEEPER_INTERVAL_SECONDS,
         session_timeout_minutes: int = _DEFAULT_SESSION_TIMEOUT_MINUTES,
         project_id_filter: str | None = None,

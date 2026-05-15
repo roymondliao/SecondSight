@@ -321,20 +321,20 @@ def test_make_success_output_dropped_flag_is_counted_and_logged(caplog):
     no observable signal.
     """
     from secondsight.analysis.sdk_dispatcher import SDKAnalysisDispatcher
-    from secondsight.analysis.schemas import BehaviorFlagDraft
+    from secondsight.analysis.schemas import BehaviorFlagDraft, BehaviorFlagType
 
     dispatcher = SDKAnalysisDispatcher.__new__(SDKAnalysisDispatcher)
     dispatcher._primary_model_name = _TEST_PRIMARY_MODEL
 
     # 3 flags: 2 valid BehaviorFlagDraft, 1 dict with invalid flag_type
     valid_flag_1 = BehaviorFlagDraft(
-        flag_type="unnecessary_read",
+        flag_type=BehaviorFlagType.UNNECESSARY_READ,
         event_ids=["evt-1"],
         reason="Read was not needed",
         confidence="high",
     )
     valid_flag_2 = BehaviorFlagDraft(
-        flag_type="redundant_exploration",
+        flag_type=BehaviorFlagType.REDUNDANT_EXPLORATION,
         event_ids=["evt-2"],
         reason="Explored same path twice",
         confidence="medium",
@@ -383,13 +383,13 @@ def test_make_success_output_dropped_flag_is_counted_and_logged(caplog):
 def test_make_success_output_no_drop_gives_no_error_details():
     """Unit test: when all flags are valid, error_details is None (no false positive)."""
     from secondsight.analysis.sdk_dispatcher import SDKAnalysisDispatcher
-    from secondsight.analysis.schemas import BehaviorFlagDraft
+    from secondsight.analysis.schemas import BehaviorFlagDraft, BehaviorFlagType
 
     dispatcher = SDKAnalysisDispatcher.__new__(SDKAnalysisDispatcher)
     dispatcher._primary_model_name = _TEST_PRIMARY_MODEL
 
     valid_flag = BehaviorFlagDraft(
-        flag_type="unnecessary_read",
+        flag_type=BehaviorFlagType.UNNECESSARY_READ,
         event_ids=["evt-1"],
         reason="Read was unnecessary",
         confidence="low",

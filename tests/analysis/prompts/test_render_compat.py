@@ -16,6 +16,8 @@ NOT acceptable divergence.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 
 import pytest
 
@@ -33,11 +35,11 @@ from secondsight.analysis.schemas import (
 # =====================================================================
 
 
-def _segment(events: list = (), user_prompt=None) -> SegmentData:
+def _segment(events: list | None = None, user_prompt=None) -> SegmentData:
     return SegmentData(
         segment_index=1,
         user_prompt=user_prompt,
-        events=list(events),
+        events=list(events or []),
         session_id="sess-compat-1",
         project_id="proj-compat-1",
     )
@@ -206,7 +208,7 @@ class TestAggregatePromptCompat:
         from secondsight.analysis.prompts.aggregate import build_aggregate_prompt
 
         with pytest.raises(TypeError):
-            build_aggregate_prompt("unnecessary_read", [])  # type: ignore[arg-type]
+            build_aggregate_prompt(cast(Any, "unnecessary_read"), [])
 
     def test_aggregate_prompt_determinism(self) -> None:
         from secondsight.analysis.prompts.aggregate import (
