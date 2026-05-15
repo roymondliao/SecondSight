@@ -31,7 +31,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from secondsight.analysis.cli_dispatcher import CLIAnalysisDispatcher, OpencodeNotSupportedError
+from secondsight.analysis.cli_dispatcher import (
+    CLIAnalysisDispatcher,
+    OpencodeNotSupportedError,
+)
 from secondsight.config.schema import AnalysisCLIConfig, AnalysisCLIModelsConfig, AnalysisConfig
 from secondsight.state import SecondSightState
 
@@ -870,9 +873,10 @@ class TestEnvIsolation:
     async def test_secondsight_env_vars_filtered_from_subprocess(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """SECONDSIGHT_* env vars set in the parent process must not reach the subprocess."""
+        """Parent SECONDSIGHT_* vars must be filtered; only the hook-disable flag remains."""
         monkeypatch.setenv("SECONDSIGHT_SESSION_ID", "secret-session-123")
         monkeypatch.setenv("SECONDSIGHT_PROJECT_ID", "secret-project-456")
+        monkeypatch.setenv("SECONDSIGHT_DISABLE_HOOKS", "0")
         monkeypatch.setenv("PATH", "/usr/bin:/bin")  # keep PATH alive
 
         captured_env: dict | None = None
@@ -895,10 +899,15 @@ class TestEnvIsolation:
             )
 
         assert captured_env is not None, "create_subprocess_exec must have been called with env="
-        for key in captured_env:
-            assert not key.startswith("SECONDSIGHT_"), (
-                f"Env key {key!r} starting with SECONDSIGHT_ must be filtered out"
-            )
+        assert captured_env.get("SECONDSIGHT_DISABLE_HOOKS") == "1", (
+            "Dispatcher must force-enable hook suppression for analysis subprocesses"
+        )
+        leaked = {
+            key: value
+            for key, value in captured_env.items()
+            if key.startswith("SECONDSIGHT_") and key != "SECONDSIGHT_DISABLE_HOOKS"
+        }
+        assert leaked == {}, f"Unexpected SECONDSIGHT_* leak into subprocess env: {leaked!r}"
 
 
 class TestSubprocessCwd:

@@ -1,0 +1,14 @@
+title: cli-analysis-hook-recursion
+date: 2026-05-15
+change_summary:
+  - CLIAnalysisDispatcher now injects SECONDSIGHT_DISABLE_HOOKS=1 into every analysis subprocess.
+  - Hook scripts now short-circuit before posting events, writing fallback records, or injecting conventions when suppression is enabled.
+  - Regression tests cover dispatcher env injection and session-end hook short-circuit behavior.
+validated_by:
+  - pytest tests/analysis/test_cli_dispatcher.py::TestEnvIsolation::test_secondsight_env_vars_filtered_from_subprocess -q
+  - pytest tests/scripts/test_hook_fallback.py::TestDeathTests::test_dt10_disable_hooks_env_short_circuits_session_end tests/scripts/test_hook_fallback.py::TestUnitTests::test_ut6_relative_home_exit_zero -q
+silent_failure_conditions: >
+  The fix depends on analysis subprocesses being launched through
+  CLIAnalysisDispatcher and on installed hook scripts sourcing the bundled
+  _lib.sh helper. A custom external hook that ignores SECONDSIGHT_DISABLE_HOOKS
+  could still reintroduce recursive observation outside this codepath.

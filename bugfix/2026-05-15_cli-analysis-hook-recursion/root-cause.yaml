@@ -1,0 +1,18 @@
+title: cli-analysis-hook-recursion
+date: 2026-05-15
+hypothesis: >
+  The CLI analysis subprocess runs under the same globally-installed agent hooks
+  as user sessions, and nothing marks the subprocess as "internal analysis".
+root_cause: >
+  CLIAnalysisDispatcher filtered parent SECONDSIGHT_* variables, but did not
+  provide any dedicated hook-suppression signal to the spawned subprocess.
+  Because the hook installation is agent-global, the analysis session itself
+  still fired session_start/session_end/tool events and re-entered ingestion.
+hidden_by: >
+  Existing env isolation only protected against leaking runtime metadata into
+  the subprocess. It did not model hook recursion, so the lack of an explicit
+  suppression contract was not covered.
+fix_strategy: >
+  Inject a dedicated internal env flag into CLI analysis subprocesses and make
+  every bundled hook script exit 0 before any observation or convention
+  injection when that flag is present.

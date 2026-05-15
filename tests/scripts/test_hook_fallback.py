@@ -526,6 +526,27 @@ class TestDeathTests:
         lines = [ln for ln in fallback.read_text().splitlines() if ln.strip()]
         assert len(lines) == 1, f"Expected 1 fallback line from symlinked hook, got {len(lines)}"
 
+    def test_dt10_disable_hooks_env_short_circuits_session_end(self, tmp_path: Path) -> None:
+        """DT-10: Internal hook-disable flag must suppress observation entirely.
+
+        This is the regression guard for CLI analysis recursion: when the
+        analysis subprocess runs under a globally-hooked agent, the hook must
+        exit 0 without posting or writing fallback records.
+        """
+        home = tmp_path / ".secondsight"
+        home.mkdir()
+        env = build_env(port=1, home=home)
+        env["SECONDSIGHT_DISABLE_HOOKS"] = "1"
+
+        result = run_hook(hook_script("session-end.sh"), minimal_payload(), env=env)
+        assert result.returncode == 0, (
+            f"Disabled hook must still exit 0; got {result.returncode}. stderr={result.stderr!r}"
+        )
+        fallback = home / FALLBACK_FILENAME
+        assert not fallback.exists(), (
+            "Hook-disable flag must short-circuit before any fallback/event write occurs"
+        )
+
 
 # ===========================================================================
 # UNIT TESTS
@@ -791,6 +812,7 @@ class TestUnitTests:
         """
         env = build_env(port=1, home=Path("/tmp"))
         env["SECONDSIGHT_HOME"] = "relative/path"  # not absolute
+        env["HOME"] = str(tmp_path / "fake-home")
         result = run_hook(hook_script("pre-tool-use.sh"), minimal_payload(), env=env)
         assert result.returncode == 0, (
             f"Hook crashed on relative SECONDSIGHT_HOME; returncode={result.returncode}"

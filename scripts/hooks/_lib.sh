@@ -50,6 +50,22 @@ readonly _SECONDSIGHT_VERSION="phase-2.0"
 # Resolve SECONDSIGHT_HOME
 # ---------------------------------------------------------------------------
 
+secondsight_hooks_disabled() {
+    case "${SECONDSIGHT_DISABLE_HOOKS:-}" in
+        1|true|TRUE|yes|YES|on|ON)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+secondsight_exit_if_disabled() {
+    secondsight_hooks_disabled && exit 0
+    return 0
+}
+
 _secondsight_resolve_home() {
     # Validate that SECONDSIGHT_HOME is either unset (use default) or absolute.
     # A relative path would be resolved against the hook's working directory,

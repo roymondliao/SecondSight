@@ -41,6 +41,7 @@ _SS_DIR="$( cd -P "$( dirname "$_SS_SOURCE" )" && pwd )"
 
 # shellcheck source=_lib.sh
 . "$_SS_DIR/_lib.sh"
+secondsight_exit_if_disabled
 
 PAYLOAD="$(cat)"
 # URL path uses canonical EventType enum value (tool_use_end), not the

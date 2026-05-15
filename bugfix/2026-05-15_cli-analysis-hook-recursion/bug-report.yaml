@@ -1,0 +1,17 @@
+title: cli-analysis-hook-recursion
+date: 2026-05-15
+failure_level: 3
+symptom: >
+  A session_end hook event triggers analysis. In config.general.mode="cli",
+  the analysis subprocess is itself observed by globally-installed hooks,
+  which emits another session_end event and recursively re-triggers analysis.
+impact_scope: >
+  Any project running automatic analysis dispatch in CLI mode with SecondSight
+  hooks installed for the underlying agent CLI.
+detection_source: user report
+expected_behavior: >
+  Analysis-triggered CLI subprocesses must not emit SecondSight hook events or
+  write hook fallback records.
+actual_behavior: >
+  Analysis-triggered CLI subprocesses inherit the normal hooked agent runtime,
+  so their own lifecycle is ingested as a fresh session.

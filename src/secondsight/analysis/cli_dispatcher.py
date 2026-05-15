@@ -25,6 +25,7 @@ Assumptions:
     - Claude wraps output in {"type":"result","result":"..."} JSON envelope
     - Codex writes last message to a temp file specified by -o flag
     - SECONDSIGHT_* env vars are filtered in _filter_env() (centralized here, not in adapters)
+      except for the internal hook-suppression flag injected by this dispatcher
 
 Silent failure conditions:
     - If the LLM produces valid JSON that passes AnalysisOutput validation but
@@ -77,6 +78,10 @@ _SIGKILL_GRACE_SECONDS: float = 1.0
 # (e.g., state_missing failure path). Cross-field invariant requires cli_agent
 # to be non-None when dispatched_via='cli'; "unknown" is the explicit sentinel.
 _UNKNOWN_AGENT: str = "unknown"
+
+# Internal guard passed to analysis CLI subprocesses so globally-installed
+# SecondSight hooks do not observe analysis sessions and recursively dispatch.
+_HOOK_DISABLE_ENV_VAR: str = "SECONDSIGHT_DISABLE_HOOKS"
 
 
 class OpencodeNotSupportedError(Exception):
@@ -581,8 +586,14 @@ def _filter_env(env: dict[str, str]) -> dict[str, str]:
     - Both adapters apply identical filtering
     - Centralizing removes duplicate logic and ghost-promise build_env() in adapters
     - Adapters are responsible for build_command() (and extract_result for claude) only
+
+    The one intentional exception is the internal hook-suppression flag injected
+    here. Analysis subprocesses must inherit it so agent-global hooks short-circuit
+    and do not emit recursive session_end events for the analysis session itself.
     """
-    return {k: v for k, v in env.items() if not k.startswith("SECONDSIGHT_")}
+    filtered = {k: v for k, v in env.items() if not k.startswith("SECONDSIGHT_")}
+    filtered[_HOOK_DISABLE_ENV_VAR] = "1"
+    return filtered
 
 
 def _extract_claude_failure_context(raw_stdout: str) -> dict[str, Any]:
@@ -707,4 +718,7 @@ def _make_unknown_output(
     )
 
 
-__all__ = ["CLIAnalysisDispatcher", "OpencodeNotSupportedError"]
+__all__ = [
+    "CLIAnalysisDispatcher",
+    "OpencodeNotSupportedError",
+]
