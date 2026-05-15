@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from secondsight.analysis.output import AnalysisOutput
+from secondsight.analysis.schemas import BehaviorFlagType
 from secondsight.config.schema import (
     AnalysisCLIConfig,
     AnalysisCLIModelsConfig,
@@ -150,6 +151,89 @@ async def test_dt_dispatch_persists_output_to_repository(tmp_path: Path) -> None
     assert row["project_id"] == "proj-death-001"
     assert row["dispatched_via"] == "cli"
     assert row["status"] == "success"
+
+
+# ---------------------------------------------------------------------------
+# DEATH TEST 1b: successful dispatch materializes dashboard-facing artifacts
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dt_dispatch_materializes_session_report_and_flags(tmp_path: Path) -> None:
+    """DEATH TEST: successful dispatch must populate the tables the dashboard reads.
+
+    analysis_outputs alone is insufficient for `/api/analysis/*` because the
+    dashboard API is built on `session_reports` + `behavior_flags`.
+    """
+    from secondsight.analysis.runtime import ModeAwareDispatch
+    from secondsight.storage.analysis_outputs_repository import AnalysisOutputsRepository
+    from secondsight.storage.behavior_flags_repository import BehaviorFlagsRepository
+    from secondsight.storage.session_reports_repository import SessionReportsRepository
+
+    db_path = tmp_path / "intelligence.db"
+    db_engine = DBEngine(db_path=db_path)
+
+    outputs_repo = AnalysisOutputsRepository(db_engine)
+    flags_repo = BehaviorFlagsRepository(db_engine)
+    reports_repo = SessionReportsRepository(db_engine)
+    outputs_repo.create_schema()
+    flags_repo.create_schema()
+    reports_repo.create_schema()
+
+    config = _make_cli_config()
+    session_id = "sess-dashboard-artifacts-001"
+    mock_output = AnalysisOutput.model_validate(
+        {
+            "schema_version": "1.0",
+            "session_id": session_id,
+            "status": "success",
+            "behavior_flags": [
+                {
+                    "flag_type": BehaviorFlagType.UNNECESSARY_READ.value,
+                    "event_ids": ["evt-1"],
+                    "reason": "Read an unrelated file before making the edit.",
+                    "confidence": "high",
+                }
+            ],
+            "session_summary": {
+                "headline": "CLI analysis complete",
+                "key_findings": ["One unnecessary read."],
+                "body": "The session completed with one avoidable exploratory read.",
+            },
+            "dispatched_via": "cli",
+            "cli_agent": "claude_code",
+            "primary_model": None,
+            "fallback_used": False,
+            "retry_count": 0,
+            "error_details": None,
+        }
+    )
+
+    mock_cli_dispatcher = MagicMock()
+    mock_cli_dispatcher.dispatch = AsyncMock(return_value=mock_output)
+
+    mad = ModeAwareDispatch(
+        config=config,
+        state=None,
+        project_id="proj-dashboard-001",
+        repository=outputs_repo,
+        flags_repository=flags_repo,
+        reports_repository=reports_repo,
+        cli_dispatcher=mock_cli_dispatcher,
+        sdk_dispatcher=None,
+    )
+
+    result = await mad.dispatch(session_id, {}, project_root=tmp_path)
+
+    assert result.status == "success"
+    report = reports_repo.get_for_session(session_id)
+    assert report is not None, "Successful dispatch must materialize a session_reports row."
+    assert report.headline == "CLI analysis complete"
+
+    flags = flags_repo.get_session_flags(session_id)
+    assert len(flags) == 1, "Successful dispatch must materialize dashboard-visible flags."
+    assert flags[0].flag_type == BehaviorFlagType.UNNECESSARY_READ
+    assert flags[0].segment_index == 0
 
 
 # ---------------------------------------------------------------------------

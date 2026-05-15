@@ -1,0 +1,40 @@
+type: fast_track
+description: >
+  Fix two linked CLI analysis failures: codex dispatch now bypasses git trust
+  checks for ~/.secondsight project mirrors, and mode-aware dispatch failures
+  no longer surface as "Analysis complete" in secondsight analyze.
+death_clause: >
+  If codex still exits with "Not inside a trusted directory" for the mirrored
+  project cwd, or if a mode-aware dispatch returning failure/unknown still
+  makes the CLI print "Analysis complete", this fix failed.
+acceptance:
+  - "codex adapter command includes --skip-git-repo-check"
+  - "Trigger.dispatch maps mode-aware output.status='failure' to reason='analysis-failed'"
+  - "Trigger.dispatch maps mode-aware output.status='unknown' to reason='analysis-unknown'"
+  - "secondsight analyze exits 1 and prints failure wording for analysis-failed"
+  - "secondsight analyze never prints 'Analysis complete' for failed mode-aware dispatch"
+verification_results:
+  pytest:
+    - "uv run pytest tests/analysis/test_cli_adapters.py tests/analysis/test_runtime_wiring_unit.py tests/cli/test_analyze.py -q -> 41 passed"
+scar_tag: none
+scar_items: []
+files_changed:
+  - src/secondsight/analysis/cli_adapters/codex.py
+  - src/secondsight/sdk/trigger.py
+  - src/secondsight/cli/analyze.py
+  - tests/analysis/test_cli_adapters.py
+  - tests/analysis/test_runtime_wiring_unit.py
+  - tests/cli/test_analyze.py
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: "Failure-result translation stays in existing Trigger and CLI handler boundaries; no duplicate status-mapping helper was introduced."
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: "The codex trust fix stays in the codex adapter, and the success/failure truthfulness fix stays in Trigger plus analyze CLI output handling."
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: "The implementation adds one command flag and two explicit DispatchResult reasons rather than introducing a new result object or side channel."
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: "DispatchResult.reason is now the single truth the CLI uses to decide success vs failure for mode-aware paths, instead of inferring from logs or private state."

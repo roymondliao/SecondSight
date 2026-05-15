@@ -1,0 +1,41 @@
+type: fast_track
+description: >
+  Materialize successful ModeAwareDispatch results into session_reports and
+  behavior_flags so the dashboard analysis APIs can see them instead of only
+  writing analysis_outputs.
+death_clause: >
+  If a successful dispatch still leaves /api/analysis/summary reporting
+  analyzed_session_count=0 or /api/analysis/sessions returning no items for the
+  same project/session, this fix failed because the dashboard-facing artifacts
+  were not materialized.
+acceptance:
+  - "Successful ModeAwareDispatch writes a session_reports row for the session"
+  - "Successful ModeAwareDispatch writes behavior_flags rows derived from output.behavior_flags"
+  - "build_project_analysis_runtime wires SessionReportsRepository and BehaviorFlagsRepository into ModeAwareDispatch"
+  - "Server path session_end -> dispatch makes /api/analysis/summary show analyzed_session_count=1"
+  - "Server path session_end -> dispatch makes /api/analysis/sessions return one item"
+scar_tag: none
+scar_items: []
+verification_results:
+  pytest:
+    - "uv run pytest tests/analysis/test_runtime_wiring_death.py -q -> 9 passed"
+    - "uv run pytest tests/api/test_server_analysis_runtime.py -q -> 4 passed"
+  static_checks:
+    - "uv run ruff check src/secondsight/analysis/runtime.py tests/analysis/test_runtime_wiring_death.py tests/api/test_server_analysis_runtime.py -> not run: `ruff` executable unavailable in the current uv environment"
+files_changed:
+  - src/secondsight/analysis/runtime.py
+  - tests/analysis/test_runtime_wiring_death.py
+  - tests/api/test_server_analysis_runtime.py
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: "Reused existing promote_draft() and validate_draft_pre_insert() instead of re-implementing BehaviorFlag promotion logic in runtime.py."
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: "Materialization lives in ModeAwareDispatch, which is the boundary that already owns post-dispatch persistence; dashboard API code stayed unchanged."
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: "The fix adds one focused helper plus two injected repositories. No new service layer or backfill abstraction was introduced."
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: "The source of truth for dashboard data remains session_reports and behavior_flags. The fix connects the existing writer to those tables instead of teaching the API a second persistence format."

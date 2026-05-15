@@ -637,6 +637,55 @@ class TestDC6_SubprocessNonZeroExit:
 
         assert call_count == 1
 
+    @pytest.mark.asyncio
+    async def test_claude_nonzero_exit_recovers_quota_diagnostics_from_stdout(
+        self,
+        tmp_path: Path,
+        caplog,
+    ) -> None:
+        """Claude non-zero exit must surface structured stdout diagnostics.
+
+        Claude CLI can emit a JSON envelope on stdout even when it exits 1.
+        Quota failures otherwise look like opaque "stderr=''" subprocess exits.
+        """
+        claude_error_stdout = json.dumps(
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": True,
+                "api_error_status": 429,
+                "result": "You've hit your org's monthly usage limit",
+            }
+        )
+
+        async def create_proc(*args, **kwargs):
+            return _make_proc_mock(stdout=claude_error_stdout, stderr="", returncode=1)
+
+        dispatcher = _make_dispatcher()
+
+        with (
+            caplog.at_level("WARNING"),
+            patch(
+                "secondsight.analysis.cli_dispatcher.asyncio.create_subprocess_exec",
+                side_effect=create_proc,
+            ),
+        ):
+            result = await dispatcher.dispatch(
+                session_id="sess-001",
+                project_root=tmp_path,
+                session_payload={"events": []},
+            )
+
+        assert result.status == "failure"
+        assert result.error_details is not None
+        assert result.error_details["reason"] == "subprocess_exit"
+        assert result.error_details["api_error_status"] == 429
+        assert result.error_details["message"] == "You've hit your org's monthly usage limit"
+        assert any("api_error_status=429" in record.message for record in caplog.records)
+        assert any("monthly usage limit" in record.message for record in caplog.records), (
+            caplog.text
+        )
+
 
 class TestDC_CodexTempfile:
     """DC-CODEX-TEMPFILE: codex output file must NOT be placed in project_root."""

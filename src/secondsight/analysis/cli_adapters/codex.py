@@ -63,7 +63,7 @@ def build_command(
     output_filename = f"codex-output-{uuid.uuid4().hex}.txt"
     output_path = str(project_root / output_filename)
 
-    cmd = ["codex", "exec", "--ephemeral", "-o", output_path]
+    cmd = ["codex", "exec", "--ephemeral", "--skip-git-repo-check", "-o", output_path]
     if model:
         cmd.extend(["-m", model])
     cmd.append("-")  # Read prompt from stdin

@@ -1,0 +1,35 @@
+type: fast_track
+description: >
+  Preserve Claude CLI quota and provider error diagnostics when the subprocess
+  exits non-zero by recovering structured JSON error details from stdout and
+  surfacing them in warning logs plus error_details.
+death_clause: >
+  If Claude exits 1 with stderr empty but stdout carries a structured error
+  envelope, and SecondSight still logs only a generic subprocess exit without
+  the provider status/message, this fix failed.
+acceptance:
+  - "Claude non-zero exit with stdout JSON error envelope populates error_details.api_error_status"
+  - "Claude non-zero exit with stdout JSON error envelope populates error_details.message"
+  - "Warning log for Claude non-zero exit includes recovered API status/message when stderr is empty"
+  - "Existing CLI dispatcher tests still pass"
+scar_tag: none
+scar_items: []
+verification_results:
+  pytest:
+    - "uv run pytest tests/analysis/test_cli_dispatcher.py -q -> 31 passed"
+files_changed:
+  - src/secondsight/analysis/cli_dispatcher.py
+  - tests/analysis/test_cli_dispatcher.py
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: "Kept Claude-envelope recovery in the existing dispatcher path instead of introducing a parallel error-handling service."
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: "The new helper sits next to the existing env/prompt/failure helpers in cli_dispatcher.py, which already owns subprocess forensics."
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: "The change is one small extraction helper plus a narrow non-zero-exit branch update; no retry policy or adapter contract was expanded."
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: "The same recovered Claude context is reused for both logging and persisted error_details, avoiding separate parsing paths."

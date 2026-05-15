@@ -128,6 +128,11 @@ class TestCodexBuildCommand:
         cmd, _ = codex_build_command(model=None, prompt="analyze this", project_root=tmp_path)
         assert "--ephemeral" in cmd
 
+    def test_command_includes_skip_git_repo_check(self, tmp_path: Path) -> None:
+        """Codex must bypass git trust checks for ~/.secondsight project mirrors."""
+        cmd, _ = codex_build_command(model=None, prompt="analyze this", project_root=tmp_path)
+        assert "--skip-git-repo-check" in cmd
+
     def test_command_includes_output_last_message_flag(self, tmp_path: Path) -> None:
         """Codex writes last message to a file via -o / --output-last-message."""
         cmd, output_path = codex_build_command(

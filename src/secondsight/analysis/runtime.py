@@ -32,17 +32,21 @@ Architecture invariant (NON-NEGOTIABLE):
 from __future__ import annotations
 
 import asyncio
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 from loguru import logger
 
+from secondsight.analysis.behavior import promote_draft, validate_draft_pre_insert
 from secondsight.analysis.config import AnalysisConfig
 from secondsight.analysis.factory import build_orchestrator
 from secondsight.analysis.orchestrator import Orchestrator
 from secondsight.analysis.output import AnalysisOutput
+from secondsight.analysis.schemas import SessionReport
 from secondsight.analysis.tools import AnalysisTools
 from secondsight.config import load_project_config
 from secondsight.config.loader import _resolve_provider_keys
@@ -127,6 +131,8 @@ class ModeAwareDispatch:
         project_id: str = "",
         project_root: Path | None = None,
         repository: "AnalysisOutputsRepository | None" = None,
+        flags_repository: BehaviorFlagsRepository | None = None,
+        reports_repository: SessionReportsRepository | None = None,
         cli_dispatcher: "AnalysisDispatcher | None" = None,
         sdk_dispatcher: "AnalysisDispatcher | None" = None,
     ) -> None:
@@ -140,6 +146,8 @@ class ModeAwareDispatch:
         # passes None to the CLI dispatcher (which raises ValueError for CLI mode).
         self._project_root = project_root
         self._repository = repository
+        self._flags_repository = flags_repository
+        self._reports_repository = reports_repository
         self._cli_dispatcher = cli_dispatcher
         self._sdk_dispatcher = sdk_dispatcher
 
@@ -202,6 +210,51 @@ class ModeAwareDispatch:
             resolved_keys=resolved_keys,
         )
         return self._sdk_dispatcher
+
+    def _materialize_dashboard_artifacts(
+        self,
+        output: AnalysisOutput,
+        *,
+        project_id: str,
+        analysis_run_id: str,
+    ) -> None:
+        """Persist dashboard-facing analysis artifacts for successful dispatches."""
+        if self._reports_repository is None and self._flags_repository is None:
+            return
+
+        created_at = datetime.now(tz=timezone.utc)
+        flags = []
+        for index, draft in enumerate(output.behavior_flags):
+            validate_draft_pre_insert(draft, index)
+            # Mode-aware dispatch outputs are session-level, so segment granularity
+            # is unavailable here. Persist under segment_index=0 so dashboard APIs
+            # can consume the flags without reviving the legacy orchestrator path.
+            flags.append(
+                promote_draft(
+                    draft,
+                    session_id=output.session_id,
+                    project_id=project_id,
+                    segment_index=0,
+                    created_at=created_at,
+                )
+            )
+
+        if self._reports_repository is not None:
+            report = SessionReport(
+                id=f"sr-{uuid.uuid4()}",
+                project_id=project_id,
+                session_id=output.session_id,
+                analysis_run_id=analysis_run_id,
+                headline=output.session_summary.headline,
+                key_findings=list(output.session_summary.key_findings),
+                body=output.session_summary.body,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+            self._reports_repository.upsert(report)
+
+        if flags and self._flags_repository is not None:
+            self._flags_repository.insert_many(flags)
 
     async def dispatch(
         self,
@@ -358,9 +411,13 @@ class ModeAwareDispatch:
         # Called OUTSIDE the lock to minimize lock hold time. The DB UNIQUE
         # constraint on session_id handles any cross-process race that escapes
         # the in-process lock.
+        persisted_row_id: str | None = None
         if self._repository is not None:
             try:
-                self._repository.insert_or_ignore(output, project_id=effective_project_id)
+                persisted_row_id = self._repository.insert_or_ignore(
+                    output,
+                    project_id=effective_project_id,
+                )
                 logger.debug(
                     f"ModeAwareDispatch: persisted output for "
                     f"session_id={session_id!r} project_id={effective_project_id!r}"
@@ -378,6 +435,19 @@ class ModeAwareDispatch:
                 f"ModeAwareDispatch: repository=None, skipping persistence for "
                 f"session_id={session_id!r} (test mode or unconfigured)"
             )
+
+        if output.status == "success":
+            try:
+                self._materialize_dashboard_artifacts(
+                    output,
+                    project_id=effective_project_id,
+                    analysis_run_id=persisted_row_id or f"mode-aware-{session_id}",
+                )
+            except Exception as exc:
+                logger.error(
+                    f"ModeAwareDispatch: failed to materialize dashboard artifacts for "
+                    f"session_id={session_id!r}: {type(exc).__name__}: {exc}"
+                )
 
         return output
 
@@ -576,6 +646,8 @@ def build_project_analysis_runtime(
         project_id=project_id,
         project_root=project_root_path,
         repository=outputs_repo,
+        flags_repository=flags_repo,
+        reports_repository=reports_repo,
     )
 
     trigger = Trigger(

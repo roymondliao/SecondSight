@@ -179,15 +179,18 @@ class DispatchResult:
     """Outcome of one Trigger.dispatch() call.
 
     Fields:
-        dispatched: True if orchestrator.analyze_and_aggregate was scheduled.
-        reason: Short string describing the outcome. One of:
-            "dispatched"          — task scheduled.
-            "lock-held"           — another coroutine is dispatching this session.
-            "another-run-in-flight" — non-terminal run updated recently.
-            "already-analyzed"    — terminal run exists and force=False.
-        run_id: The existing run_id from analysis_runs (set on non-dispatch paths).
-        existing_stage: Stage of the latest run (set on non-dispatch paths).
-        existing_completed_at: completed_at of the latest run, if any.
+    dispatched: True if analysis was accepted and run, or the legacy orchestrator
+        task was scheduled.
+    reason: Short string describing the outcome. One of:
+        "dispatched"          — task scheduled or mode-aware dispatch succeeded.
+        "analysis-failed"     — mode-aware dispatch completed with failure status.
+        "analysis-unknown"    — mode-aware dispatch completed with unknown status.
+        "lock-held"           — another coroutine is dispatching this session.
+        "another-run-in-flight" — non-terminal run updated recently.
+        "already-analyzed"    — terminal run exists and force=False.
+    run_id: The existing run_id from analysis_runs (set on non-dispatch paths).
+    existing_stage: Stage of the latest run (set on non-dispatch paths).
+    existing_completed_at: completed_at of the latest run, if any.
     """
 
     dispatched: bool
@@ -373,7 +376,7 @@ class Trigger:
                 # against re-dispatch; ModeAwareDispatch adds per-session lock as
                 # defense-in-depth for concurrent callers.
                 try:
-                    await self._mode_aware_dispatch.dispatch(
+                    output = await self._mode_aware_dispatch.dispatch(
                         session_id,
                         project_id=project_id,
                     )
@@ -387,6 +390,26 @@ class Trigger:
                     return DispatchResult(
                         dispatched=False,
                         reason=f"dispatch-error: {exc}",
+                        run_id=None,
+                    )
+                if output.status == "failure":
+                    logger.warning(
+                        f"dispatch: analysis completed with failure status "
+                        f"session_id={session_id!r} source={source!r}"
+                    )
+                    return DispatchResult(
+                        dispatched=True,
+                        reason="analysis-failed",
+                        run_id=None,
+                    )
+                if output.status == "unknown":
+                    logger.warning(
+                        f"dispatch: analysis completed with unknown status "
+                        f"session_id={session_id!r} source={source!r}"
+                    )
+                    return DispatchResult(
+                        dispatched=True,
+                        reason="analysis-unknown",
                         run_id=None,
                     )
             else:

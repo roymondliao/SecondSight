@@ -423,9 +423,27 @@ class CLIAnalysisDispatcher:
 
         # Check exit code
         if proc.returncode != 0:
+            claude_failure_context: dict[str, Any] = {}
+            if agent_name == "claude_code":
+                claude_failure_context = _extract_claude_failure_context(stdout_raw)
+
+            diagnostic_bits: list[str] = []
+            if stderr_raw:
+                diagnostic_bits.append(f"stderr: {stderr_raw[:200]!r}")
+            if not stderr_raw and "message" in claude_failure_context:
+                diagnostic_bits.append(
+                    f"stdout message: {claude_failure_context['message'][:200]!r}"
+                )
+            if "api_error_status" in claude_failure_context:
+                diagnostic_bits.append(
+                    f"api_error_status={claude_failure_context['api_error_status']!r}"
+                )
+            if not diagnostic_bits:
+                diagnostic_bits.append(f"stdout: {stdout_raw[:200]!r}")
+
             logger.warning(
                 f"CLI dispatch: {agent_name!r} exited {proc.returncode} for "
-                f"session {session_id!r}. stderr: {stderr_raw[:200]!r}"
+                f"session {session_id!r}. {'; '.join(diagnostic_bits)}"
             )
             if _tmpdir_ctx is not None:
                 _tmpdir_ctx.cleanup()
@@ -436,6 +454,7 @@ class CLIAnalysisDispatcher:
                 exit_code=proc.returncode,
                 stderr=stderr_raw,
                 retry_count=attempt,
+                extra_error_details=claude_failure_context,
             )
 
         # For codex: read output from file
@@ -566,6 +585,35 @@ def _filter_env(env: dict[str, str]) -> dict[str, str]:
     return {k: v for k, v in env.items() if not k.startswith("SECONDSIGHT_")}
 
 
+def _extract_claude_failure_context(raw_stdout: str) -> dict[str, Any]:
+    """Best-effort recovery of Claude CLI error details from stdout JSON.
+
+    Claude may exit non-zero while still emitting a structured JSON envelope
+    on stdout. When stderr is empty, this is the only place operator-grade
+    diagnostics like 429 quota errors survive.
+    """
+    try:
+        payload = json.loads(raw_stdout)
+    except json.JSONDecodeError, ValueError, TypeError:
+        payload = None
+
+    if not isinstance(payload, dict):
+        excerpt = raw_stdout.strip()
+        return {"stdout_excerpt": excerpt[:200]} if excerpt else {}
+
+    details: dict[str, Any] = {}
+    if payload.get("is_error") is True:
+        details["cli_reported_error"] = True
+    if "api_error_status" in payload:
+        details["api_error_status"] = payload["api_error_status"]
+    if "subtype" in payload:
+        details["subtype"] = payload["subtype"]
+    result_text = str(payload.get("result", "")).strip()
+    if result_text:
+        details["message"] = result_text[:500]
+    return details
+
+
 def _augment_prompt_with_error(original_prompt: str, error_message: str) -> str:
     """Augment the prompt with the previous validation error for retry.
 
@@ -588,6 +636,7 @@ def _make_failure_output(
     error: str = "",
     retry_count: int = 0,
     message: str = "",
+    extra_error_details: dict[str, Any] | None = None,
 ) -> AnalysisOutput:
     """Construct an AnalysisOutput with status='failure' and error_details.
 
@@ -604,6 +653,8 @@ def _make_failure_output(
         error_details["error"] = error
     if message:
         error_details["message"] = message
+    if extra_error_details:
+        error_details.update(extra_error_details)
 
     return AnalysisOutput.model_validate(
         {

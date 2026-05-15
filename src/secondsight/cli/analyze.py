@@ -465,6 +465,8 @@ def _handle_dispatch_result(result: DispatchResult, *, session_id: str) -> None:
     """Translate DispatchResult to CLI output and exit code.
 
     dispatched (reason="dispatched") → exit 0.
+    dispatched (reason="analysis-failed") → exit 1 with failure warning.
+    dispatched (reason="analysis-unknown") → exit 1 with unknown-outcome warning.
     dispatched (reason="timed-out") → exit 1 with timeout warning.
     already-analyzed → exit 2 with skip message + --force hint.
     other non-dispatched → exit 1.
@@ -486,6 +488,20 @@ def _handle_dispatch_result(result: DispatchResult, *, session_id: str) -> None:
             typer.echo(
                 f"Analysis failed for session {session_id!r}. "
                 "See logs above for the exception detail.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        if result.reason == "analysis-failed":
+            typer.echo(
+                f"Analysis failed for session {session_id!r}. "
+                "See logs above for the provider or CLI error detail.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        if result.reason == "analysis-unknown":
+            typer.echo(
+                f"Analysis outcome unknown for session {session_id!r}. "
+                "Check logs above for timeout or provider diagnostics.",
                 err=True,
             )
             raise typer.Exit(code=1)

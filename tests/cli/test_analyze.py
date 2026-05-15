@@ -382,7 +382,7 @@ def test_dt_fl_11_http_status_error_exits_1_no_fallback(
         mock_post.side_effect = http_error
         mock_httpx.post = mock_post
 
-        with patch("secondsight.cli.analyze._build_in_process_trigger") as mock_build:
+        with patch("secondsight.cli.analyze._build_in_process_trigger"):
             with patch("secondsight.cli.analyze._run_in_process_dispatch") as mock_run:
                 with caplog.at_level(logging.ERROR, logger="secondsight.cli.analyze"):
                     result = runner.invoke(
@@ -504,4 +504,43 @@ def test_dt_fl_12_timeout_exits_1_not_0() -> None:
     # Explicitly check "Analysis complete" is NOT in output
     assert "Analysis complete" not in output, (
         f"'Analysis complete' must NOT appear when analysis timed out. Output: {output!r}"
+    )
+
+
+def test_dt_fl_13_mode_aware_failure_exits_1_not_0() -> None:
+    """DT-FL-13: mode-aware dispatch failure must not print 'Analysis complete'."""
+    from secondsight.sdk.trigger import DispatchResult
+
+    dispatch_result = DispatchResult(
+        dispatched=True,
+        reason="analysis-failed",
+        run_id=None,
+    )
+
+    with patch("secondsight.cli.analyze._build_in_process_trigger") as mock_build:
+        with patch("secondsight.cli.analyze._run_in_process_dispatch") as mock_run:
+            mock_run.return_value = dispatch_result
+            mock_build.return_value = MagicMock()
+
+            result = runner.invoke(
+                app,
+                [
+                    "analyze",
+                    "--session",
+                    _SESSION_ID,
+                    "--project",
+                    _PROJECT_ID,
+                    "--no-server",
+                ],
+            )
+
+    assert result.exit_code == 1, (
+        f"Expected exit 1 for failed mode-aware analysis. Got {result.exit_code}. "
+        f"Output: {result.output!r}"
+    )
+    assert "Analysis failed" in result.output, (
+        f"Expected failure wording in output: {result.output!r}"
+    )
+    assert "Analysis complete" not in result.output, (
+        f"'Analysis complete' must NOT appear for failed analysis. Output: {result.output!r}"
     )

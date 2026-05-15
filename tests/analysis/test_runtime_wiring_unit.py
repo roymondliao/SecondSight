@@ -93,6 +93,28 @@ def _make_success_output(session_id: str) -> AnalysisOutput:
     )
 
 
+def _make_failure_output(session_id: str) -> AnalysisOutput:
+    return AnalysisOutput.model_validate(
+        {
+            "schema_version": "1.0",
+            "session_id": session_id,
+            "status": "failure",
+            "behavior_flags": [],
+            "session_summary": {
+                "headline": "Analysis failed",
+                "key_findings": [],
+                "body": "Mock dispatch failure.",
+            },
+            "dispatched_via": "cli",
+            "cli_agent": "claude_code",
+            "primary_model": None,
+            "fallback_used": False,
+            "retry_count": 0,
+            "error_details": {"reason": "subprocess_exit", "exit_code": 1},
+        }
+    )
+
+
 # ---------------------------------------------------------------------------
 # Unit tests for ModeAwareDispatch new interface
 # ---------------------------------------------------------------------------
@@ -273,6 +295,37 @@ async def test_trigger_dispatch_calls_mode_aware_dispatch_when_provided() -> Non
     assert result.dispatched is True
     mock_mad.dispatch.assert_called_once()
     # Orchestrator should NOT be called directly when mode_aware_dispatch is used
+    mock_orchestrator.analyze_and_aggregate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_trigger_dispatch_returns_failure_reason_from_mode_aware_dispatch() -> None:
+    """Mode-aware dispatch failure must not be flattened to reason='dispatched'."""
+    from secondsight.sdk.trigger import LockRegistry, Trigger
+
+    session_id = "sess-trigger-unit-failure-001"
+    project_id = "proj-trigger-unit-failure-001"
+
+    mock_orchestrator = MagicMock()
+    mock_runs_repo = MagicMock()
+    mock_runs_repo.get_latest_for_session = MagicMock(return_value=None)
+    mock_events_repo = MagicMock()
+
+    mock_mad = MagicMock()
+    mock_mad.dispatch = AsyncMock(return_value=_make_failure_output(session_id))
+
+    trigger = Trigger(
+        orchestrator=mock_orchestrator,
+        analysis_runs_repo=mock_runs_repo,
+        events_repo=mock_events_repo,
+        lock_registry=LockRegistry(),
+        mode_aware_dispatch=mock_mad,
+    )
+
+    result = await trigger.dispatch(project_id, session_id, source="manual")
+
+    assert result.dispatched is True
+    assert result.reason == "analysis-failed"
     mock_orchestrator.analyze_and_aggregate.assert_not_called()
 
 

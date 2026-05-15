@@ -25,6 +25,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from _pytest.logging import LogCaptureFixture
 from fastapi.testclient import TestClient
 
 from secondsight.analysis.output import AnalysisOutput
@@ -202,10 +203,10 @@ def _make_event(
 
 
 @pytest.mark.asyncio
-async def test_dt_sar_1_session_end_creates_analysis_run(
+async def test_dt_sar_1_session_end_creates_dashboard_visible_analysis(
     tmp_secondsight_home: Path,
 ) -> None:
-    """DEATH TEST: persisted `session_end` must create an analysis_outputs row.
+    """DEATH TEST: persisted `session_end` must create dashboard-visible analysis artifacts.
 
     After CRITICAL FIX 1: dispatch goes through Trigger → ModeAwareDispatch →
     AnalysisOutputsRepository. The check is now against analysis_outputs table,
@@ -261,6 +262,20 @@ async def test_dt_sar_1_session_end_creates_analysis_run(
                 session_id=session_id,
                 expected=1,
             )
+
+            summary = client.get(
+                "/api/analysis/summary",
+                params={"project_id": "proj-runtime"},
+            )
+            assert summary.status_code == 200, summary.text
+            assert summary.json()["analyzed_session_count"] == 1
+
+            sessions = client.get(
+                "/api/analysis/sessions",
+                params={"project_id": "proj-runtime"},
+            )
+            assert sessions.status_code == 200, sessions.text
+            assert len(sessions.json()["items"]) == 1
 
 
 @pytest.mark.asyncio
@@ -418,7 +433,7 @@ async def test_dt_sar_3_event_and_timeout_share_trigger_without_duplicate_runs(
 @pytest.mark.asyncio
 async def test_dt_sar_4_terminal_session_sweep_logs_at_debug_not_info(
     tmp_secondsight_home: Path,
-    caplog: "LogCaptureFixture",
+    caplog: LogCaptureFixture,
 ) -> None:
     """DEATH TEST: sweep tick for terminal session must emit DEBUG, not INFO.
 
