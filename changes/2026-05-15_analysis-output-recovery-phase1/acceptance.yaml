@@ -1,0 +1,55 @@
+feature: analysis-output-recovery-phase1
+coverage_type: planned
+
+scenarios:
+  - name: "DC1 — fenced JSON is normalized locally and does not consume retry budget"
+    type: death_path
+    given: "CLI agent returns ```json fenced output containing a valid AnalysisOutput object"
+    when: "dispatcher runs validation"
+    then:
+      - "normalizer strips fences before validation"
+      - "AnalysisOutput validation passes"
+      - "retry_count remains 0"
+
+  - name: "DC2 — JSON with preface/suffix noise is normalized to first top-level object"
+    type: death_path
+    given: "CLI agent returns one sentence before JSON and one sentence after JSON"
+    when: "dispatcher extracts the first top-level object"
+    then:
+      - "normalization succeeds without mutating the JSON body"
+      - "dispatcher does not classify the output as json_decode"
+
+  - name: "DC3 — malformed JSON still fails and enters bounded output-repair retry"
+    type: death_path
+    given: "CLI agent returns malformed JSON that cannot be normalized"
+    when: "dispatcher classifies the failure"
+    then:
+      - "failure class is json_decode"
+      - "retry count is bounded by [analysis.retry].output_repair_max_attempts"
+      - "feedback builder returns structured, length-bounded feedback"
+
+  - name: "DC4 — schema mismatch uses structured feedback instead of raw exception dump"
+    type: death_path
+    given: "CLI agent returns valid JSON missing required fields"
+    when: "AnalysisOutput validation fails"
+    then:
+      - "failure class is schema_mismatch"
+      - "retry feedback names the missing/invalid fields"
+      - "feedback length does not exceed feedback_max_chars"
+
+  - name: "DC5 — retry policy config above hard cap is rejected"
+    type: death_path
+    given: "[analysis.retry].output_repair_max_attempts exceeds the hard cap"
+    when: "config loader validates the config"
+    then:
+      - "loader raises actionable config error"
+      - "dispatcher never starts with an unbounded retry budget"
+
+  - name: "Happy path — valid clean JSON passes unchanged"
+    type: happy_path
+    given: "CLI agent returns a valid AnalysisOutput JSON string with no extra text"
+    when: "dispatcher validates it"
+    then:
+      - "normalizer is a no-op"
+      - "retry_count is 0"
+      - "error_details remains clean unless stderr exists"

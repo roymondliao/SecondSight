@@ -1,0 +1,34 @@
+feature: analysis-output-recovery-phase1
+status: done
+plan_ref_doc: changes/2026-05-15_analysis-output-recovery-phase1/2-plan.md
+acceptance_ref_doc: changes/2026-05-15_analysis-output-recovery-phase1/acceptance.yaml
+overview_ref_doc: changes/2026-05-15_analysis-output-recovery-phase1/overview.md
+research_refs:
+  kickoff: changes/2026-05-15_analysis-output-recovery-phase1/1-kickoff.md
+  problem_autopsy: changes/2026-05-15_analysis-output-recovery-phase1/problem-autopsy.md
+  pre_thinking: changes/2026-05-15_analysis-output-recovery-phase1/2-pre-thinking.md
+
+tasks:
+  - id: task-1
+    title: "Retry config + AnalysisOutput contract evolution"
+    status: done
+    scar_count: 1
+    unresolved_assumptions:
+      - "Repo-wide pre-commit remains red on unrelated existing files; Task 1 did not normalize the entire worktree."
+    depends_on: []
+
+  - id: task-2
+    title: "Shared output recovery helpers (normalizer + classifier + feedback builder)"
+    status: done
+    scar_count: 2
+    unresolved_assumptions:
+      - "Normalization currently supports only Phase 1-safe repairs (fences + first top-level object extraction)."
+    depends_on: [task-1]
+
+  - id: task-3
+    title: "CLI dispatcher integration + validation suite"
+    status: done
+    scar_count: 1
+    unresolved_assumptions:
+      - "retry_feedback currently lives inside persisted error_details for retry-loop plumbing; Phase 2 may separate internal recovery trace from output metadata."
+    depends_on: [task-1, task-2]

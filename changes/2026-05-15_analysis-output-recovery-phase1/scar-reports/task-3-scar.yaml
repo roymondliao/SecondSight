@@ -1,0 +1,95 @@
+task_id: task-3
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: >
+      `CLIAnalysisDispatcher._run_once()` still synthesizes the "empty stdout" case as a
+      `ClassifiedFailure` inline instead of routing it through a first-class shared helper.
+      This keeps Phase 1 changes small, but means the dispatcher still owns one sentinel
+      output-failure shape. Phase 2 can absorb that into a richer shared failure model.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      Retry feedback is persisted into `error_details["retry_feedback"]` so `_run_with_retry()`
+      can remain `AnalysisOutput`-driven without a larger internal result type. This is
+      pragmatic and keeps Task 3 localized, but it mixes model-facing recovery text into the
+      same error_details bag used for operator forensics. Phase 2 may want a cleaner internal
+      attempt trace separate from persisted output metadata.
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: >
+      Normalization occurs before validation and deliberately strips wrapper noise without
+      logging the chosen normalization strategy. This is not silent corruption — tests prove
+      valid fenced JSON now succeeds — but operators cannot yet query how often normalization
+      rescued outputs. That observability gap is a Phase 2 concern.
+    deferred_to_feature_iteration: true
+
+assumptions_made:
+  - assumption: >
+      Moving retry budget control from `_MAX_RETRIES` to `config.analysis.retry` will preserve
+      all existing CLI dispatcher behavior when the config uses its default values.
+    verified: true
+    note: >
+      Verified by running the full `tests/analysis/test_cli_dispatcher.py` suite after the
+      integration. Existing retry-path and non-output failure tests remained green.
+
+  - assumption: >
+      Applying normalization before `AnalysisOutput.model_validate_json()` does not affect the
+      clean JSON happy path.
+    verified: true
+    note: >
+      Verified by `tests/analysis/test_cli_dispatcher.py` and
+      `tests/analysis/test_output_recovery.py`; valid clean JSON remained a no-op path while
+      fenced JSON now succeeds with `retry_count=0`.
+
+  - assumption: >
+      Structured retry feedback is sufficient for Phase 1 and does not require the raw
+      pydantic exception string to be appended verbatim to the retry prompt.
+    verified: true
+    note: >
+      Verified by the new CLI dispatcher test asserting schema-guidance text plus missing field
+      names in the retry prompt. Recovery behavior still passes existing retry tests.
+
+debt_registered: true
+debt_location: >
+  src/secondsight/analysis/cli_dispatcher.py — inline empty-stdout classification and
+  `error_details["retry_feedback"]` persistence remain Phase 1 compromises pending a richer
+  shared recovery trace in Phase 2.
+
+resolved_items:
+  - original_section: "known_shortcuts"
+    original_description: >
+      `CLIAnalysisDispatcher._run_once()` still synthesizes the "empty stdout" case as a
+      `ClassifiedFailure` inline instead of routing it through a first-class shared helper.
+    resolution: >
+      Feature iteration Round 1 changed `_run_once()` to call
+      `classify_empty_output(source="stdout")`, so the dispatcher no longer owns a
+      bespoke empty-output failure shape.
+
+  - original_section: "silent_failure_conditions"
+    original_description: >
+      Normalization occurs before validation and deliberately strips wrapper noise without
+      logging the chosen normalization strategy. Operators cannot yet query how often
+      normalization rescued outputs.
+    resolution: >
+      Feature iteration Round 1 added an INFO log whenever normalization changes model
+      output, including the normalization strategy plus raw and normalized character
+      counts. The fenced JSON path is covered by a CLI dispatcher test asserting the
+      `strip_fence` log.
+
+  - original_section: "known_shortcuts"
+    original_description: >
+      CLI dispatcher would have continued duplicating raw parse/schema classification logic
+      even after Task 2 introduced a shared helper module.
+    resolution: >
+      `_run_once()` now calls `normalize_llm_json_text()` and `classify_output_failure()`,
+      eliminating the old duplicated ValidationError branching and letting fenced JSON succeed
+      without consuming retry budget.
+
+  - original_section: "assumptions_made"
+    original_description: >
+      Retry prompt augmentation might still depend on verbatim pydantic exception text.
+    resolution: >
+      Replaced raw-error augmentation with `build_retry_feedback()` output and added tests that
+      pin structured schema guidance plus missing-field surfacing in the retry prompt.

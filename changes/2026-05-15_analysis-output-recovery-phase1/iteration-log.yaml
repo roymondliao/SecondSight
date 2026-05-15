@@ -1,0 +1,107 @@
+feature: "analysis-output-recovery-phase1"
+signal_lost_initial: 10
+
+budget:
+  max_rounds: 3
+  reviewer_retry_limit: 2
+
+rounds:
+  - round: 1
+    signal_lost_before: 10
+    budget_context:
+      remaining_rounds_at_start: 2
+      stagnation_count_at_start: 0
+      net_rot_previous_round: 0
+      strategy_hint: explore
+    items_triaged: 10
+    triage_result:
+      fix:
+        - "AnalysisRetryConfig range validation currently exists only on the loader path; direct dataclass construction is still trust-based."
+        - "Direct in-memory AnalysisConfig/SecondSightConfig construction can bypass retry policy range checks."
+        - "classify_output_failure() is exception-centric and caller-managed sentinel cases still need a shared recovery shape."
+        - "Empty stdout is synthesized inline in CLIAnalysisDispatcher instead of using a first-class shared helper."
+        - "Normalization rescue rate is not observable in logs or metrics."
+      accept:
+        - description: "Normalizer currently supports only Phase 1-safe repairs: fences and first top-level object extraction."
+          expiry_date: "2026-06-30"
+          rationale: "Intentional safety boundary for Phase 1; malformed syntax repair belongs in a later policy decision."
+        - description: "Balanced-but-malformed JSON still fails in parser/validator after object extraction."
+          expiry_date: "2026-06-30"
+          rationale: "Normalizer should strip wrappers only; syntax repair would risk silently changing model output."
+      defer:
+        - "analysis.output depends on config.schema for the retry hard cap constant; Phase 2 can move policy constants into a shared recovery contract."
+        - "Repo-wide pre-commit remains red on unrelated existing files; this feature iteration does not normalize the full worktree."
+        - "retry_feedback currently lives inside persisted error_details; Phase 2 can separate internal recovery trace from persisted output metadata."
+    fixes_applied: 3
+    fixes_scar_count: 0
+    budget_spent:
+      implementer_dispatches: 0
+      reviewer_dispatches: 0
+      reviewer_retries: 0
+      validation_runs: 2
+    evidence_gained:
+      - "Direct AnalysisRetryConfig invalid construction now raises SecondSightConfigError and is covered by tests/config/test_schema_v2.py."
+      - "Empty stdout classification now routes through classify_empty_output() and is covered by tests/analysis/test_output_recovery.py plus CLI dispatcher regression tests."
+      - "Fenced JSON normalization now emits an INFO log with strategy=strip_fence and is covered by tests/analysis/test_cli_dispatcher.py."
+      - "Focused regression passed: tests/config/test_schema_v2.py tests/config/test_loader_v2.py tests/analysis/test_output_recovery.py tests/analysis/test_cli_dispatcher.py."
+      - "Phase 1 blast-radius regression passed: tests/analysis/test_output_contract.py tests/analysis/test_output_recovery.py tests/analysis/test_cli_dispatcher.py tests/analysis/test_sdk_dispatcher.py tests/config/test_schema_v2.py tests/config/test_loader_v2.py tests/config/test_precheck.py."
+    residual_risk:
+      - "No reviewer sub-agent dispatch or per-fix commits were performed in this local run."
+      - "Structured normalization counters/metrics remain deferred to Phase 2; Round 1 adds operator-visible logs only."
+      - "Three accepted/deferred items remain as intentional feature-level residual risk."
+    signal_lost_after: 5
+    decision: continue
+    decision_reason: "Human chose to continue to Round 2."
+  - round: 2
+    signal_lost_before: 5
+    budget_context:
+      remaining_rounds_at_start: 1
+      stagnation_count_at_start: 0
+      net_rot_previous_round: -5
+      strategy_hint: converge
+    items_triaged: 5
+    triage_result:
+      fix: []
+      accept:
+        - description: "Normalizer currently supports only Phase 1-safe repairs: fences and first top-level object extraction."
+          expiry_date: "2026-06-30"
+          rationale: "Intentional safety boundary for Phase 1; malformed syntax repair belongs in a later policy decision."
+        - description: "Balanced-but-malformed JSON still fails in parser/validator after object extraction."
+          expiry_date: "2026-06-30"
+          rationale: "Normalizer should strip wrappers only; syntax repair would risk silently changing model output."
+      defer:
+        - "analysis.output depends on config.schema for the retry hard cap constant; Phase 2 can move policy constants into a shared recovery contract."
+        - "Repo-wide pre-commit remains red on unrelated existing files; this feature iteration does not normalize the full worktree."
+        - "retry_feedback currently lives inside persisted error_details; Phase 2 can separate internal recovery trace from persisted output metadata."
+    fixes_applied: 0
+    fixes_scar_count: 0
+    budget_spent:
+      implementer_dispatches: 0
+      reviewer_dispatches: 0
+      reviewer_retries: 0
+      validation_runs: 0
+    evidence_gained:
+      - "Round 2 re-triage found no remaining fix-classified items after Round 1 resolution."
+      - "Remaining accepted items have expiry_date values; remaining deferred items are either Phase 2 scope or unrelated repository hygiene."
+    residual_risk:
+      - "The retry hard-cap constant still crossed from config.schema into analysis.output at the end of iteration; validate-and-ship later fixed this by introducing config.constants."
+      - "retry_feedback still remains in persisted error_details until Phase 2 introduces an internal recovery trace."
+      - "Repo-wide pre-commit remains red on unrelated existing files."
+    signal_lost_after: 5
+    decision: stop
+    decision_reason: "No remaining fix-classified items in Round 2; stop iteration and proceed to security/privacy review."
+
+validation_adjustments:
+  - description: >
+      Local code review during validate-and-ship found that `build_retry_feedback()` could
+      exceed tiny `feedback_max_chars` values by returning `"..."` for max_chars 1 or 2.
+    resolution: >
+      Added a tiny-bound death test and changed truncation to return a placeholder no longer
+      than the requested max_chars.
+  - description: >
+      Targeted E2E collection exposed an import cycle caused by `analysis.output` importing
+      retry cap constants from `config.schema`.
+    resolution: >
+      Added `secondsight.config.constants` and moved retry policy constants there. Both
+      `config.schema` and `analysis.output` now depend on the constants module instead of
+      depending on each other.

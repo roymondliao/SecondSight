@@ -1,0 +1,114 @@
+delivered_capability: >
+  CLI analysis output recovery now normalizes common JSON wrapper noise, classifies
+  parse/schema failures, feeds back bounded structured retry guidance, and enforces
+  config-driven retry limits.
+
+known_failure_modes:
+  - mode: >
+      Model returns malformed JSON whose braces balance after prose stripping.
+    severity: degradation
+    detection: >
+      CLI dispatch returns `status="failure"` with `error_details.reason="json_decode"`
+      after bounded output-repair attempts.
+  - mode: >
+      Model returns valid JSON that still violates `AnalysisOutput` schema.
+    severity: degradation
+    detection: >
+      CLI dispatch returns `status="failure"` with `error_details.reason="schema_mismatch"`
+      and structured field errors.
+  - mode: >
+      Operator config sets output-repair retry budget above the hard cap.
+    severity: crash
+    detection: >
+      Config load raises `SecondSightConfigError` before dispatch starts.
+  - mode: >
+      Retry feedback remains persisted in `error_details` until Phase 2 separates internal
+      recovery trace from persisted output metadata.
+    severity: degradation
+    detection: >
+      Inspect failed `analysis_outputs.error_details.retry_feedback` rows.
+
+accepted_risks:
+  - risk: >
+      Normalization intentionally handles only markdown fences and first top-level object
+      extraction; syntax repair is not attempted.
+    accepted_by: "human"
+    expires: "2026-06-30"
+  - risk: >
+      Balanced-but-malformed JSON still fails through parser/validator instead of being
+      repaired locally.
+    accepted_by: "human"
+    expires: "2026-06-30"
+  - risk: >
+      Repo-wide pre-commit remains red on unrelated existing files, although targeted
+      feature files pass pre-commit.
+    accepted_by: "human"
+    expires: "2026-06-30"
+  - risk: >
+      Manual security/privacy review was used because no dedicated platform review
+      capability was available in this environment.
+    accepted_by: "human"
+    expires: "2026-06-30"
+  - risk: >
+      `retry_feedback` remains inside persisted `error_details` until Phase 2 introduces
+      a cleaner internal recovery trace.
+    accepted_by: "human"
+    expires: "2026-06-30"
+
+silent_failure_surface: low
+
+monitoring_hooks:
+  - >
+      Log line `CLI dispatch: normalized output ... strategy=...` shows when local
+      normalization rescued CLI output.
+  - >
+      Failed outputs carry `error_details.reason` values such as `json_decode`,
+      `schema_mismatch`, `subprocess_exit`, or `timeout`.
+  - >
+      Exhausted retries include `error_details.attempts` and `retry_count` for operator
+      forensics.
+
+kill_switch: >
+  Set `[analysis.retry].enabled = false` to disable output-repair retries immediately.
+  To bypass CLI recovery entirely, run analysis in SDK mode once Phase 2 adopts shared
+  recovery there.
+
+validation:
+  acceptance: "passed"
+  security_privacy_review: "passed_with_manual_review"
+  code_review: "passed_with_local_review"
+  commands:
+    - command: >
+        uv run pytest tests/e2e/test_mode_toggle_cli.py tests/e2e/test_mode_toggle_sdk.py
+        tests/e2e/test_sdk_regression.py tests/analysis/test_output_recovery.py
+        tests/analysis/test_output_contract.py tests/analysis/test_cli_dispatcher.py
+        tests/analysis/test_sdk_dispatcher.py tests/config/test_schema_v2.py
+        tests/config/test_loader_v2.py tests/config/test_precheck.py
+      result: "218 passed, 5 skipped"
+    - command: >
+        uv run pre-commit run --files src/secondsight/analysis/cli_dispatcher.py
+        src/secondsight/analysis/output.py src/secondsight/analysis/output_recovery.py
+        src/secondsight/config/constants.py src/secondsight/config/loader.py
+        src/secondsight/config/schema.py tests/analysis/test_cli_dispatcher.py
+        tests/analysis/test_output_contract.py tests/analysis/test_output_recovery.py
+        tests/config/test_loader_v2.py tests/config/test_schema_v2.py
+      result: "passed"
+    - command: "uv run pre-commit run --all-files"
+      result: >
+        failed on unrelated existing repository issues: test naming hooks, ruff errors in
+        unrelated files, and existing ty warnings/errors outside the Phase 1 file set.
+    - command: >
+        uv run pytest tests/analysis/test_output_contract.py
+        tests/analysis/test_output_recovery.py tests/analysis/test_cli_dispatcher.py
+        tests/analysis/test_sdk_dispatcher.py tests/config/test_schema_v2.py
+        tests/config/test_loader_v2.py tests/config/test_precheck.py tests/e2e
+      result: >
+        228 passed, 5 skipped, 1 failed; failure was an unrelated legacy-config E2E
+        warning-capture test.
+
+validation_fixes:
+  - >
+      Fixed `build_retry_feedback()` so tiny `feedback_max_chars` values are still honored.
+  - >
+      Fixed retry cap circular import by moving retry policy constants to
+      `secondsight.config.constants`.

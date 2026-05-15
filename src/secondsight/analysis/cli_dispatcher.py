@@ -65,11 +65,15 @@ from pydantic import ValidationError
 from secondsight.analysis.cli_adapters import claude_code as _claude_code_adapter
 from secondsight.analysis.cli_adapters import codex as _codex_adapter
 from secondsight.analysis.output import AnalysisOutput
+from secondsight.analysis.output_recovery import (
+    build_retry_feedback,
+    classify_empty_output,
+    classify_output_failure,
+    normalize_llm_json_text,
+)
+from secondsight.config.constants import BUILTIN_ANALYSIS_MAX_RETRY_COUNT_CAP
 from secondsight.config.schema import AnalysisConfig
 from secondsight.state import SecondSightState
-
-# Maximum retries on parse/schema failures (not on non-zero exit)
-_MAX_RETRIES: int = 2
 
 # Grace period after SIGTERM before SIGKILL on timeout
 _SIGKILL_GRACE_SECONDS: float = 1.0
@@ -246,19 +250,22 @@ class CLIAnalysisDispatcher:
         project_root: Path,
         session_id: str,
     ) -> AnalysisOutput:
-        """Run subprocess with up to _MAX_RETRIES retries on parse/schema failure."""
+        """Run subprocess with bounded output-repair retry on parse/schema failure."""
         current_prompt = initial_prompt
-        last_error: str = ""
+        last_feedback: str = ""
         last_reason: str = ""
+        max_retries = (
+            self._config.retry.output_repair_max_attempts if self._config.retry.enabled else 0
+        )
 
-        for attempt in range(_MAX_RETRIES + 1):  # 0, 1, 2
+        for attempt in range(max_retries + 1):
             is_retry = attempt > 0
             if is_retry:
                 logger.warning(
-                    f"CLI dispatch: retry {attempt}/{_MAX_RETRIES} for session {session_id!r}. "
+                    f"CLI dispatch: retry {attempt}/{max_retries} for session {session_id!r}. "
                     f"Previous error: {last_reason!r}"
                 )
-                current_prompt = _augment_prompt_with_error(initial_prompt, last_error)
+                current_prompt = _augment_prompt_with_error(initial_prompt, last_feedback)
 
             result = await self._run_once(
                 agent_name=agent_name,
@@ -294,17 +301,19 @@ class CLIAnalysisDispatcher:
                 if result.error_details
                 else "unknown"
             )
-            last_error = str(result.error_details.get("error", "")) if result.error_details else ""
-            if attempt < _MAX_RETRIES:
+            last_feedback = (
+                str(result.error_details.get("retry_feedback", "")) if result.error_details else ""
+            )
+            if attempt < max_retries:
                 continue
             # Exhausted retries: mark final retry count
             return AnalysisOutput.model_validate(
                 {
                     **result.model_dump(),
-                    "retry_count": _MAX_RETRIES,
+                    "retry_count": max_retries,
                     "error_details": {
                         **(result.error_details or {}),
-                        "attempts": _MAX_RETRIES + 1,
+                        "attempts": max_retries + 1,
                     },
                 }
             )
@@ -491,22 +500,38 @@ class CLIAnalysisDispatcher:
         if agent_name == "claude_code":
             stdout_raw = _claude_code_adapter.extract_result(stdout_raw)
 
-        # Parse AnalysisOutput from stdout_raw
-        if not stdout_raw.strip():
+        # Normalize wrapper noise before validation.
+        normalization = normalize_llm_json_text(stdout_raw)
+        normalized_stdout = normalization.normalized_text
+        if normalization.changed:
+            logger.info(
+                f"CLI dispatch: normalized output from {agent_name!r} "
+                f"(session {session_id!r}, attempt {attempt + 1}, "
+                f"strategy={normalization.strategy!r}, "
+                f"raw_chars={len(stdout_raw)}, normalized_chars={len(normalized_stdout)})"
+            )
+
+        # Parse AnalysisOutput from normalized stdout
+        if not normalized_stdout.strip():
             logger.warning(
                 f"CLI dispatch: empty stdout from {agent_name!r} (session {session_id!r})"
             )
+            classified_failure = classify_empty_output(source="stdout")
             return _make_failure_output(
                 session_id=session_id,
-                reason="json_decode",
+                reason=classified_failure.reason,
                 agent_name=agent_name,
                 stderr=stderr_raw,
-                error="Empty stdout -- no JSON to parse",
+                error=classified_failure.error,
                 retry_count=attempt,
+                retry_feedback=build_retry_feedback(
+                    classified_failure,
+                    max_chars=self._config.retry.feedback_max_chars,
+                ),
             )
 
         try:
-            output = AnalysisOutput.model_validate_json(stdout_raw)
+            output = AnalysisOutput.model_validate_json(normalized_stdout)
             logger.info(
                 f"CLI dispatch: success for session {session_id!r} via {agent_name!r} "
                 f"(attempt {attempt + 1}, flags={len(output.behavior_flags)})"
@@ -524,53 +549,62 @@ class CLIAnalysisDispatcher:
         except json.JSONDecodeError as exc:
             # Standalone json.JSONDecodeError (shouldn't fire since model_validate_json
             # wraps it in ValidationError, but kept as a belt-and-suspenders guard)
+            classified_failure = classify_output_failure(exc)
             logger.warning(
                 f"CLI dispatch: JSON decode error from {agent_name!r} "
                 f"(session {session_id!r}, attempt {attempt + 1}): {exc}"
             )
             return _make_failure_output(
                 session_id=session_id,
-                reason="json_decode",
+                reason=classified_failure.reason,
                 agent_name=agent_name,
                 stderr=stderr_raw,
-                error=str(exc),
+                error=classified_failure.error,
                 retry_count=attempt,
+                extra_error_details=classified_failure.details,
+                retry_feedback=build_retry_feedback(
+                    classified_failure,
+                    max_chars=self._config.retry.feedback_max_chars,
+                ),
             )
         except ValidationError as exc:
-            # Pydantic wraps both invalid JSON (type=json_invalid) and schema
-            # mismatches in ValidationError. Distinguish them by error type.
-            error_types = {e["type"] for e in exc.errors()}
-            if error_types <= {"json_invalid"}:
-                reason = "json_decode"
-                log_level = "warning"
-            else:
-                reason = "schema_mismatch"
-                log_level = "warning"
+            classified_failure = classify_output_failure(exc)
             logger.log(
-                log_level.upper(),
-                f"CLI dispatch: {reason} from {agent_name!r} "
+                "WARNING",
+                f"CLI dispatch: {classified_failure.reason} from {agent_name!r} "
                 f"(session {session_id!r}, attempt {attempt + 1}): {exc}",
             )
             return _make_failure_output(
                 session_id=session_id,
-                reason=reason,
+                reason=classified_failure.reason,
                 agent_name=agent_name,
                 stderr=stderr_raw,
-                error=str(exc),
+                error=classified_failure.error,
                 retry_count=attempt,
+                extra_error_details=classified_failure.details,
+                retry_feedback=build_retry_feedback(
+                    classified_failure,
+                    max_chars=self._config.retry.feedback_max_chars,
+                ),
             )
         except Exception as exc:
+            classified_failure = classify_output_failure(exc)
             logger.error(
                 f"CLI dispatch: unexpected parse error from {agent_name!r} "
                 f"(session {session_id!r}, attempt {attempt + 1}): {exc}"
             )
             return _make_failure_output(
                 session_id=session_id,
-                reason="schema_mismatch",
+                reason=classified_failure.reason,
                 agent_name=agent_name,
                 stderr=stderr_raw,
-                error=str(exc),
+                error=classified_failure.error,
                 retry_count=attempt,
+                extra_error_details=classified_failure.details,
+                retry_feedback=build_retry_feedback(
+                    classified_failure,
+                    max_chars=self._config.retry.feedback_max_chars,
+                ),
             )
 
 
@@ -628,7 +662,7 @@ def _extract_claude_failure_context(raw_stdout: str) -> dict[str, Any]:
 def _augment_prompt_with_error(original_prompt: str, error_message: str) -> str:
     """Augment the prompt with the previous validation error for retry.
 
-    The error message is appended verbatim so the LLM can see exactly what failed.
+    The retry feedback is structured and bounded before being appended here.
     """
     return (
         original_prompt
@@ -648,6 +682,7 @@ def _make_failure_output(
     retry_count: int = 0,
     message: str = "",
     extra_error_details: dict[str, Any] | None = None,
+    retry_feedback: str = "",
 ) -> AnalysisOutput:
     """Construct an AnalysisOutput with status='failure' and error_details.
 
@@ -666,6 +701,8 @@ def _make_failure_output(
         error_details["message"] = message
     if extra_error_details:
         error_details.update(extra_error_details)
+    if retry_feedback:
+        error_details["retry_feedback"] = retry_feedback
 
     return AnalysisOutput.model_validate(
         {
@@ -682,7 +719,7 @@ def _make_failure_output(
             "cli_agent": agent_name,
             "primary_model": None,
             "fallback_used": False,
-            "retry_count": min(retry_count, 2),
+            "retry_count": min(retry_count, BUILTIN_ANALYSIS_MAX_RETRY_COUNT_CAP),
             "error_details": error_details,
         }
     )

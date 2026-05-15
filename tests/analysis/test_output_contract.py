@@ -145,7 +145,7 @@ class TestDeathCases:
             AnalysisOutput.model_validate(raw)
 
     def test_retry_count_above_cap_raises(self) -> None:
-        """DC2: retry_count=3 → ValidationError (le=2 — bounded retry cap per Decision #2)."""
+        """DC2: retry_count=6 → ValidationError (Phase 1 hard cap = 5)."""
         from secondsight.analysis.output import AnalysisOutput
 
         raw = {
@@ -156,7 +156,7 @@ class TestDeathCases:
             "session_summary": {"headline": "ok", "key_findings": [], "body": ""},
             "dispatched_via": "sdk",
             "primary_model": "claude-opus-4-5",
-            "retry_count": 3,
+            "retry_count": 6,
         }
         with pytest.raises(ValidationError):
             AnalysisOutput.model_validate(raw)
@@ -373,10 +373,10 @@ class TestAnalysisOutputConstruction:
         assert output.fallback_used is True
 
     def test_retry_count_boundary_valid(self) -> None:
-        """retry_count=0, 1, 2 are all valid (bounded [0, 2])."""
+        """retry_count=0, 1, 2, 5 are all valid within the Phase 1 hard cap."""
         from secondsight.analysis.output import AnalysisOutput
 
-        for count in (0, 1, 2):
+        for count in (0, 1, 2, 5):
             output = AnalysisOutput.model_validate(self._sdk_payload(retry_count=count))
             assert output.retry_count == count
 
@@ -428,17 +428,17 @@ class TestAnalysisOutputConstruction:
         assert output.error_details is None
 
     def test_cli_retry_count_set(self) -> None:
-        """CLI mode with retry_count=2 after exhausted retries (terminal failure state)."""
+        """CLI mode may report retry_count up to the Phase 1 hard cap."""
         from secondsight.analysis.output import AnalysisOutput
 
         output = AnalysisOutput.model_validate(
             self._cli_payload(
                 status="failure",
-                retry_count=2,
-                error_details={"reason": "schema mismatch after 2 retries"},
+                retry_count=5,
+                error_details={"reason": "schema mismatch after 5 retries"},
             )
         )
-        assert output.retry_count == 2
+        assert output.retry_count == 5
         assert output.status == "failure"
 
     def test_json_schema_is_serializable(self) -> None:

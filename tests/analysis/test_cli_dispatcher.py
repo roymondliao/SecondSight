@@ -419,6 +419,35 @@ class TestDC2_SchemaParseRetry:
     """DC2: invalid JSON / schema mismatch -> retry <=2 -> failure after exhaustion."""
 
     @pytest.mark.asyncio
+    async def test_fenced_json_returns_success_without_retry(self, tmp_path: Path, caplog) -> None:
+        """Normalizable fenced JSON should succeed without consuming retry budget."""
+        dispatcher = _make_dispatcher()
+        valid_output = json.dumps(_valid_output_dict())
+
+        async def create_proc(*args, **kwargs):
+            return _make_proc_mock(stdout=f"```json\n{valid_output}\n```", stderr="")
+
+        with (
+            caplog.at_level("INFO"),
+            patch(
+                "secondsight.analysis.cli_dispatcher.asyncio.create_subprocess_exec",
+                side_effect=create_proc,
+            ),
+        ):
+            result = await dispatcher.dispatch(
+                session_id="sess-001",
+                project_root=tmp_path,
+                session_payload={"events": []},
+            )
+
+        assert result.status == "success"
+        assert result.retry_count == 0
+        assert any(
+            "normalized output" in record.message and "strip_fence" in record.message
+            for record in caplog.records
+        )
+
+    @pytest.mark.asyncio
     async def test_invalid_json_stdout_retries_and_returns_failure(self, tmp_path: Path) -> None:
         """subprocess exits 0 with invalid JSON -> retries <=2 -> final failure."""
         dispatcher = _make_dispatcher()
@@ -496,10 +525,8 @@ class TestDC2_SchemaParseRetry:
         assert result.error_details["reason"] == "json_decode"
 
     @pytest.mark.asyncio
-    async def test_retry_augmented_prompt_includes_validation_error_verbatim(
-        self, tmp_path: Path
-    ) -> None:
-        """DC-RETRY-PROMPT: retry's augmented prompt MUST include the validation error verbatim.
+    async def test_retry_prompt_uses_structured_feedback(self, tmp_path: Path) -> None:
+        """Retry prompt should use structured schema feedback rather than raw exception text.
 
         For claude_code, the prompt is a POSITIONAL ARG (not stdin).
         We verify by capturing the args passed to create_subprocess_exec on the retry call.
@@ -553,10 +580,11 @@ class TestDC2_SchemaParseRetry:
             "Retry prompt (CLI arg) must be LONGER than initial prompt (error appended)"
         )
 
-        # The retry prompt MUST contain some indication of the schema error
-        # (pydantic validation error text is embedded verbatim)
-        assert "[IMPORTANT" in retry_prompt_arg or "failed" in retry_prompt_arg.lower(), (
-            "Retry prompt must contain the error annotation added by _augment_prompt_with_error"
+        assert "did not match the required JSON schema" in retry_prompt_arg, (
+            "Retry prompt must contain structured schema-mismatch guidance."
+        )
+        assert "session_summary" in retry_prompt_arg, (
+            "Retry prompt must surface the missing field name from structured feedback."
         )
 
 

@@ -1,0 +1,70 @@
+task_id: task-2
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: >
+      `normalize_llm_json_text()` currently targets exactly the Phase 1 repair scope:
+      outer markdown fences and first top-level JSON object extraction. It does not try
+      to repair malformed syntax (missing braces, trailing commas, quote coercion) and
+      does not normalize top-level arrays. This is intentional for safety, but it means
+      later phases may need either richer repairs or clearer dispatcher-side bridging for
+      empty/partial output cases.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      `classify_output_failure()` is exception-centric today. It cleanly handles
+      `ValidationError` and `JSONDecodeError`, but "empty stdout" or other sentinel
+      conditions still require the caller to decide how to represent them before calling
+      into the shared recovery layer. Task 3 will bridge that in the CLI dispatcher; a
+      richer internal failure model may land in Phase 2.
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: >
+      If a model returns explanatory prose followed by a malformed JSON object whose braces
+      still balance, the normalizer will extract that object and leave actual parse failure
+      detection to the validator/parser. This is not silent corruption, but it means the
+      normalizer alone does not guarantee validity — by design it only strips wrappers.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      The analysis output contract always expects a top-level JSON object, never an array,
+      so extracting the first balanced `{...}` object is the right normalization primitive.
+    verified: true
+    note: >
+      Verified against `AnalysisOutput` shape and the CLI prompt contract; both require a
+      single JSON object.
+
+  - assumption: >
+      Sharing this module now will not create import cycles when CLI dispatcher adopts it
+      in Task 3.
+    verified: true
+    note: >
+      Verified by importing the module alongside `AnalysisOutput` in
+      `tests/analysis/test_output_recovery.py` and `tests/analysis/test_output_contract.py`.
+
+debt_registered: true
+debt_location: >
+  src/secondsight/analysis/output_recovery.py — Phase 1-safe normalization/classification
+  only; richer recovery semantics deferred to dispatcher integration and Phase 2.
+
+resolved_items:
+  - original_section: "known_shortcuts"
+    original_description: >
+      `classify_output_failure()` is exception-centric today. It cleanly handles
+      `ValidationError` and `JSONDecodeError`, but "empty stdout" or other sentinel
+      conditions still require the caller to decide how to represent them before calling
+      into the shared recovery layer.
+    resolution: >
+      Feature iteration Round 1 added `classify_empty_output()` to the shared recovery
+      module. Empty model output now has a first-class shared `json_decode` failure shape
+      with structured `condition` and `source` details.
+
+  - original_section: "known_shortcuts"
+    original_description: >
+      Retry hard cap and output contract might drift if Task 2 introduced its own copy.
+    resolution: >
+      Task 2 reused the Phase 1 / Task 1 shared cap via `AnalysisOutput` and did not add a
+      second retry-bound constant in `output_recovery.py`. The helper layer remains policy-
+      agnostic except for caller-provided `max_chars`.

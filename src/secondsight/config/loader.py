@@ -51,12 +51,16 @@ from secondsight.config.env import (
 )
 from secondsight.config.schema import (
     BUILTIN_ANALYSIS_TIMEOUT_SECONDS,
+    BUILTIN_ANALYSIS_MAX_RETRY_COUNT_CAP,
     BUILTIN_DEFAULT_AGENT,
+    BUILTIN_ANALYSIS_OUTPUT_REPAIR_MAX_ATTEMPTS,
+    BUILTIN_ANALYSIS_RETRY_FEEDBACK_MAX_CHARS,
     BUILTIN_SDK_FALLBACK_MODEL,
     BUILTIN_SDK_PRIMARY_MODEL,
     AnalysisConfig,
     AnalysisCLIConfig,
     AnalysisCLIModelsConfig,
+    AnalysisRetryConfig,
     AnalysisSDKConfig,
     FallbackModelsConfig,
     GeneralConfig,
@@ -509,10 +513,62 @@ def _build_analysis_config(doc: dict[str, Any]) -> AnalysisConfig:
         fallback_model=str(sdk_section.get("fallback_model", BUILTIN_SDK_FALLBACK_MODEL)),
     )
 
+    # [analysis.retry]
+    retry_section = analysis_section.get("retry")
+    if not isinstance(retry_section, dict):
+        retry_section = {}
+
+    retry_enabled = retry_section.get("enabled", True)
+    if not isinstance(retry_enabled, bool):
+        raise SecondSightConfigError(
+            f"[analysis.retry].enabled must be a boolean; got {type(retry_enabled).__name__!r}"
+        )
+
+    output_repair_max_attempts = retry_section.get(
+        "output_repair_max_attempts",
+        BUILTIN_ANALYSIS_OUTPUT_REPAIR_MAX_ATTEMPTS,
+    )
+    if not isinstance(output_repair_max_attempts, int):
+        raise SecondSightConfigError(
+            "[analysis.retry].output_repair_max_attempts must be an integer; "
+            f"got {type(output_repair_max_attempts).__name__!r}"
+        )
+    if output_repair_max_attempts < 0:
+        raise SecondSightConfigError(
+            "[analysis.retry].output_repair_max_attempts must be >= 0; "
+            f"got {output_repair_max_attempts!r}"
+        )
+    if output_repair_max_attempts > BUILTIN_ANALYSIS_MAX_RETRY_COUNT_CAP:
+        raise SecondSightConfigError(
+            "[analysis.retry].output_repair_max_attempts exceeds the hard cap "
+            f"{BUILTIN_ANALYSIS_MAX_RETRY_COUNT_CAP}; got {output_repair_max_attempts!r}"
+        )
+
+    feedback_max_chars = retry_section.get(
+        "feedback_max_chars",
+        BUILTIN_ANALYSIS_RETRY_FEEDBACK_MAX_CHARS,
+    )
+    if not isinstance(feedback_max_chars, int):
+        raise SecondSightConfigError(
+            "[analysis.retry].feedback_max_chars must be an integer; "
+            f"got {type(feedback_max_chars).__name__!r}"
+        )
+    if feedback_max_chars <= 0:
+        raise SecondSightConfigError(
+            f"[analysis.retry].feedback_max_chars must be > 0; got {feedback_max_chars!r}"
+        )
+
+    retry_config = AnalysisRetryConfig(
+        enabled=retry_enabled,
+        output_repair_max_attempts=output_repair_max_attempts,
+        feedback_max_chars=feedback_max_chars,
+    )
+
     return AnalysisConfig(
         timeout_seconds=timeout_seconds,
         cli=cli_config,
         sdk=sdk_config,
+        retry=retry_config,
     )
 
 

@@ -1,0 +1,112 @@
+task_id: task-1
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: >
+      `AnalysisRetryConfig` range validation currently lives only in
+      `config.loader._build_analysis_config()`. Direct Python construction such as
+      `AnalysisRetryConfig(output_repair_max_attempts=999)` is still possible because
+      the dataclass itself does not validate field ranges in `__post_init__`. This
+      matches the repo's broader config-schema pattern, but it means loader-based config
+      validation and direct-construction safety are not yet unified.
+    deferred_to_feature_iteration: true
+
+  - description: >
+      `secondsight.analysis.output` now imports
+      `secondsight.config.schema.BUILTIN_ANALYSIS_MAX_RETRY_COUNT_CAP` so the retry
+      hard cap has a single source of truth. This removes value drift, but introduces
+      a new dependency from analysis contract code to config schema code. The coupling
+      is acceptable for now because `config.schema` is dependency-light and has no
+      analysis/runtime imports, but a later shared recovery module may be a cleaner
+      home for policy constants.
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: >
+      If future code paths bypass `load_global_config()` / `load_project_config()` and
+      manually construct `SecondSightConfig(analysis=AnalysisConfig(...))`, invalid retry
+      policy values may survive until runtime because only `AnalysisOutput.retry_count`
+      is contract-bounded today. The current task closes the TOML path but not every
+      in-memory construction path.
+    deferred_to_feature_iteration: true
+
+assumptions_made:
+  - assumption: >
+      Adding a `retry` field with a default factory to `AnalysisConfig` will not break
+      existing direct constructions in tests and runtime code that currently pass only
+      `timeout_seconds`, `cli`, and `sdk`.
+    verified: true
+    note: >
+      Verified by running `tests/config/test_precheck.py`,
+      `tests/analysis/test_sdk_dispatcher.py`, and
+      `tests/analysis/test_cli_dispatcher.py` after the change; all passed.
+
+  - assumption: >
+      Importing `BUILTIN_ANALYSIS_MAX_RETRY_COUNT_CAP` from `config.schema` into
+      `analysis.output` does not create a circular import.
+    verified: true
+    note: >
+      Initial targeted tests did not surface an import cycle, but validate-and-ship later
+      found one when E2E imported `secondsight.config.precheck` first. The risk was fixed by
+      moving retry constants into dependency-light `secondsight.config.constants`, then
+      re-running targeted E2E and Phase 1 regression suites successfully.
+
+  - assumption: >
+      Repo-wide pre-commit failures seen during this task are pre-existing and unrelated
+      to Task 1's file set.
+    verified: false
+    note: >
+      `uv run pre-commit run --all-files` failed on unrelated files
+      (`src/secondsight/analysis/aggregator.py`, several existing tests, and
+      python-tests-naming hooks). Task 1 files themselves passed targeted pytest
+      coverage, but repo-wide hook cleanliness was not re-established inside this task.
+    deferred_to_feature_iteration: true
+
+debt_registered: true
+debt_location: >
+  src/secondsight/config/loader.py:[analysis.retry] validation;
+  src/secondsight/config/schema.py:AnalysisRetryConfig;
+  src/secondsight/config/constants.py retry policy constants;
+  src/secondsight/analysis/output.py retry_count hard-cap dependency on config constants.
+
+resolved_items:
+  - original_section: "known_shortcuts"
+    original_description: >
+      `AnalysisRetryConfig` range validation currently lives only in
+      `config.loader._build_analysis_config()`. Direct Python construction such as
+      `AnalysisRetryConfig(output_repair_max_attempts=999)` is still possible because
+      the dataclass itself does not validate field ranges in `__post_init__`.
+    resolution: >
+      Feature iteration Round 1 added `AnalysisRetryConfig.__post_init__()` validation
+      for boolean, integer, lower-bound, hard-cap, and feedback length constraints. Direct
+      construction now raises `SecondSightConfigError` for invalid retry policy values.
+
+  - original_section: "silent_failure_conditions"
+    original_description: >
+      If future code paths bypass `load_global_config()` / `load_project_config()` and
+      manually construct `SecondSightConfig(analysis=AnalysisConfig(...))`, invalid retry
+      policy values may survive until runtime because only `AnalysisOutput.retry_count`
+      is contract-bounded today.
+    resolution: >
+      Feature iteration Round 1 moved the retry policy range checks into
+      `AnalysisRetryConfig.__post_init__()`, closing the in-memory construction path for
+      invalid `enabled`, `output_repair_max_attempts`, and `feedback_max_chars` values.
+
+  - original_section: "known_shortcuts"
+    original_description: >
+      Retry hard cap value duplicated between config policy code and AnalysisOutput contract.
+    resolution: >
+      During task-level self-review, AnalysisOutput was changed to import
+      `BUILTIN_ANALYSIS_MAX_RETRY_COUNT_CAP` from `config.schema` instead of maintaining a
+      separate local constant. This removed immediate drift risk within Task 1 scope.
+
+  - original_section: "known_shortcuts"
+    original_description: >
+      `secondsight.analysis.output` now imports
+      `secondsight.config.schema.BUILTIN_ANALYSIS_MAX_RETRY_COUNT_CAP` so the retry
+      hard cap has a single source of truth. This removes value drift, but introduces
+      a new dependency from analysis contract code to config schema code.
+    resolution: >
+      Validate-and-ship exposed the import-order cycle via targeted E2E collection.
+      The retry constants now live in `secondsight.config.constants`, which is dependency-
+      light and safe for both `analysis.output` and `config.schema` to import.

@@ -383,6 +383,12 @@ class TestUTV2Schema6AnalysisConfigDefaults:
         cfg = AnalysisConfig()
         assert isinstance(cfg.sdk, AnalysisSDKConfig)
 
+    def test_retry_is_retry_config(self) -> None:
+        from secondsight.config.schema import AnalysisConfig, AnalysisRetryConfig
+
+        cfg = AnalysisConfig()
+        assert isinstance(cfg.retry, AnalysisRetryConfig)
+
     def test_frozen(self) -> None:
         from secondsight.config.schema import AnalysisConfig
 
@@ -421,6 +427,37 @@ class TestUTV2Schema7ProvidersConfigDefaults:
         cfg = ProvidersConfig()
         with pytest.raises((AttributeError, TypeError)):
             cast(Any, cfg).anthropic = None
+
+
+class TestUTV2Schema7bAnalysisRetryConfigDefaults:
+    """UT-v2-schema-7b: AnalysisRetryConfig defaults and immutability."""
+
+    def test_retry_config_importable(self) -> None:
+        from secondsight.config.schema import AnalysisRetryConfig  # noqa: F401
+
+    def test_retry_config_defaults(self) -> None:
+        from secondsight.config.schema import AnalysisRetryConfig
+
+        cfg = AnalysisRetryConfig()
+        assert cfg.enabled is True
+        assert cfg.output_repair_max_attempts == 2
+        assert cfg.feedback_max_chars == 1200
+
+    def test_retry_config_frozen(self) -> None:
+        from secondsight.config.schema import AnalysisRetryConfig
+
+        cfg = AnalysisRetryConfig()
+        with pytest.raises((AttributeError, TypeError)):
+            cast(Any, cfg).output_repair_max_attempts = 3
+
+    def test_retry_config_rejects_invalid_direct_construction(self) -> None:
+        from secondsight.config.schema import AnalysisRetryConfig, SecondSightConfigError
+
+        with pytest.raises(SecondSightConfigError, match="output_repair_max_attempts"):
+            AnalysisRetryConfig(output_repair_max_attempts=999)
+
+        with pytest.raises(SecondSightConfigError, match="feedback_max_chars"):
+            AnalysisRetryConfig(feedback_max_chars=0)
 
 
 class TestUTV2Schema8SecondSightConfigNewFields:

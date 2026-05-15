@@ -1,0 +1,81 @@
+feature: "analysis-output-recovery-phase1"
+status: "passed_with_manual_review"
+review_date: "2026-05-15"
+
+capability:
+  built_in_security_review_available: false
+  degradation: >
+    No separate platform security/privacy review tool was available in this Codex
+    environment, so the review was performed manually against the feature diff.
+
+scope:
+  reviewed_files:
+    - "src/secondsight/analysis/cli_dispatcher.py"
+    - "src/secondsight/analysis/output.py"
+    - "src/secondsight/analysis/output_recovery.py"
+    - "src/secondsight/config/constants.py"
+    - "src/secondsight/config/loader.py"
+    - "src/secondsight/config/schema.py"
+    - "tests/analysis/test_cli_dispatcher.py"
+    - "tests/analysis/test_output_contract.py"
+    - "tests/analysis/test_output_recovery.py"
+    - "tests/config/test_loader_v2.py"
+    - "tests/config/test_schema_v2.py"
+    - "changes/2026-05-15_analysis-output-recovery-phase1/*"
+  excluded_unrelated_worktree_items:
+    - "scripts/hooks/session-start.sh"
+    - "reference_opensoure/awesome-design-md/"
+    - "reference_opensoure/claude-code-prompt-improver/"
+
+checks:
+  secret_material:
+    result: "pass"
+    notes: >
+      No new API keys, tokens, passwords, credentials, or secret-bearing fixtures were
+      introduced by this feature diff.
+  log_content:
+    result: "pass"
+    notes: >
+      New normalization logging emits only agent/session identifiers, strategy names, and
+      character counts. It does not log normalized JSON content or raw model output.
+  persisted_metadata:
+    result: "pass_with_residual_risk"
+    notes: >
+      `retry_feedback` remains stored in `error_details` for Phase 1 plumbing. This is not
+      a new secret source by itself and the feedback is bounded, but Pydantic error text can
+      include excerpts of invalid model output. Phase 2 will separate internal recovery
+      trace from persisted output metadata.
+  subprocess_surface:
+    result: "pass"
+    notes: >
+      The change does not add shell execution, external network calls, new environment
+      inheritance, file reads outside existing paths, or command construction changes.
+  denial_of_service:
+    result: "pass"
+    notes: >
+      Retry attempts and feedback size are bounded by config validation and a hard output
+      contract cap.
+
+issues:
+  critical: []
+  high: []
+  medium: []
+  low: []
+
+accepted_risks:
+  - description: >
+      Manual security/privacy review was used because no dedicated platform review capability
+      was available in this environment.
+    owner: "human gate"
+    carry_forward_to_validation: true
+  - description: >
+      `retry_feedback` remains inside persisted `error_details` until Phase 2 introduces a
+      cleaner internal recovery trace.
+    owner: "Phase 2"
+    carry_forward_to_validation: true
+
+final_result:
+  issues_found: 0
+  issues_fixed: 0
+  fix_rounds: 0
+  proceed_to_validate_and_ship: true

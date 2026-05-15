@@ -49,6 +49,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from secondsight.analysis.schemas import BehaviorFlagDraft
+from secondsight.config.constants import BUILTIN_ANALYSIS_MAX_RETRY_COUNT_CAP
 
 # ---------- Type alias ----------
 
@@ -103,8 +104,9 @@ class AnalysisOutput(BaseModel):
             Cross-field invariant enforced by @model_validator.
         fallback_used: SDK fallback engaged? Only meaningful when
             dispatched_via=='sdk'. Defaults False (always False for cli).
-        retry_count: How many parse-retries happened. Bounded [0, 2] per
-            Planning Decision #2 (bounded retry cap). ge=0, le=2.
+        retry_count: How many parse-retries happened. Bounded [0, 5] by the
+            Phase 1 global hard cap. Runtime policy may choose any value within
+            that bound, but the output contract will not accept a larger count.
         error_details: On failure status, carries error information.
             For DC4 (SDK both providers fail), MUST carry BOTH errors:
             {"primary_error": "...", "fallback_error": "..."}.
@@ -123,7 +125,7 @@ class AnalysisOutput(BaseModel):
     cli_agent: str | None = None
     primary_model: str | None = None
     fallback_used: bool = False
-    retry_count: int = Field(default=0, ge=0, le=2)
+    retry_count: int = Field(default=0, ge=0, le=BUILTIN_ANALYSIS_MAX_RETRY_COUNT_CAP)
     error_details: dict[str, Any] | None = None
 
     @model_validator(mode="after")

@@ -34,6 +34,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from secondsight.config.constants import (
+    BUILTIN_ANALYSIS_MAX_RETRY_COUNT_CAP,
+    BUILTIN_ANALYSIS_OUTPUT_REPAIR_MAX_ATTEMPTS,
+    BUILTIN_ANALYSIS_RETRY_FEEDBACK_MAX_CHARS,
+)
+
 # Re-export RetentionConfig from storage.retention.
 # This keeps RetentionConfig as the single class object — isinstance() checks
 # across module boundaries will pass because it is the SAME class, not a copy.
@@ -62,11 +68,15 @@ __all__ = [
     "AnalysisCLIModelsConfig",
     "AnalysisCLIConfig",
     "AnalysisSDKConfig",
+    "AnalysisRetryConfig",
     "AnalysisConfig",
     # SDK model defaults — named constants (single source of truth for schema + loader)
     "BUILTIN_SDK_PRIMARY_MODEL",
     "BUILTIN_SDK_FALLBACK_MODEL",
     "BUILTIN_ANALYSIS_TIMEOUT_SECONDS",
+    "BUILTIN_ANALYSIS_OUTPUT_REPAIR_MAX_ATTEMPTS",
+    "BUILTIN_ANALYSIS_RETRY_FEEDBACK_MAX_CHARS",
+    "BUILTIN_ANALYSIS_MAX_RETRY_COUNT_CAP",
 ]
 
 
@@ -312,6 +322,58 @@ class AnalysisSDKConfig:
 
 
 @dataclass(frozen=True)
+class AnalysisRetryConfig:
+    """Config for [analysis.retry] section.
+
+    Attributes:
+        enabled: Master kill switch for output-repair retry logic.
+        output_repair_max_attempts: How many model re-tries are allowed for
+            output/validation failures after local normalization is exhausted.
+            This is a policy value and must be bounded by the loader against
+            BUILTIN_ANALYSIS_MAX_RETRY_COUNT_CAP.
+        feedback_max_chars: Max number of characters the retry feedback builder
+            may feed back into the model prompt.
+    """
+
+    enabled: bool = True
+    output_repair_max_attempts: int = BUILTIN_ANALYSIS_OUTPUT_REPAIR_MAX_ATTEMPTS
+    feedback_max_chars: int = BUILTIN_ANALYSIS_RETRY_FEEDBACK_MAX_CHARS
+
+    def __post_init__(self) -> None:
+        """Validate retry policy even when callers construct config in memory."""
+
+        if type(self.enabled) is not bool:
+            raise SecondSightConfigError(
+                f"[analysis.retry].enabled must be a boolean; got {type(self.enabled).__name__!r}"
+            )
+        if type(self.output_repair_max_attempts) is not int:
+            raise SecondSightConfigError(
+                "[analysis.retry].output_repair_max_attempts must be an integer; "
+                f"got {type(self.output_repair_max_attempts).__name__!r}"
+            )
+        if self.output_repair_max_attempts < 0:
+            raise SecondSightConfigError(
+                "[analysis.retry].output_repair_max_attempts must be >= 0; "
+                f"got {self.output_repair_max_attempts!r}"
+            )
+        if self.output_repair_max_attempts > BUILTIN_ANALYSIS_MAX_RETRY_COUNT_CAP:
+            raise SecondSightConfigError(
+                "[analysis.retry].output_repair_max_attempts exceeds the hard cap "
+                f"{BUILTIN_ANALYSIS_MAX_RETRY_COUNT_CAP}; "
+                f"got {self.output_repair_max_attempts!r}"
+            )
+        if type(self.feedback_max_chars) is not int:
+            raise SecondSightConfigError(
+                "[analysis.retry].feedback_max_chars must be an integer; "
+                f"got {type(self.feedback_max_chars).__name__!r}"
+            )
+        if self.feedback_max_chars <= 0:
+            raise SecondSightConfigError(
+                f"[analysis.retry].feedback_max_chars must be > 0; got {self.feedback_max_chars!r}"
+            )
+
+
+@dataclass(frozen=True)
 class AnalysisConfig:
     """Config for [analysis] section aggregate (new, analysis-mode-toggle task-1).
 
@@ -325,11 +387,13 @@ class AnalysisConfig:
             Default references BUILTIN_ANALYSIS_TIMEOUT_SECONDS (single source of truth).
         cli: Config for CLI dispatch mode (read when general.mode == "cli").
         sdk: Config for SDK dispatch mode (read when general.mode == "sdk").
+        retry: Shared output-repair retry policy.
     """
 
     timeout_seconds: int = BUILTIN_ANALYSIS_TIMEOUT_SECONDS
     cli: AnalysisCLIConfig = field(default_factory=AnalysisCLIConfig)
     sdk: AnalysisSDKConfig = field(default_factory=AnalysisSDKConfig)
+    retry: AnalysisRetryConfig = field(default_factory=AnalysisRetryConfig)
 
 
 # ---------------------------------------------------------------------------

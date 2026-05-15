@@ -285,6 +285,36 @@ class TestDTV2Loader6CLIModelsEmptyAllowed:
         assert cfg.analysis.cli.models.claude_code == "claude-opus-4-5"
 
 
+class TestDTV2Loader7RetryPolicyValidation:
+    """DT-v2-loader-7: [analysis.retry] invalid values are rejected at load time."""
+
+    def test_negative_output_repair_max_attempts_raises(self, tmp_path: Path) -> None:
+        from secondsight.config.loader import load_global_config
+        from secondsight.config.schema import SecondSightConfigError
+
+        home = tmp_path / ".secondsight"
+        _write_toml(
+            home / "config.toml",
+            "[analysis.retry]\noutput_repair_max_attempts = -1\n",
+        )
+
+        with pytest.raises(SecondSightConfigError, match="output_repair_max_attempts"):
+            load_global_config(home)
+
+    def test_output_repair_max_attempts_above_hard_cap_raises(self, tmp_path: Path) -> None:
+        from secondsight.config.loader import load_global_config
+        from secondsight.config.schema import SecondSightConfigError
+
+        home = tmp_path / ".secondsight"
+        _write_toml(
+            home / "config.toml",
+            "[analysis.retry]\noutput_repair_max_attempts = 6\n",
+        )
+
+        with pytest.raises(SecondSightConfigError, match="output_repair_max_attempts"):
+            load_global_config(home)
+
+
 # ---------------------------------------------------------------------------
 # Unit tests (happy path)
 # ---------------------------------------------------------------------------
@@ -460,6 +490,24 @@ class TestUTV2Loader11ProviderCustomSection:
 
         assert cfg.providers.custom.base_url == "https://api.example.com/v1"
         assert cfg.providers.custom.API_KEY == ""
+
+
+class TestUTV2Loader12RetrySection:
+    """UT-v2-loader-12: [analysis.retry] section is parsed into AnalysisConfig.retry."""
+
+    def test_retry_section_from_toml(self, tmp_path: Path) -> None:
+        from secondsight.config.loader import load_global_config
+
+        home = tmp_path / ".secondsight"
+        _write_toml(
+            home / "config.toml",
+            "[analysis.retry]\nenabled = false\noutput_repair_max_attempts = 4\nfeedback_max_chars = 900\n",
+        )
+
+        cfg = load_global_config(home)
+        assert cfg.analysis.retry.enabled is False
+        assert cfg.analysis.retry.output_repair_max_attempts == 4
+        assert cfg.analysis.retry.feedback_max_chars == 900
 
 
 # ---------------------------------------------------------------------------
