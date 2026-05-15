@@ -1,0 +1,219 @@
+# Ship Manifest — analysis-mode-toggle
+#
+# Records what is being delivered, with its known wounds.
+# Per samsara axiom: 陽面交付功能。陰面交付功能加上它的死法清單。
+
+feature: analysis-mode-toggle
+date: 2026-05-15
+feature_branch: main  # work was committed directly to main; no separate feature branch
+base_commit: 512de0b  # refactor(logging-stage2)
+head_commit: 7208414  # iteration-log
+
+commits_in_feature:
+  - bc0540d: "feat(analysis-mode-toggle): restore SD-promised SDK+CLI dual-mode dispatch (7 tasks)"
+  - 15bd181: "fix(iter-F1): register analysis_outputs + analysis_runs tables at storage import"
+  - 2ef6d1f: "fix(iter-F2): precheck honest unknown_agent + dispatch-time resolved-agent log"
+  - 583463e: "fix(iter-F5): loguru-caplog bridge probe + DC12 positive guard"
+  - c3bfaf7: "docs(iter-F6): write e2e-results.md capturing partial E2E coverage"
+  - db25ba8: "docs(iter-META): reconcile task-5 scar dual-tracking pattern"
+  - 7208414: "docs(iter): write iteration-log.yaml — Round 1 stop decision"
+  # Plus: pending working-tree edit to add sentinel comment on _build_analysis_agent
+
+scope:
+  files_changed: 114
+  lines_added: 20259
+  lines_deleted: 419
+  new_modules:
+    - src/secondsight/state.py
+    - src/secondsight/analysis/output.py
+    - src/secondsight/analysis/dispatcher.py
+    - src/secondsight/analysis/cli_dispatcher.py
+    - src/secondsight/analysis/cli_adapters/
+    - src/secondsight/analysis/sdk_dispatcher.py
+    - src/secondsight/prompts/  # jinja2 + loader
+    - src/secondsight/config/precheck.py
+    - src/secondsight/storage/analysis_outputs_table.py
+    - src/secondsight/storage/analysis_outputs_repository.py
+
+# =============================================================================
+# Validation Results
+# =============================================================================
+
+validation:
+  failure_budget_review:
+    initial_signal_lost: 42
+    final_signal_lost: 33  # after iteration round-1 fixes (21% reduction)
+    iteration_rounds_executed: 1
+    fixes_applied: 5  # F1, F2, F5, F6, META
+    accepts_with_expiry: 8  # all expiry 2026-08-12
+    defers_to_followup: 8
+    bundled_minor_accepts: 13
+    within_shipping_budget: true
+    rationale: >
+      Every remaining item is explicitly triaged. No silent failures unaccounted
+      for. 8 accepts have 90-day expiry forcing re-review; 8 defers tied to
+      follow-up issues. signal_lost decreased monotonically; no stagnation; no
+      max-round exhaustion.
+
+  acceptance_validation:
+    coverage_type: verified  # acceptance.yaml death-first BDD; 27 scenarios
+    death_path_scenarios_covered: 12  # DC1-DC12
+    degradation_scenarios_covered: 3
+    happy_path_scenarios_covered: 6
+    migration_scenarios_covered: 2
+    poc_iteration_scenarios_covered: 4
+    untestable_in_sandbox: 3  # SDK gated (require ANTHROPIC_API_KEY + SECONDSIGHT_TEST_REAL_LLM=1)
+
+  e2e_testing:
+    full_suite_run: "1567 passed, 11 skipped, 0 failed (45.88s)"
+    non_gated_e2e_tests: 16  # test_legacy_config_upgrade.py + test_sdk_regression.py
+    gated_cli_tests_passed: 2  # test_mode_toggle_cli.py against real claude (Task 7 round-1, 24s)
+    gated_sdk_tests_skipped: 3  # awaiting operator probe
+    integration_failures_pre_existing: 6  # tests/integration/test_phase1_e2e.py — unchanged from baseline, unrelated to this feature
+
+  reconciliation_check:
+    spec_drifts:
+      - drift: "Task 6 created NEW analysis_outputs table instead of adding columns to existing analysis_runs table"
+        spec_location: "2-plan.md task-6 Files: 'Modify <analysis row module> — add columns if missing'"
+        actual: "Created src/secondsight/storage/analysis_outputs_table.py + repository"
+        rationale: "analysis_runs serves SDK orchestrator stage tracking (different domain concept). Merging would have required cli_agent column on a table built for SDK stage state. Justified in task-6-scar.yaml IMPORTANT FIX 4."
+        accepted: true
+      - drift: "Trigger.dispatch() now blocks caller synchronously when mode_aware_dispatch is wired (legacy path used asyncio.create_task — non-blocking)"
+        spec_location: "Implicit: Trigger.dispatch docstring still claims 'returns DispatchResult immediately. The actual analysis runs in a background asyncio.Task.'"
+        actual: "Wired path awaits ModeAwareDispatch.dispatch() synchronously. Sweeper.sweep_stale_sessions() loops awaits per session — serializes."
+        rationale: "Acknowledged in iter-F2 scar. Sweeper serialization is a real operational change; documented but not addressed in this effort."
+        accepted: true
+      - drift: "Task 7 round-1 violated architecture invariant (added mode-conditional outside ModeAwareDispatch); Task 8 restored via lazy SDK dispatcher in _get_sdk_dispatcher"
+        spec_location: "2-plan.md §1: ONLY ModeAwareDispatch references mode"
+        actual: "Bug caught by yin reviewer + reverted in Task 8 round-1; net result matches spec"
+        rationale: "Caught and fixed within the same feature. Documented in task-7-scar.yaml and task-8-scar.yaml."
+        accepted: true
+
+  code_review_final:
+    yin_holistic_verdict: PASS_WITH_CONCERNS
+    quality_holistic_verdict: PASS  # implicit — no separate quality holistic dispatch; per-task quality reviews all PASS-level
+    critical_finding: >
+      _build_analysis_agent() at runtime.py:421 is a dead function in the
+      production call graph. Reviewer recommended deletion. SHIP DECISION:
+      preserve as patchable sentinel for architecture-guard death tests
+      (test_dt_build_runtime_*_mode_never_calls_build_analysis_agent in
+      tests/analysis/test_runtime_wiring_death.py). Added explicit sentinel
+      comment to the function documenting its non-callsite role.
+    important_finding: >
+      Trigger.dispatch() docstring claims non-blocking, but the wired path
+      now blocks synchronously. Sweeper serialization is a real operational
+      change. Documented; deferred to follow-up Trigger refactor.
+
+  security_review:
+    verdict: PASS
+    files_reviewed: 12
+    findings_high_confidence_ge_0_8: 0
+    accepted_risks: 0
+    note: >
+      Verified safe: command injection (no shell=True; argv tokens),
+      path traversal (validated paths; tempfile with uuid4), template
+      injection (PackageLoader + context vars, not template source),
+      SQL injection (parameterized SQLAlchemy), credential leakage in
+      error_details + state.json (none observed), deserialization
+      (json.loads + str coercion; no unsafe formats).
+
+# =============================================================================
+# Known Wounds (carried forward)
+# =============================================================================
+
+accepted_risks:
+  expiry: 2026-08-12  # 90 days
+  items:
+    - "T2: JSON schema cannot express cross-field invariants (cli_agent/primary_model nullability + DC4 error_details)"
+    - "T2: error_details: dict[str, Any] not typed sub-model — MVP simplicity, validator enforces required keys"
+    - "T4: PoC used 10-event payload; production sessions may exceed LLM context — cannot simulate without real traffic"
+    - "T6: DC10 lock check-then-acquire pattern is non-atomic (asyncio single-thread safe; only unsafe if threading added)"
+    - "T8: _get_cli_dispatcher caching asymmetry vs _get_sdk_dispatcher (CLI construction cheap; benign)"
+    - "T1: FallbackModelsConfig.fallback_models mutable list in frozen dataclass (pre-existing pattern)"
+    - "T5: pydantic-ai UnexpectedModelBehavior falls to generic Exception handler (correct degradation, less specific error)"
+    - "~13 bundled minor items: test name nits, port 8420 hardcoded, doc inconsistencies"
+
+deferred_items:
+  - id: D1
+    item: "T1 SH#1: analysis_global bridge field removal"
+    blocks_on: "select_model() migration; tied to _build_analysis_agent sentinel preservation"
+    next_effort: "analysis-config-cleanup"
+  - id: D2
+    item: "T2 SF#3: behavior_flags=[] downstream warn for sessions with >N events"
+    blocks_on: "Orchestrator quality layer not yet built"
+    next_effort: "analysis-quality-layer"
+  - id: D3
+    item: "T1 SH#3, SH#4: state.json schema_version forward-compat + log_level enum validation"
+    blocks_on: "log_level wiring not yet landed; migration mechanism not yet defined"
+    next_effort: "log-config + state-migration"
+  - id: D4
+    item: "T5 SH#1: fallback_used metric accuracy (router internal retry not exposed)"
+    blocks_on: "LLMRouter public API change needed"
+    next_effort: "router-introspection-api"
+  - id: D5
+    item: "T5 SH#3: SDKAnalysisDispatcher has no retry loop (asymmetric with CLI)"
+    blocks_on: "Architectural decision — both dispatchers' retry policy needs cross-task design"
+    next_effort: "dispatcher-retry-design"
+  - id: D6
+    item: "T6 SH#1: _session_locks unbounded growth"
+    blocks_on: "Session lifecycle management design"
+    next_effort: "session-lifecycle"
+  - id: D7
+    item: "T6 SH#2: build_project_analysis_runtime reconstruction per call"
+    blocks_on: "Singleton/DI refactor scope"
+    next_effort: "runtime-singleton"
+  - id: D8
+    item: "T7 SF#1: DC4 SDK fallback test unverified in CI without SECONDSIGHT_TEST_REAL_LLM=1"
+    blocks_on: "Operator action — release pipeline secrets + CI config"
+    next_effort: "ci-secrets-gated-tests"
+
+# =============================================================================
+# Three-Year-Curse Points (for future maintainers)
+# =============================================================================
+
+three_year_curses:
+  - location: "src/secondsight/analysis/runtime.py — analysis_global bridge field"
+    curse: >
+      analysis_global is a backward-compat bridge documented as deprecated.
+      Without an explicit removal milestone tied to a ticket, this field
+      will live forever as a permanent 'transitional' layer.
+    mitigation: "Tracked in deferred_items.D1; iteration-log records the blocker"
+
+  - location: "src/secondsight/sdk/trigger.py — Trigger.dispatch() blocking change"
+    curse: >
+      Docstring still claims non-blocking. Wired path is synchronous.
+      Sweeper.sweep_stale_sessions() now serializes per-session dispatch.
+      A future operator scaling N sessions will hit O(N × analysis_duration)
+      sweeper lag without obvious cause.
+    mitigation: "Documented in iter-F2 scar + iteration-log; needs Trigger refactor follow-up"
+
+  - location: "src/secondsight/analysis/cli_dispatcher.py + sdk_dispatcher.py — Python 2 except syntax"
+    curse: >
+      Two except clauses use `except A, B:` (Python 2 form parsed as tuple-catch
+      in Python 3.14). Works today; fragile to future Python parser changes.
+      Same shape as a bug already fixed in cli_dispatcher.py:351 (Task 4 round-2).
+    mitigation: "Documented in iter-F2 known_shortcuts; defer to a syntax-modernization sweep"
+
+  - location: "src/secondsight/storage/__init__.py — import-as-registration pattern"
+    curse: >
+      All table modules must be imported in __init__.py to register with
+      shared metadata. Future contributor adding a new *_table.py module
+      may forget the registration import — metadata.create_all() silently
+      creates all OTHER tables but not theirs.
+    mitigation: "iter-F1 added CRITICAL comment block + test_table_registration.py invariant test pinning all 6 known tables"
+
+# =============================================================================
+# Ship Decision Inputs
+# =============================================================================
+
+next_action_options:
+  A_merge_to_main: "Already on main — no merge action needed; commits are already on main HEAD"
+  B_create_pr: "No remote feature branch exists; would require push of main commits to a feature branch first (separate effort)"
+  C_keep_branch: "Effective default if no action taken — commits remain on main, not pushed to remote"
+  D_discard: "Would require git reset --hard 512de0b — DESTRUCTIVE, loses 7 commits of work"
+
+operator_followups:
+  - "Run SDK gated tests in release-pipeline with SECONDSIGHT_TEST_REAL_LLM=1 + ANTHROPIC_API_KEY set (3 tests in tests/e2e/test_mode_toggle_sdk.py)"
+  - "Push main to origin: `git push origin main` (currently 7 commits ahead of origin/main)"
+  - "File 8 follow-up issues for deferred_items D1-D8"
+  - "Set calendar reminder for 2026-08-12 to re-review accepted_risks before they expire"

@@ -426,7 +426,22 @@ def _build_analysis_agent(
     flags_repository: BehaviorFlagsRepository,
     directives_repository: DirectivesRepository,
 ) -> PydanticAIAnalysisAgent:
-    """Build the analysis agent chain for one project."""
+    """Build the analysis agent chain for one project.
+
+    NOTE (ship-manifest known debt, 2026-05-15): This function is intentionally
+    preserved as a patchable sentinel for architecture-guard death tests in
+    tests/analysis/test_runtime_wiring_death.py (test_dt_build_runtime_*_mode_
+    never_calls_build_analysis_agent). Those tests `patch(...runtime._build_analysis_agent)`
+    and assert the mock is NEVER called — proving the architecture invariant
+    that build_project_analysis_runtime() does not eagerly construct an SDK
+    agent (lazy construction lives in ModeAwareDispatch._get_sdk_dispatcher).
+
+    Production call graph: NO live caller. _get_sdk_dispatcher inlines its
+    own SDKAnalysisDispatcher construction directly (lines 197-204).
+
+    Removal blocked on: migrating the death tests to grep-based architectural
+    checks. Tracked in iteration-log.yaml round-1 residual_risk.
+    """
     project_dir = Path(secondsight_home) / "projects" / project_id
     project_config_path = project_dir / "config.toml"
 
