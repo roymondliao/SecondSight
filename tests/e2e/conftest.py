@@ -63,7 +63,7 @@ def wait_for_server(url: str, timeout_s: float) -> bool:
             resp = requests.get(health_url, timeout=2.0)
             if resp.status_code == 200:
                 return True
-        except (requests.ConnectionError, requests.Timeout):
+        except requests.ConnectionError, requests.Timeout:
             pass
         time.sleep(0.5)
     return False
@@ -101,9 +101,7 @@ def poll_analysis_outputs_table(
         try:
             with engine.connect() as conn:
                 result = conn.execute(
-                    sa.text(
-                        "SELECT * FROM analysis_outputs WHERE session_id = :sid LIMIT 1"
-                    ),
+                    sa.text("SELECT * FROM analysis_outputs WHERE session_id = :sid LIMIT 1"),
                     {"sid": session_id},
                 )
                 row = result.mappings().first()

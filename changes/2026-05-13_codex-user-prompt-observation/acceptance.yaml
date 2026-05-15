@@ -51,4 +51,3 @@ scenarios:
       - "CodexAdapter and CodexHooksPatcher pass against the verified fixtures"
       - "thin ingress persists the normalized Codex fields expected by observation consumers"
       - "any future audit can reconstruct the Codex hook contract from fixture provenance, adapter tests, and installer tests alone"
-

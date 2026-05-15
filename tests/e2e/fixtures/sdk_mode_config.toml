@@ -1,12 +1,13 @@
 # Locked schema — SDK mode with ${ANTHROPIC_API_KEY} env var reference.
 # Requires valid $ANTHROPIC_API_KEY in environment.
 # Used by SECONDSIGHT_TEST_REAL_LLM=1 gated tests.
-[general]
-mode = "sdk"
 
 [analysis.sdk]
 primary_model = "claude-haiku-4-5-20251001"
 fallback_model = "claude-3-5-haiku-20241022"
+
+[general]
+mode = "sdk"
 
 [providers.anthropic]
 ANTHROPIC_API_KEY = "${ANTHROPIC_API_KEY}"

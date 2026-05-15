@@ -177,9 +177,7 @@ class TestDTLegacyPrecheckBehavior:
     This class verifies the actual DC12 + precheck contract, not a hypothetical.
     """
 
-    def test_legacy_config_resolves_explicit_default_agent_not_auto(
-        self, tmp_path: Path
-    ) -> None:
+    def test_legacy_config_resolves_explicit_default_agent_not_auto(self, tmp_path: Path) -> None:
         """DC12: loader sets default_agent=BUILTIN (not "auto") for legacy flat config.
 
         The legacy key is ignored but the builtin default "claude_code" is used.
@@ -200,9 +198,7 @@ class TestDTLegacyPrecheckBehavior:
             f"case where the user had an explicit agent preference."
         )
 
-    def test_legacy_config_no_state_precheck_fails_binary_not_found(
-        self, tmp_path: Path
-    ) -> None:
+    def test_legacy_config_no_state_precheck_fails_binary_not_found(self, tmp_path: Path) -> None:
         """DC12 + binary missing → precheck fails with cli_binary_missing.
 
         With legacy config (no state.json, explicit agent from BUILTIN),
@@ -219,8 +215,7 @@ class TestDTLegacyPrecheckBehavior:
             result = precheck(config=cfg, state=state)
 
         assert not result.is_ok, (
-            f"Expected precheck to fail when claude binary is absent. "
-            f"Got is_ok={result.is_ok!r}."
+            f"Expected precheck to fail when claude binary is absent. Got is_ok={result.is_ok!r}."
         )
         assert result.reason == "cli_binary_missing", (
             f"Expected reason='cli_binary_missing'. Got reason={result.reason!r}."
@@ -269,9 +264,7 @@ class TestDTLegacyUpgradeSucceeds:
     not state.json (state.json is only required when default_agent="auto").
     """
 
-    def test_legacy_config_with_binary_passes_precheck(
-        self, tmp_path: Path
-    ) -> None:
+    def test_legacy_config_with_binary_passes_precheck(self, tmp_path: Path) -> None:
         """Legacy config + binary found → precheck passes (no state.json needed).
 
         The legacy loader sets default_agent="claude_code" (BUILTIN), not "auto".

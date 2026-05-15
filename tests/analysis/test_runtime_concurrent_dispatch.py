@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -166,9 +166,9 @@ async def test_dc10_concurrent_dispatch_same_session_id_only_one_executes(
     # Production contract: exactly ONE row in analysis_outputs (CRITICAL FIX 2)
     with db_engine.engine.connect() as conn:
         row_count = conn.execute(
-            sa.select(sa.func.count()).select_from(analysis_outputs).where(
-                analysis_outputs.c.session_id == session_id
-            )
+            sa.select(sa.func.count())
+            .select_from(analysis_outputs)
+            .where(analysis_outputs.c.session_id == session_id)
         ).scalar()
 
     assert row_count == 1, (

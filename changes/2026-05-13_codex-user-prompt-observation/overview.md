@@ -30,4 +30,3 @@ Python, FastAPI ingress, SecondSight adapter/observation pipeline, pytest fixtur
 - `tests/adapters/test_codex_fixtures.py` — fixture governance checks.
 - `tests/api/test_ingress_codex.py` — Codex hook -> ingress -> persistence coverage.
 - `tests/installer/test_codex_hooks.py` — installer death tests for Codex hook registration.
-

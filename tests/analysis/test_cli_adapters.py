@@ -83,12 +83,14 @@ class TestClaudeCodeExtractResult:
     """Tests for the JSON envelope extraction function."""
 
     def test_extracts_result_from_claude_envelope(self) -> None:
-        envelope = json.dumps({
-            "type": "result",
-            "subtype": "success",
-            "result": '{"status": "success"}',
-            "duration_ms": 1234,
-        })
+        envelope = json.dumps(
+            {
+                "type": "result",
+                "subtype": "success",
+                "result": '{"status": "success"}',
+                "duration_ms": 1234,
+            }
+        )
         extracted = extract_result(envelope)
         assert extracted == '{"status": "success"}'
 

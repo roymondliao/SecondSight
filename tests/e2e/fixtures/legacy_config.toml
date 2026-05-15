@@ -2,8 +2,9 @@
 # No [general] section, no [analysis.cli], no [providers.*].
 # Used to test the DC12 legacy-upgrade path.
 # Expected loader behavior:
-#   - WARN log: "legacy [analysis] default_agent found..."
-#   - general.mode defaults to "cli" (built-in default)
-#   - precheck fails with state_missing when state.json is absent
+# - WARN log: "legacy [analysis] default_agent found..."
+# - general.mode defaults to "cli" (built-in default)
+# - precheck fails with state_missing when state.json is absent
+
 [analysis]
 default_agent = "claude_code"

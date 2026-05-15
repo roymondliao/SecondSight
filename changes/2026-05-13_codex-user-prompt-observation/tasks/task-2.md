@@ -42,4 +42,3 @@ The source payloads must come from the verified Codex fixtures, not hand-written
 ## Acceptance Criteria
 - Covers: `Unknown outcome - adapter unit tests pass but the thin ingress path loses Codex fields`
 - Covers: `Success - verified Codex hook payloads survive the observation path with evidence`
-

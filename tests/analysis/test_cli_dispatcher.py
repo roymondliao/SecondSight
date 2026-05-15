@@ -144,10 +144,12 @@ class TestDC_ModuleImport:
         We verify the module attributes are accessible instead.
         """
         import secondsight.analysis.cli_dispatcher as module
+
         assert hasattr(module, "CLIAnalysisDispatcher")
         assert hasattr(module, "OpencodeNotSupportedError")
         # Verify the module is importable a second time (no side-effect-on-import issue)
         import importlib
+
         spec = importlib.util.find_spec("secondsight.analysis.cli_dispatcher")
         assert spec is not None, "Module spec must be findable (module exists on disk)"
 
@@ -169,9 +171,12 @@ class TestDC_JinjaRender:
 
         dispatcher = _make_dispatcher()
 
-        with patch("secondsight.prompts._loader.render", side_effect=capturing_render), patch(
-            "secondsight.analysis.cli_dispatcher.asyncio.create_subprocess_exec",
-            return_value=_make_proc_mock(stdout=json.dumps(_valid_output_dict()), stderr=""),
+        with (
+            patch("secondsight.prompts._loader.render", side_effect=capturing_render),
+            patch(
+                "secondsight.analysis.cli_dispatcher.asyncio.create_subprocess_exec",
+                return_value=_make_proc_mock(stdout=json.dumps(_valid_output_dict()), stderr=""),
+            ),
         ):
             await dispatcher.dispatch(
                 session_id="sess-001",
@@ -203,9 +208,12 @@ class TestDC_JinjaRender:
         dispatcher = _make_dispatcher()
         session_id = "test-session-xyz-789"
 
-        with patch("secondsight.prompts._loader.render", side_effect=capturing_render), patch(
-            "secondsight.analysis.cli_dispatcher.asyncio.create_subprocess_exec",
-            return_value=_make_proc_mock(stdout=json.dumps(_valid_output_dict()), stderr=""),
+        with (
+            patch("secondsight.prompts._loader.render", side_effect=capturing_render),
+            patch(
+                "secondsight.analysis.cli_dispatcher.asyncio.create_subprocess_exec",
+                return_value=_make_proc_mock(stdout=json.dumps(_valid_output_dict()), stderr=""),
+            ),
         ):
             await dispatcher.dispatch(
                 session_id=session_id,
@@ -271,7 +279,7 @@ class TestDC1_SubprocessTimeout:
         communicate_results = [
             asyncio.TimeoutError(),  # initial wait_for timeout
             asyncio.TimeoutError(),  # SIGTERM grace period expired
-            (b"", b""),              # post-SIGKILL drain
+            (b"", b""),  # post-SIGKILL drain
         ]
 
         async def communicate_side_effect(input=None, timeout=None):
@@ -535,7 +543,7 @@ class TestDC2_SchemaParseRetry:
         # cmd = ["claude", "--print", "--output-format", "json", "--no-session-persistence", <prompt>]
         # So args = ("claude", "--print", ..., <prompt>)
         initial_prompt_arg = captured_call_args[0][-1]  # last element is the prompt
-        retry_prompt_arg = captured_call_args[1][-1]    # retry's last element
+        retry_prompt_arg = captured_call_args[1][-1]  # retry's last element
 
         # The retry prompt MUST be longer (error appended)
         assert len(retry_prompt_arg) > len(initial_prompt_arg), (
@@ -679,9 +687,7 @@ class TestDC_UnknownAgent:
     """DC-UNKNOWN-AGENT: state_missing must report cli_agent='unknown', not 'claude_code'."""
 
     @pytest.mark.asyncio
-    async def test_state_missing_returns_unknown_agent_not_default(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_state_missing_returns_unknown_agent_not_default(self, tmp_path: Path) -> None:
         """When state is missing, cli_agent must NOT be 'claude_code' (dishonest default)."""
         config = _make_config(default_agent="auto")
         dispatcher = CLIAnalysisDispatcher(config=config, state=None)
@@ -747,6 +753,7 @@ class TestDC_StderrOnSuccess:
     @pytest.mark.asyncio
     async def test_clean_success_no_stderr_has_none_error_details(self, tmp_path: Path) -> None:
         """When subprocess succeeds with NO stderr, error_details should remain None."""
+
         async def create_proc(*args, **kwargs):
             return _make_proc_mock(
                 stdout=json.dumps(_valid_output_dict()),

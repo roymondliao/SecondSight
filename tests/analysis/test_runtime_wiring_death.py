@@ -401,9 +401,7 @@ def test_dt_build_runtime_cli_mode_never_calls_build_analysis_agent(
     events_repo = EventsRepository(db_engine)
     raw_trace_store = RawTraceStore(project_dir)
 
-    with patch(
-        "secondsight.analysis.runtime._build_analysis_agent"
-    ) as mock_build_agent:
+    with patch("secondsight.analysis.runtime._build_analysis_agent") as mock_build_agent:
         from secondsight.analysis import runtime as _runtime_module
 
         _runtime_module.build_project_analysis_runtime(
@@ -462,9 +460,7 @@ def test_dt_build_runtime_sdk_mode_never_calls_build_analysis_agent(
     events_repo = EventsRepository(db_engine)
     raw_trace_store = RawTraceStore(project_dir)
 
-    with patch(
-        "secondsight.analysis.runtime._build_analysis_agent"
-    ) as mock_build_agent:
+    with patch("secondsight.analysis.runtime._build_analysis_agent") as mock_build_agent:
         from secondsight.analysis import runtime as _runtime_module
 
         _runtime_module.build_project_analysis_runtime(

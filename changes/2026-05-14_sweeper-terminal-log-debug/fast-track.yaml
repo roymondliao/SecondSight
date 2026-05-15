@@ -1,0 +1,24 @@
+type: fast_track
+description: "Lower 'Sweeper: stale candidate already terminal' log from INFO to DEBUG in _ServerSweepCoordinator"
+death_clause: "If the log reverts to logger.info(), test_dt_sar_4 fails; if the log is removed entirely, the DEBUG assertion in test_dt_sar_4 catches the deletion."
+acceptance:
+  - "At default log level (INFO), no 'already terminal' message appears during a sweep tick for terminal sessions"
+  - "At DEBUG log level, the 'already terminal' message is still visible for diagnostic use"
+  - "All 4 test_dt_sar_* tests pass"
+scar_tag: none
+files_changed:
+  - "src/secondsight/api/server.py"
+  - "tests/api/test_server_analysis_runtime.py"
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: "No duplicate helper introduced. SDK-side Sweeper._find_stale_sessions (trigger.py:598) already uses logger.debug for the equivalent skip — the two copies now agree on level."
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: "Log call stays in its existing position immediately before `continue`. No boundary change."
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: "Single-character change (info → debug). No new variables, wrappers, or abstractions."
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: "The log level was the only inconsistency between the two sweeper implementations; now both use DEBUG for the terminal-skip path."

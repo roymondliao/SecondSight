@@ -191,8 +191,7 @@ def test_cli_mode_e2e_dispatch_creates_analysis_row(tmp_path: Path) -> None:
     # Pre-check: require real claude binary
     if shutil.which("claude") is None:
         pytest.skip(
-            "claude binary not found in PATH. "
-            "Install Claude Code CLI to run CLI E2E tests."
+            "claude binary not found in PATH. Install Claude Code CLI to run CLI E2E tests."
         )
 
     ss_home = _make_temp_ss_home(tmp_path, agent="claude_code")
@@ -250,8 +249,7 @@ def test_cli_mode_e2e_dispatch_creates_analysis_row(tmp_path: Path) -> None:
             timeout=10.0,
         )
         assert response.status_code == 200, (
-            f"Expected 200 from /hook/session_end. "
-            f"Got {response.status_code}: {response.text!r}."
+            f"Expected 200 from /hook/session_end. Got {response.status_code}: {response.text!r}."
         )
 
         # Poll for analysis_outputs row

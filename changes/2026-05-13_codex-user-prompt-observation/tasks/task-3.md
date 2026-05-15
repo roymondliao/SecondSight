@@ -34,4 +34,3 @@ Real local capture proved that a working Codex tool-hook setup uses explicit `Pr
 ## Acceptance Criteria
 - Covers: `Degradation - Codex tool hooks are registered in a shape that does not actually fire`
 - Covers: `Success - verified Codex hook payloads survive the observation path with evidence`
-

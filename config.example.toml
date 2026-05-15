@@ -7,93 +7,43 @@
 # Reviewed Q/A trail was captured in this file's prior revision (git history).
 #
 # Source:
-#   - docs/system_design.md §8.5.1 (Global Config canonical TOML)
-#   - changes/2026-05-14_analysis-mode-toggle/1-kickoff.md Locked Decisions A-E
+# - docs/system_design.md §8.5.1 (Global Config canonical TOML)
+# - changes/2026-05-14_analysis-mode-toggle/1-kickoff.md Locked Decisions A-E
 #
 # SD deviations are intentional and rationalized in 1-kickoff.md Decision E
 # and problem-autopsy.md translation_delta. Summary:
-#   - E1: No implicit env fallback — use ${VAR} for explicit env injection
-#   - E2: [analysis] split into nested [analysis.cli] / [analysis.sdk] subsections
-#   - E3: SDK fallback collapsed from list to single string
-#   - E4: Retention defaults shortened (90/365 → 30/60)
-#   - E5: [analysis.cli.models] empty values OK — let coding agent use its own
-#         default model (refined after E5 superseded by "auto" semantics)
-#   - E6: Per-project config (~/.secondsight/projects/<pid>/config.toml) entirely
-#         deferred to follow-up effort (see TODO.md). Only one config.toml exists.
-#   - E7: "auto" semantics — resolves to the agent selected at `secondsight init`
-#         time (not aggregated from ongoing observation events)
+# - E1: No implicit env fallback — use ${VAR} for explicit env injection
+# - E2: [analysis] split into nested [analysis.cli] / [analysis.sdk] subsections
+# - E3: SDK fallback collapsed from list to single string
+# - E4: Retention defaults shortened (90/365 → 30/60)
+# - E5: [analysis.cli.models] empty values OK — let coding agent use its own
+# default model (refined after E5 superseded by "auto" semantics)
+# - E6: Per-project config (~/.secondsight/projects/<pid>/config.toml) entirely
+# deferred to follow-up effort (see TODO.md). Only one config.toml exists.
+# - E7: "auto" semantics — resolves to the agent selected at `secondsight init`
+# time (not aggregated from ongoing observation events)
 #
 # Path: ~/.secondsight/config.toml  (single global config — no per-project layer)
 
-
-# -----------------------------------------------------------------------------
-# [general] — Dispatch mode and logging
-# -----------------------------------------------------------------------------
-[general]
-
-# Analysis dispatch path. Default "cli" per Decision D.
-#   "cli" — spawn the user's coding agent CLI (claude / codex) as analysis runtime.
-#           Borrows the coding agent's own LLM auth and loop.
-#   "sdk" — PydanticAI + direct LLM provider API call.
-#           Requires [providers.*] credentials.
-mode = "cli"
-
-# Global log verbosity for loguru.
-log_level = "info"                    # debug | info | warning | error
-
-
-# -----------------------------------------------------------------------------
-# [providers.*] — LLM provider credentials (SDK mode only)
-# -----------------------------------------------------------------------------
-# CLI mode does NOT use these — the coding agent uses its own auth.
-# Resolution: empty string = unset; use "${VAR}" syntax to inject env vars
-# explicitly. There is no implicit fallback to $ENV_VAR (SD deviation E1).
-#
-# SDK mode pre-check requires at least one provider resolvable (non-empty
-# after ${VAR} interpolation) at server startup. Mismatch raises actionable
-# error during `secondsight init` or server start, not at first dispatch.
-
-[providers.anthropic]
-ANTHROPIC_API_KEY = ""                # e.g. "${ANTHROPIC_API_KEY}" to read env
-
-[providers.openai]
-OPENAI_API_KEY = ""
-
-[providers.custom]                    # OpenAI-compatible endpoint
-API_KEY = ""
-base_url = ""
-
-
-# -----------------------------------------------------------------------------
-# [analysis] — Analysis dispatch behavior and model selection
-# -----------------------------------------------------------------------------
-# Flat keys here apply to both modes. Mode-specific settings live under
-# [analysis.cli] or [analysis.sdk] — the loader reads only the subsection
-# matching [general].mode and ignores the other.
-
 [analysis]
-
 # Max wall-clock time for a single analysis run (both modes).
 timeout_seconds = 300
-
 
 # -----------------------------------------------------------------------------
 # [analysis.cli] — Read only when [general].mode == "cli"
 # -----------------------------------------------------------------------------
 [analysis.cli]
-
 # Which coding agent SecondSight spawns for analysis dispatch.
-#   "auto"        — resolves to the agent selected at `secondsight init` time
-#                   (the agent SecondSight observed during install / first run)
-#   "claude_code" — spawn `claude` CLI subprocess
-#   "codex"       — spawn `codex` CLI subprocess
-#   "opencode"    — out of scope this effort; pre-check rejects with actionable error
+# "auto"        — resolves to the agent selected at `secondsight init` time
+# (the agent SecondSight observed during install / first run)
+# "claude_code" — spawn `claude` CLI subprocess
+# "codex"       — spawn `codex` CLI subprocess
+# "opencode"    — out of scope this effort; pre-check rejects with actionable error
 #
 # Note: analysis agent is independent from the user's interactive agent.
 # A user may use `claude` interactively while delegating analysis to `codex`,
 # or vice versa.
 default_agent = "auto"
-
 
 # Per-agent-type model override.
 # Empty string = let the coding agent use its own default model (don't pass
@@ -106,38 +56,57 @@ default_agent = "auto"
 [analysis.cli.models]
 claude_code = ""
 codex = ""
-opencode = ""                         # Schema slot preserved; CLI dispatch out of scope
-
+opencode = "" # Schema slot preserved; CLI dispatch out of scope
 
 # -----------------------------------------------------------------------------
 # [analysis.sdk] — Read only when [general].mode == "sdk"
 # -----------------------------------------------------------------------------
 [analysis.sdk]
-
 # Primary model for the PydanticAI agent. Required when mode == "sdk".
 primary_model = "claude-haiku-4-5-20251001"
-
 # Single fallback model. Tried once if primary fails (timeout / rate limit /
 # terminal API error). Empty = no fallback. Per Decision B: collapsed from
 # multi-model chain to single fallback to avoid unverified-path rot.
 fallback_model = "gpt-4o-mini"
 
-
 # -----------------------------------------------------------------------------
 # [feedback] — Convention injection budgets
 # -----------------------------------------------------------------------------
 [feedback]
-
 # Max tokens for SessionStart convention injection (SD §5.8.3).
 convention_injection_budget = 2000
-
 # Cross-session aggregation: take top-N most-frequent conventions as active.
 convention_top_n = 15
 
-# Hint fields (Phase 0 disabled, reserved):
-# hint_confidence_threshold = 0.7
-# hint_max_firing_per_session = 3
+# -----------------------------------------------------------------------------
+# [general] — Dispatch mode and logging
+# -----------------------------------------------------------------------------
+[general]
+# Analysis dispatch path. Default "cli" per Decision D.
+# "cli" — spawn the user's coding agent CLI (claude / codex) as analysis runtime.
+# Borrows the coding agent's own LLM auth and loop.
+# "sdk" — PydanticAI + direct LLM provider API call.
+# Requires [providers.*] credentials.
+mode = "cli"
+# Global log verbosity for loguru.
+log_level = "info" # debug | info | warning | error
 
+# -----------------------------------------------------------------------------
+# [observation] — Hook capture and session lifecycle
+# -----------------------------------------------------------------------------
+[observation]
+# Inactivity threshold for abnormal session_end detection (no clean end event).
+session_timeout_minutes = 30
+
+[providers.anthropic]
+ANTHROPIC_API_KEY = "" # e.g. "${ANTHROPIC_API_KEY}" to read env
+
+[providers.custom] # OpenAI-compatible endpoint
+API_KEY = ""
+base_url = ""
+
+[providers.openai]
+OPENAI_API_KEY = ""
 
 # -----------------------------------------------------------------------------
 # [retention] — Data lifecycle (TTL)
@@ -145,37 +114,23 @@ convention_top_n = 15
 # Defaults shortened per Decision E4 — agent evolution outpaces the
 # informational value of stale traces.
 [retention]
-raw_traces_ttl_days = 30              # was 90 in SD §3.10
-analysis_ttl_days = 60                # was 365 in SD §3.10
-
-
-# -----------------------------------------------------------------------------
-# [storage.sqlite] — SQLite tuning
-# -----------------------------------------------------------------------------
-[storage.sqlite]
-
-# In-memory page cache size. Other PRAGMAs (busy_timeout=5000,
-# wal_autocheckpoint=1000) are hardcoded in storage init.
-cache_size_mb = 64
-
+raw_traces_ttl_days = 30 # was 90 in SD §3.10
+analysis_ttl_days = 60 # was 365 in SD §3.10
 
 # -----------------------------------------------------------------------------
 # [server] — Local HTTP server (hook endpoint + dashboard backend)
 # -----------------------------------------------------------------------------
 [server]
-
 # Local-only bind for security (single-user product).
 host = "127.0.0.1"
-port = 8420                           # Hook fast-path target
-
+port = 8420 # Hook fast-path target
 # Whether `secondsight init` should auto-spawn the daemon.
 auto_start = true
 
-
 # -----------------------------------------------------------------------------
-# [observation] — Hook capture and session lifecycle
+# [storage.sqlite] — SQLite tuning
 # -----------------------------------------------------------------------------
-[observation]
-
-# Inactivity threshold for abnormal session_end detection (no clean end event).
-session_timeout_minutes = 30
+[storage.sqlite]
+# In-memory page cache size. Other PRAGMAs (busy_timeout=5000,
+# wal_autocheckpoint=1000) are hardcoded in storage init.
+cache_size_mb = 64

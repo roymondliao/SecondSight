@@ -16,4 +16,3 @@ Uncertainties (I cannot determine if more information is needed):
 ## Gate Outcome
 
 `proceed` — verified local captures closed the earlier research gaps, so planning can continue without carrying undocumented gaps.
-

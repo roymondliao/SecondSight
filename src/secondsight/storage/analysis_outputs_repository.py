@@ -54,7 +54,7 @@ class AnalysisOutputsRepository:
         if output.error_details is not None:
             try:
                 error_details_json = json.dumps(output.error_details)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 error_details_json = json.dumps({"raw": str(output.error_details)})
 
         row = {
@@ -86,9 +86,7 @@ class AnalysisOutputsRepository:
             error_details is returned as a dict (deserialized from JSON), or None.
         """
         stmt = (
-            sa.select(analysis_outputs)
-            .where(analysis_outputs.c.session_id == session_id)
-            .limit(1)
+            sa.select(analysis_outputs).where(analysis_outputs.c.session_id == session_id).limit(1)
         )
         with self._db.engine.connect() as conn:
             row = conn.execute(stmt).mappings().first()
@@ -100,7 +98,7 @@ class AnalysisOutputsRepository:
         if row["error_details"] is not None:
             try:
                 error_details = json.loads(row["error_details"])
-            except (json.JSONDecodeError, TypeError):
+            except json.JSONDecodeError, TypeError:
                 error_details = {"raw": row["error_details"]}
 
         return {

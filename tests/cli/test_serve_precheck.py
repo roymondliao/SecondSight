@@ -11,9 +11,8 @@ The test patches precheck() directly so we don't need a real server startup.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 from typer.testing import CliRunner
 
 from secondsight.cli.app import app as secondsight_app
@@ -54,9 +53,7 @@ def test_serve_failing_precheck_exits_nonzero(tmp_path: Path) -> None:
     with (
         patch("secondsight.config.precheck.precheck", side_effect=_failing_precheck),
         patch("secondsight.cli.serve._run_server"),  # prevent actual server start
-        patch(
-            "secondsight.cli._home.secondsight_home", return_value=tmp_path
-        ),
+        patch("secondsight.cli._home.secondsight_home", return_value=tmp_path),
     ):
         result = runner.invoke(secondsight_app, ["serve"])
 
@@ -72,14 +69,14 @@ def test_serve_failing_precheck_logs_actionable_error(tmp_path: Path) -> None:
     with (
         patch("secondsight.config.precheck.precheck", side_effect=_failing_precheck),
         patch("secondsight.cli.serve._run_server"),
-        patch(
-            "secondsight.cli._home.secondsight_home", return_value=tmp_path
-        ),
+        patch("secondsight.cli._home.secondsight_home", return_value=tmp_path),
     ):
         result = runner.invoke(secondsight_app, ["serve"])
 
     # Output (stdout or stderr combined by runner) should mention the failure reason
-    combined_output = (result.output or "") + (result.stderr if hasattr(result, "stderr") and result.stderr else "")
+    combined_output = (result.output or "") + (
+        result.stderr if hasattr(result, "stderr") and result.stderr else ""
+    )
     assert result.exit_code != 0
 
 
@@ -92,9 +89,7 @@ def test_serve_passing_precheck_does_not_exit_nonzero(tmp_path: Path) -> None:
     with (
         patch("secondsight.config.precheck.precheck", side_effect=_passing_precheck),
         patch("secondsight.cli.serve._run_server"),  # no-op, returns immediately
-        patch(
-            "secondsight.cli._home.secondsight_home", return_value=tmp_path
-        ),
+        patch("secondsight.cli._home.secondsight_home", return_value=tmp_path),
     ):
         result = runner.invoke(secondsight_app, ["serve"])
 
@@ -127,9 +122,7 @@ def test_serve_calls_precheck_before_server_start(tmp_path: Path) -> None:
     with (
         patch("secondsight.config.precheck.precheck", side_effect=record_precheck),
         patch("secondsight.cli.serve._run_server", side_effect=record_run_server),
-        patch(
-            "secondsight.cli._home.secondsight_home", return_value=tmp_path
-        ),
+        patch("secondsight.cli._home.secondsight_home", return_value=tmp_path),
     ):
         runner.invoke(secondsight_app, ["serve"])
 
@@ -138,9 +131,7 @@ def test_serve_calls_precheck_before_server_start(tmp_path: Path) -> None:
         # If server was called, precheck must have been called first
         precheck_idx = call_order.index("precheck")
         run_server_idx = call_order.index("run_server")
-        assert precheck_idx < run_server_idx, (
-            "precheck() must be called BEFORE _run_server()"
-        )
+        assert precheck_idx < run_server_idx, "precheck() must be called BEFORE _run_server()"
 
 
 def test_serve_failing_precheck_does_not_call_run_server(tmp_path: Path) -> None:
@@ -153,9 +144,7 @@ def test_serve_failing_precheck_does_not_call_run_server(tmp_path: Path) -> None
     with (
         patch("secondsight.config.precheck.precheck", side_effect=_failing_precheck),
         patch("secondsight.cli.serve._run_server", side_effect=record_run_server),
-        patch(
-            "secondsight.cli._home.secondsight_home", return_value=tmp_path
-        ),
+        patch("secondsight.cli._home.secondsight_home", return_value=tmp_path),
     ):
         runner.invoke(secondsight_app, ["serve"])
 

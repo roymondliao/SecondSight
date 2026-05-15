@@ -104,4 +104,3 @@ OUTPUT:
 - **MH-1 / task-1:** Lock the verified Codex adapter + fixture contract so prompt/tool/session payloads match real stdin and privacy canaries protect the raw fields.
 - **MH-2 / task-2:** Add Codex thin-ingress tests that prove the verified hook payload survives hook -> adapter -> tracker -> persisted event.
 - **MH-3 / task-3:** Harden Codex installer output to the verified working hook registration shape and document the fixture regeneration rules.
-

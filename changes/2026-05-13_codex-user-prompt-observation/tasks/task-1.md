@@ -49,4 +49,3 @@ This task turns those facts into a stable adapter + fixture contract.
 - Covers: `Silent failure - UserPromptSubmit stores anything other than the full prompt text`
 - Covers: `Silent failure - Codex fixtures drift back to invented payload shapes`
 - Covers: `Silent failure - raw tool_response or last_assistant_message leaks into Event.data`
-

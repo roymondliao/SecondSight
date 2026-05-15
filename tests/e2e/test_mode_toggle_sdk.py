@@ -93,14 +93,14 @@ def _make_temp_ss_home_sdk(
     # Write SDK config with the resolved key inline (not ${VAR} reference in
     # tests — we want to test the stored config path, not env-interpolation)
     config_content = (
-        '[general]\n'
+        "[general]\n"
         'mode = "sdk"\n'
-        '\n'
-        '[analysis.sdk]\n'
+        "\n"
+        "[analysis.sdk]\n"
         f'primary_model = "{primary_model}"\n'
         f'fallback_model = "{fallback_model}"\n'
-        '\n'
-        '[providers.anthropic]\n'
+        "\n"
+        "[providers.anthropic]\n"
         f'ANTHROPIC_API_KEY = "{resolved_key}"\n'
     )
     (ss_home / "config.toml").write_text(config_content, encoding="utf-8")
@@ -214,17 +214,20 @@ def test_sdk_mode_e2e_dispatch_creates_analysis_row(tmp_path: Path) -> None:
 
         requests.post(
             f"{_SERVER_URL}/hook/session_start",
-            json=_make_session_start_payload(project_id="e2e-proj-sdk", session_id="e2e-sess-sdk-001", seq=0),
+            json=_make_session_start_payload(
+                project_id="e2e-proj-sdk", session_id="e2e-sess-sdk-001", seq=0
+            ),
             timeout=10.0,
         )
         response = requests.post(
             f"{_SERVER_URL}/hook/session_end",
-            json=_make_session_end_payload(project_id="e2e-proj-sdk", session_id="e2e-sess-sdk-001", seq=1),
+            json=_make_session_end_payload(
+                project_id="e2e-proj-sdk", session_id="e2e-sess-sdk-001", seq=1
+            ),
             timeout=10.0,
         )
         assert response.status_code == 200, (
-            f"Expected 200 from /hook/session_end. "
-            f"Got {response.status_code}: {response.text!r}."
+            f"Expected 200 from /hook/session_end. Got {response.status_code}: {response.text!r}."
         )
 
         row = _poll_analysis_outputs_table(
@@ -245,9 +248,7 @@ def test_sdk_mode_e2e_dispatch_creates_analysis_row(tmp_path: Path) -> None:
             f"error_details: {row.get('error_details')!r}."
         )
         primary_model = row.get("primary_model")
-        assert primary_model, (
-            f"primary_model must be set for SDK dispatch. Got: {primary_model!r}."
-        )
+        assert primary_model, f"primary_model must be set for SDK dispatch. Got: {primary_model!r}."
 
     finally:
         server_proc.terminate()
@@ -285,12 +286,16 @@ def test_sdk_mode_invalid_key_produces_failure_row_with_error_details(
 
         requests.post(
             f"{_SERVER_URL}/hook/session_start",
-            json=_make_session_start_payload(project_id="e2e-proj-sdk-invalid", session_id="e2e-sess-sdk-invalid-001", seq=0),
+            json=_make_session_start_payload(
+                project_id="e2e-proj-sdk-invalid", session_id="e2e-sess-sdk-invalid-001", seq=0
+            ),
             timeout=10.0,
         )
         requests.post(
             f"{_SERVER_URL}/hook/session_end",
-            json=_make_session_end_payload(project_id="e2e-proj-sdk-invalid", session_id="e2e-sess-sdk-invalid-001", seq=1),
+            json=_make_session_end_payload(
+                project_id="e2e-proj-sdk-invalid", session_id="e2e-sess-sdk-invalid-001", seq=1
+            ),
             timeout=10.0,
         )
 
@@ -379,12 +384,16 @@ def test_dc4_sdk_invalid_primary_valid_fallback_uses_fallback(tmp_path: Path) ->
 
         requests.post(
             f"{_SERVER_URL}/hook/session_start",
-            json=_make_session_start_payload(project_id="e2e-proj-sdk-dc4", session_id="e2e-sess-sdk-dc4-001", seq=0),
+            json=_make_session_start_payload(
+                project_id="e2e-proj-sdk-dc4", session_id="e2e-sess-sdk-dc4-001", seq=0
+            ),
             timeout=10.0,
         )
         requests.post(
             f"{_SERVER_URL}/hook/session_end",
-            json=_make_session_end_payload(project_id="e2e-proj-sdk-dc4", session_id="e2e-sess-sdk-dc4-001", seq=1),
+            json=_make_session_end_payload(
+                project_id="e2e-proj-sdk-dc4", session_id="e2e-sess-sdk-dc4-001", seq=1
+            ),
             timeout=10.0,
         )
 

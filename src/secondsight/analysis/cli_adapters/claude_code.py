@@ -75,7 +75,7 @@ def extract_result(raw_stdout: str) -> str:
         outer = json.loads(raw_stdout)
         if isinstance(outer, dict) and "result" in outer:
             return str(outer["result"])
-    except (json.JSONDecodeError, ValueError):
+    except json.JSONDecodeError, ValueError:
         pass
     # Fall through: not a JSON envelope or not the expected shape -- return as-is
     return raw_stdout

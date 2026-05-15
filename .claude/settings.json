@@ -11,7 +11,8 @@
       "WebFetch",
       "WebSearch",
       "Bash(mkdir -p:*)",
-      "Bash(git:*)"
+      "Bash(git:*)",
+      "Bash(rtk proxy git:*)"
     ],
     "deny": [
       "Read(./.env)",
