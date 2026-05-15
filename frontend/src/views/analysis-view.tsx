@@ -26,7 +26,30 @@ import {
   type BehaviorFlag,
   type Directive,
 } from "@/lib/api";
-import { formatDateTime, formatInteger, truncateMiddle } from "@/lib/format";
+import { formatDateTime, formatInteger, formatSessionId, truncateMiddle } from "@/lib/format";
+import { cn } from "@/lib/utils";
+
+type FlagSeverityVisual = { dot: string; chip: string };
+
+function flagSeverityVisual(confidence: BehaviorFlag["confidence"]): FlagSeverityVisual {
+  switch (confidence) {
+    case "high":
+      return {
+        dot: "bg-destructive",
+        chip: "border-destructive/30 bg-destructive/10 text-destructive",
+      };
+    case "medium":
+      return {
+        dot: "bg-accent",
+        chip: "border-accent/30 bg-accent/10 text-accent",
+      };
+    case "low":
+      return {
+        dot: "bg-muted-foreground/70",
+        chip: "border-border/70 bg-muted text-muted-foreground",
+      };
+  }
+}
 
 const SERIES_COLORS = ["#0f766e", "#f97316", "#0284c7", "#dc2626", "#7c3aed", "#16a34a"];
 
@@ -118,6 +141,12 @@ function formatTooltipNumber(value: unknown) {
   return typeof value === "number" ? formatInteger(value) : "0";
 }
 
+function hasTrendData(rows: Array<Record<string, number | string>>) {
+  return rows.some((row) =>
+    Object.entries(row).some(([key, value]) => key !== "session" && typeof value === "number" && value > 0),
+  );
+}
+
 export function AnalysisView() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { projectId = "" } = useParams();
@@ -173,68 +202,72 @@ export function AnalysisView() {
     ],
   );
 
-  return (
-    <section className="grid flex-1 gap-4 xl:grid-cols-[1.02fr_1.18fr_1fr]">
-      <div className="space-y-4">
-        <Card className="grid gap-3 sm:grid-cols-3 xl:grid-cols-1">
-          <div>
-            <div className="font-mono text-xs uppercase tracking-[0.24em] text-muted-foreground">
-              Sessions analyzed
-            </div>
-            <div className="numeric mt-2 text-3xl font-semibold">
-              {formatInteger(summaryQuery.data?.analyzed_session_count)}
-            </div>
-          </div>
-          <div>
-            <div className="font-mono text-xs uppercase tracking-[0.24em] text-muted-foreground">
-              Active conventions
-            </div>
-            <div className="numeric mt-2 text-3xl font-semibold">
-              {formatInteger(summaryQuery.data?.active_directive_count)}
-            </div>
-          </div>
-          <div>
-            <div className="font-mono text-xs uppercase tracking-[0.24em] text-muted-foreground">
-              Last analyzed
-            </div>
-            <div className="mt-2 text-sm font-medium">
-              {formatDateTime(summaryQuery.data?.last_analyzed_at)}
-            </div>
-          </div>
-        </Card>
+  const trendDataAvailable = hasTrendData(trendSeries.rows);
 
-        <Card className="space-y-4">
-          <div className="flex items-center justify-between">
+  return (
+    <section className="space-y-4">
+      <div className="section-meta">
+        <p className="eyebrow">§3 · Dashboard · /projects/{projectId}/analysis</p>
+        <p className="section-note">
+          Stat strip + analysis list + flag trends. Accent reserved for charts.
+        </p>
+      </div>
+
+      <div className="grid flex-1 items-start gap-4 xl:grid-cols-[1.02fr_1.18fr_1fr]">
+        <div className="space-y-4">
+          <Card className="grid gap-3 sm:grid-cols-3 xl:grid-cols-1">
             <div>
-              <p className="font-mono text-xs uppercase tracking-[0.24em] text-muted-foreground">
-                Session reports
-              </p>
-              <h2 className="text-2xl font-semibold">Analysis list</h2>
-            </div>
-            <Badge>{formatInteger(sessionsQuery.data?.items.length ?? 0)} loaded</Badge>
-          </div>
-          <div className="space-y-3">
-            {!sessionsQuery.data?.items.length && (
-              <div className="rounded-[24px] border border-dashed border-border/80 bg-white/45 p-5 text-sm leading-6 text-muted-foreground">
-                No analyzed sessions yet. Analysis runs automatically after sessions are ingested — check back after your first full session completes.
+              <div className="eyebrow">Sessions analyzed</div>
+              <div className="numeric mt-2 text-3xl font-semibold">
+                {formatInteger(summaryQuery.data?.analyzed_session_count)}
               </div>
-            )}
-            {sessionsQuery.data?.items.map((session) => {
-              const active = session.session_id === selectedSessionId;
-              return (
-                <button
-                  className={`w-full rounded-[24px] border p-4 text-left transition-all duration-150 ${
-                    active
-                      ? "border-primary/35 bg-primary text-primary-foreground shadow-sm"
-                      : "border-white/70 bg-white/60 hover:bg-white"
-                  }`}
-                  key={session.session_id}
-                  onClick={() => setSearchParams({ session: session.session_id })}
-                >
-                  <div className="mb-2 flex items-center justify-between gap-3">
-                    <div className="font-mono text-xs uppercase tracking-[0.2em]">
-                      {truncateMiddle(session.session_id, 18)}
-                    </div>
+            </div>
+            <div>
+              <div className="eyebrow">Active conventions</div>
+              <div className="numeric mt-2 text-3xl font-semibold">
+                {formatInteger(summaryQuery.data?.active_directive_count)}
+              </div>
+            </div>
+            <div>
+              <div className="eyebrow">Last analyzed</div>
+              <div className="mt-2 text-sm font-medium">
+                {formatDateTime(summaryQuery.data?.last_analyzed_at)}
+              </div>
+            </div>
+          </Card>
+
+          <Card className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
+                  Session reports
+                </p>
+                <h2 className="text-2xl font-semibold">Analysis list</h2>
+              </div>
+              <Badge>{formatInteger(sessionsQuery.data?.items.length ?? 0)} loaded</Badge>
+            </div>
+            <div className="space-y-3">
+              {!sessionsQuery.data?.items.length && (
+                <div className="rounded-[24px] border border-dashed border-border/80 bg-white/45 p-5 text-sm leading-6 text-muted-foreground">
+                  No analyzed sessions yet. Analysis runs automatically after sessions are ingested — check back after your first full session completes.
+                </div>
+              )}
+              {sessionsQuery.data?.items.map((session) => {
+                const active = session.session_id === selectedSessionId;
+                return (
+                  <button
+                    className={`w-full rounded-[24px] border p-4 text-left transition-all duration-150 ${
+                      active
+                        ? "border-primary/35 bg-primary text-primary-foreground shadow-sm"
+                        : "border-white/70 bg-white/60 hover:bg-white"
+                    }`}
+                    key={session.session_id}
+                    onClick={() => setSearchParams({ session: session.session_id })}
+                  >
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <div className="font-mono text-xs">
+                        {formatSessionId(session.session_id, 18)}
+                      </div>
                     <Badge className={active ? "border-white/20 bg-white/15 text-white" : ""}>
                       {session.flag_count} flags
                     </Badge>
@@ -244,8 +277,10 @@ export function AnalysisView() {
                   <div className="flex flex-wrap gap-2">
                     {session.key_findings.map((finding) => (
                       <span
-                        className={`rounded-full px-3 py-1 text-xs ${
-                          active ? "bg-white/15" : "bg-slate-100"
+                        className={`inline-flex items-center rounded-full border px-2.5 py-0.5 font-mono text-[11px] ${
+                          active
+                            ? "border-white/25 bg-white/15 text-white"
+                            : "border-border/70 bg-slate-50 text-muted-foreground"
                         }`}
                         key={finding}
                       >
@@ -263,7 +298,7 @@ export function AnalysisView() {
       <Card className="space-y-4">
         <div className="flex items-center justify-between">
           <div>
-            <p className="font-mono text-xs uppercase tracking-[0.24em] text-muted-foreground">
+            <p className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
               Project-level summary
             </p>
             <h2 className="text-2xl font-semibold">Flag trends</h2>
@@ -273,7 +308,7 @@ export function AnalysisView() {
         <div className="grid gap-3 md:grid-cols-2">
           {Object.entries(summaryQuery.data?.flag_counts_by_type ?? {}).map(([flagType, count]) => (
             <div className="rounded-[24px] border border-white/80 bg-white/65 p-4" key={flagType}>
-              <div className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
+              <div className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
                 {humanizeFlagType(flagType)}
               </div>
               <div className="numeric mt-2 text-2xl font-semibold">{count}</div>
@@ -281,43 +316,55 @@ export function AnalysisView() {
           ))}
         </div>
         <div className="h-[340px] rounded-[28px] border border-white/80 bg-[linear-gradient(180deg,rgba(14,165,233,0.06),rgba(255,255,255,0.75))] p-4">
-          <ResponsiveContainer height="100%" width="100%">
-            <AreaChart data={trendSeries.rows}>
-              <defs>
-                {trendSeries.flagTypes.map((flagType, index) => (
-                  <linearGradient id={`gradient-${flagType}`} key={flagType} x1="0" x2="0" y1="0" y2="1">
-                    <stop offset="5%" stopColor={SERIES_COLORS[index % SERIES_COLORS.length]} stopOpacity={0.5} />
-                    <stop offset="95%" stopColor={SERIES_COLORS[index % SERIES_COLORS.length]} stopOpacity={0.02} />
-                  </linearGradient>
-                ))}
-              </defs>
-              <CartesianGrid stroke="rgba(148, 163, 184, 0.25)" vertical={false} />
-              <XAxis dataKey="session" tickFormatter={(value) => truncateMiddle(String(value), 12)} tickLine={false} />
-              <YAxis allowDecimals={false} tickLine={false} width={34} />
-              <Tooltip
-                formatter={(value, name) => [formatTooltipNumber(value), humanizeFlagType(String(name))]}
-                labelFormatter={(value) => truncateMiddle(String(value), 18)}
-              />
-              {trendSeries.flagTypes.map((flagType, index) => (
-                <Area
-                  dataKey={flagType}
-                  fill={`url(#gradient-${flagType})`}
-                  key={flagType}
-                  stackId="flags"
-                  stroke={SERIES_COLORS[index % SERIES_COLORS.length]}
-                  strokeWidth={2}
-                  type="monotone"
+          {trendDataAvailable ? (
+            <ResponsiveContainer height="100%" width="100%">
+              <AreaChart data={trendSeries.rows}>
+                <defs>
+                  {trendSeries.flagTypes.map((flagType, index) => (
+                    <linearGradient id={`gradient-${flagType}`} key={flagType} x1="0" x2="0" y1="0" y2="1">
+                      <stop offset="5%" stopColor={SERIES_COLORS[index % SERIES_COLORS.length]} stopOpacity={0.5} />
+                      <stop offset="95%" stopColor={SERIES_COLORS[index % SERIES_COLORS.length]} stopOpacity={0.02} />
+                    </linearGradient>
+                  ))}
+                </defs>
+                <CartesianGrid stroke="rgba(148, 163, 184, 0.25)" vertical={false} />
+                <XAxis dataKey="session" tickFormatter={(value) => truncateMiddle(String(value), 12)} tickLine={false} />
+                <YAxis allowDecimals={false} tickLine={false} width={34} />
+                <Tooltip
+                  formatter={(value, name) => [formatTooltipNumber(value), humanizeFlagType(String(name))]}
+                  labelFormatter={(value) => truncateMiddle(String(value), 18)}
                 />
-              ))}
-            </AreaChart>
-          </ResponsiveContainer>
+                {trendSeries.flagTypes.map((flagType, index) => (
+                  <Area
+                    dataKey={flagType}
+                    fill={`url(#gradient-${flagType})`}
+                    key={flagType}
+                    stackId="flags"
+                    stroke={SERIES_COLORS[index % SERIES_COLORS.length]}
+                    strokeWidth={2}
+                    type="monotone"
+                  />
+                ))}
+              </AreaChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="flex h-full items-center justify-center rounded-[24px] border border-dashed border-border/70 bg-white/45 px-6 text-center">
+              <div className="space-y-3">
+                <div className="eyebrow">Trend chart idle</div>
+                <div className="text-lg font-medium">No session trend data yet</div>
+                <p className="max-w-md text-sm leading-6 text-muted-foreground">
+                  The chart activates after analysis has run across at least one ingested session.
+                </p>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
           <div className="rounded-[28px] border border-white/80 bg-white/60 p-4">
             <div className="mb-4 flex items-center justify-between">
               <div className="min-w-0">
-                <p className="truncate font-mono text-xs uppercase tracking-[0.24em] text-muted-foreground">
+                <p className="truncate font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
                   Cross-session distribution
                 </p>
                 <h3 className="text-xl font-semibold">Flag type mix</h3>
@@ -388,7 +435,7 @@ export function AnalysisView() {
           <div className="rounded-[28px] border border-white/80 bg-white/60 p-4">
             <div className="mb-4 flex items-center justify-between">
               <div className="min-w-0">
-                <p className="truncate font-mono text-xs uppercase tracking-[0.24em] text-muted-foreground">
+                <p className="truncate font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
                   Behavior pattern groups
                 </p>
                 <h3 className="text-xl font-semibold">Promoted conventions</h3>
@@ -404,7 +451,7 @@ export function AnalysisView() {
                   <div className="rounded-[24px] border border-white/80 bg-white/75 p-4" key={group.flagType}>
                     <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                       <div>
-                        <div className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                        <div className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
                           {humanizeFlagType(group.flagType)}
                         </div>
                         <div className="mt-2 text-lg font-semibold">
@@ -444,12 +491,12 @@ export function AnalysisView() {
       <Card className="space-y-4">
         <div className="flex items-center justify-between">
           <div>
-            <p className="font-mono text-xs uppercase tracking-[0.24em] text-muted-foreground">
+            <p className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
               Per-session report
             </p>
             <h2 className="text-2xl font-semibold">
               {selectedSessionId
-                ? truncateMiddle(selectedSessionId, 20)
+                ? formatSessionId(selectedSessionId, 20)
                 : sessionsQuery.data?.items.length
                   ? "Select a session"
                   : "No sessions analyzed"}
@@ -475,9 +522,11 @@ export function AnalysisView() {
             </div>
             <div className="space-y-3">
               {Object.entries(groupedFlags).map(([segmentIndex, flags]) => (
-                <div className="rounded-[24px] border border-white/80 bg-white/60 p-4" key={segmentIndex}>
-                  <div className="mb-3 flex items-center justify-between">
-                    <div className="font-medium">Segment {segmentIndex}</div>
+                <div className="space-y-3 rounded-chunk border border-white/80 bg-white/60 p-4" key={segmentIndex}>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
+                      Segment {segmentIndex}
+                    </span>
                     <Button asChild size="sm" variant="ghost">
                       <Link
                         to={`/projects/${projectId}/observation?session=${detailQuery.data.session_id}&segment=${segmentIndex}`}
@@ -487,21 +536,52 @@ export function AnalysisView() {
                     </Button>
                   </div>
                   <div className="space-y-3">
-                    {flags.map((flag) => (
-                      <div className="rounded-[20px] border border-border/60 bg-white p-4" key={flag.id}>
-                        <div className="mb-2 flex flex-wrap gap-2">
-                          <Badge>{humanizeFlagType(flag.flag_type)}</Badge>
-                          <Badge>{flag.confidence}</Badge>
+                    {flags.map((flag) => {
+                      const visual = flagSeverityVisual(flag.confidence);
+                      return (
+                        <div className="rounded-chunk border border-white/80 bg-white/65 p-4" key={flag.id}>
+                          <div className="mb-2 flex flex-wrap gap-2">
+                            <span
+                              className={cn(
+                                "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.22em]",
+                                visual.chip,
+                              )}
+                            >
+                              <span className={cn("dot", visual.dot)} />
+                              {humanizeFlagType(flag.flag_type)}
+                            </span>
+                            <span className="inline-flex items-center rounded-full border border-border/70 bg-white px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.22em] text-muted-foreground">
+                              conf · {flag.confidence}
+                            </span>
+                            <span className="inline-flex items-center rounded-full border border-border/70 bg-white px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.22em] text-muted-foreground">
+                              evt · {flag.event_ids.length}
+                            </span>
+                          </div>
+                          <p className="text-sm font-medium leading-6">{flag.intent_summary}</p>
+                          <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                            <span className="font-mono uppercase tracking-[0.22em]">Reason</span> · {flag.reason}
+                          </p>
+                          {flag.event_ids.length > 0 ? (
+                            <div className="mt-3 flex flex-wrap gap-1.5">
+                              {flag.event_ids.slice(0, 4).map((eventId) => (
+                                <span
+                                  className="inline-flex items-center rounded-full border border-border/60 bg-slate-50 px-2 py-0.5 font-mono text-[10px] text-muted-foreground"
+                                  key={eventId}
+                                  title={eventId}
+                                >
+                                  {truncateMiddle(eventId, 16)}
+                                </span>
+                              ))}
+                              {flag.event_ids.length > 4 ? (
+                                <span className="inline-flex items-center rounded-full border border-border/60 bg-slate-50 px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
+                                  +{flag.event_ids.length - 4}
+                                </span>
+                              ) : null}
+                            </div>
+                          ) : null}
                         </div>
-                        <div className="mb-2 text-sm font-medium">{flag.intent_summary}</div>
-                        <p className="text-sm leading-6 text-muted-foreground">{flag.reason}</p>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {flag.event_ids.map((eventId) => (
-                            <Badge key={eventId}>{truncateMiddle(eventId, 18)}</Badge>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               ))}
@@ -514,7 +594,8 @@ export function AnalysisView() {
               : "Analyzed session reports will appear here once analysis has run on at least one session."}
           </div>
         )}
-      </Card>
+        </Card>
+        </div>
     </section>
   );
 }

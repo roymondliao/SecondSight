@@ -22,6 +22,8 @@
     --input: 214 26% 84%;
     --ring: 201 79% 33%;
     --radius: 22px;
+    --surface-glass: 255 255 255;
+    --surface-shadow: 15 23 42;
   }
 
   * {
@@ -37,6 +39,7 @@
   body {
     @apply min-h-screen bg-background text-foreground;
     font-family: "Space Grotesk", ui-sans-serif, sans-serif;
+    line-height: 1.5;
     background-image:
       radial-gradient(circle at top left, rgba(251, 146, 60, 0.18), transparent 26%),
       radial-gradient(circle at top right, rgba(14, 165, 233, 0.18), transparent 28%),
@@ -52,10 +55,75 @@
   textarea {
     font: inherit;
   }
+
+  ::selection {
+    background: rgba(14, 165, 233, 0.18);
+  }
 }
 
 @layer utilities {
   .numeric {
     font-variant-numeric: tabular-nums;
+  }
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.72rem;
+    font-weight: 500;
+    line-height: 1;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: hsl(var(--muted-foreground));
+  }
+  .chip-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    border-radius: 9999px;
+    border: 1px solid hsl(var(--border) / 0.8);
+    background: rgba(var(--surface-glass) / 0.76);
+    padding: 0.28rem 0.72rem;
+    font-size: 0.72rem;
+    font-weight: 500;
+    line-height: 1;
+    color: hsl(var(--foreground));
+    box-shadow: 0 1px 1px rgba(var(--surface-shadow) / 0.04);
+  }
+  .chip-mono {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+  }
+  .section-meta {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+  .section-note {
+    font-size: 0.75rem;
+    line-height: 1.4;
+    color: hsl(var(--muted-foreground));
+    max-width: 32rem;
+  }
+  .dot {
+    display: inline-block;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 9999px;
+    flex: none;
+  }
+
+  @media (min-width: 768px) {
+    .section-meta {
+      flex-direction: row;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: space-between;
+    }
+
+    .section-note {
+      text-align: right;
+    }
   }
 }

@@ -75,3 +75,19 @@ export function truncateMiddle(value: string, width = 18): string {
   const side = Math.max(Math.floor((width - 3) / 2), 4);
   return `${value.slice(0, side)}...${value.slice(-side)}`;
 }
+
+export function formatSessionId(value: string, width = 20): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "—";
+  }
+
+  const uuidMatch = trimmed.match(
+    /^(?<head>[0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-(?<tail>[0-9a-f]{8,12})$/i,
+  );
+  if (uuidMatch?.groups) {
+    return `${uuidMatch.groups.head}...${uuidMatch.groups.tail.slice(-8)}`;
+  }
+
+  return truncateMiddle(trimmed, width);
+}

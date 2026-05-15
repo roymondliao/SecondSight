@@ -1,0 +1,1140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SecondSight — Design Preview</title>
+
+  <!-- Fonts: Space Grotesk + IBM Plex Mono (matches frontend/src/index.css) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" />
+
+  <!-- Tailwind via Play CDN — preview only, not production -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Space Grotesk"', 'ui-sans-serif', 'sans-serif'],
+            mono: ['"IBM Plex Mono"', 'ui-monospace', 'monospace'],
+          },
+          colors: {
+            border: 'hsl(214 26% 84%)',
+            ring: 'hsl(201 79% 33%)',
+            background: 'hsl(42 40% 96%)',
+            foreground: 'hsl(214 46% 14%)',
+            muted: { DEFAULT: 'hsl(40 33% 91%)', foreground: 'hsl(214 18% 36%)' },
+            primary: { DEFAULT: 'hsl(201 79% 33%)', foreground: '#ffffff', soft: 'hsl(201 79% 96%)' },
+            accent: { DEFAULT: 'hsl(18 89% 56%)', foreground: '#ffffff', soft: 'hsl(18 89% 96%)' },
+            destructive: { DEFAULT: 'hsl(4 75% 55%)', foreground: '#ffffff' },
+            card: '#ffffff',
+            ink: 'hsl(214 46% 14%)',
+          },
+          borderRadius: {
+            tile: '32px',
+            card: '22px',
+            chunk: '24px',
+            input: '18px',
+          },
+          boxShadow: {
+            ambient: '0 20px 60px rgba(15, 23, 42, 0.12), 0 6px 18px rgba(15, 23, 42, 0.08)',
+            tile: '0 24px 70px rgba(15, 23, 42, 0.10), 0 8px 22px rgba(15, 23, 42, 0.06)',
+          },
+        },
+      },
+    };
+  </script>
+
+  <style>
+    :root {
+      --canvas: 42 40% 96%;
+      --ink: 214 46% 14%;
+      --primary: 201 79% 33%;
+      --accent: 18 89% 56%;
+      --hairline: 214 26% 84%;
+    }
+    html { font-synthesis-weight: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; }
+    body {
+      font-family: 'Space Grotesk', ui-sans-serif, sans-serif;
+      background-color: hsl(var(--canvas));
+      color: hsl(var(--ink));
+      background-image:
+        radial-gradient(circle at top left, rgba(251, 146, 60, 0.18), transparent 26%),
+        radial-gradient(circle at top right, rgba(14, 165, 233, 0.18), transparent 28%),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(248, 244, 236, 0.95));
+      min-height: 100vh;
+    }
+    .numeric { font-variant-numeric: tabular-nums; }
+    .eyebrow { font-family: 'IBM Plex Mono', ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.22em; font-size: 0.72rem; font-weight: 500; color: hsl(214 18% 36%); }
+    .mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; }
+    .section-marker { position: sticky; top: 0; z-index: 30; backdrop-filter: blur(14px); background: rgba(255,255,255,0.78); border-bottom: 1px solid hsl(var(--hairline)); }
+    .mockup-frame { scroll-margin-top: 72px; }
+    /* Pill + chip + badge primitives */
+    .chip-pill { display: inline-flex; align-items: center; gap: 0.4rem; border-radius: 9999px; padding: 0.25rem 0.7rem; font-size: 0.72rem; font-weight: 500; border: 1px solid hsl(var(--hairline)); background: white; }
+    .chip-mono { font-family: 'IBM Plex Mono', monospace; letter-spacing: 0.1em; text-transform: uppercase; font-size: 0.66rem; }
+    /* Status dot */
+    .dot { width: 0.5rem; height: 0.5rem; border-radius: 9999px; display: inline-block; }
+  </style>
+</head>
+<body class="text-foreground">
+
+  <!-- Top floating index — quick jump between mockup sections -->
+  <nav class="section-marker">
+    <div class="mx-auto flex max-w-[1920px] items-center justify-between px-6 py-3">
+      <div class="flex items-center gap-3">
+        <span class="grid h-8 w-8 place-items-center rounded-full bg-foreground text-background">
+          <!-- 4-spoke radial mark borrowed in spirit from Anthropic — recolored for SecondSight -->
+          <svg viewBox="0 0 16 16" class="h-4 w-4 fill-current text-background"><path d="M8 1 L9 7 L15 8 L9 9 L8 15 L7 9 L1 8 L7 7 Z"/></svg>
+        </span>
+        <span class="mono uppercase tracking-[0.22em] text-xs text-primary">SecondSight</span>
+        <span class="text-muted-foreground">/</span>
+        <span class="text-sm">design preview</span>
+        <span class="ml-3 chip-pill"><span class="dot bg-emerald-500"></span>local · v0.alpha</span>
+      </div>
+      <div class="flex items-center gap-1 text-xs">
+        <a href="#mock-landing"     class="rounded-full px-3 py-1.5 hover:bg-white">§1 Landing</a>
+        <a href="#mock-observation" class="rounded-full px-3 py-1.5 hover:bg-white">§2 Observation</a>
+        <a href="#mock-analysis"    class="rounded-full px-3 py-1.5 hover:bg-white">§3 Analysis</a>
+        <a href="#mock-directives"  class="rounded-full px-3 py-1.5 hover:bg-white">§4 Directives</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ============================================================ -->
+  <!-- §1  LANDING                                                   -->
+  <!-- ============================================================ -->
+  <section id="mock-landing" class="mockup-frame px-6 pt-10 pb-16">
+    <div class="mx-auto max-w-[1200px]">
+      <div class="mb-6 flex items-baseline justify-between">
+        <p class="eyebrow">§1 · Landing · /</p>
+        <p class="text-xs text-muted-foreground">Single tile, two-column. Project picker on right.</p>
+      </div>
+
+      <div class="overflow-hidden rounded-tile border border-white/70 bg-white/55 shadow-tile backdrop-blur-xl">
+        <div class="grid gap-0 md:grid-cols-[1.15fr_0.85fr]">
+
+          <!-- Left: hero -->
+          <section class="space-y-7 bg-[radial-gradient(circle_at_top_left,rgba(14,165,233,0.18),transparent_40%),linear-gradient(180deg,rgba(248,250,252,0.95),rgba(255,255,255,0.82))] p-10">
+            <div class="chip-pill bg-white/70">
+              <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/></svg>
+              <span class="mono uppercase tracking-[0.22em]">SecondSight</span>
+            </div>
+            <div class="space-y-3">
+              <h1 class="text-balance text-4xl font-semibold leading-[1.15] md:text-[2.5rem]">
+                Observation, analysis, and directives<br/>on one spatial surface.
+              </h1>
+              <p class="max-w-lg text-pretty text-base leading-7 text-muted-foreground">
+                Pick a project and step through sessions, behavior flags, and active conventions
+                without leaving the same dashboard plane.
+              </p>
+            </div>
+
+            <div class="grid gap-3 md:grid-cols-3">
+              <!-- Feature card 1 -->
+              <div class="rounded-card border border-white/80 bg-white/60 p-4 shadow-sm">
+                <svg class="mb-3 h-5 w-5 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 6a4 4 0 0 1 8 0 4 4 0 0 1 8 0"/><circle cx="6" cy="11" r="2"/><circle cx="14" cy="11" r="2"/></svg>
+                <div class="mb-1 text-sm font-medium">Observation</div>
+                <p class="text-[13px] leading-5 text-muted-foreground">Drill down from session to segment to event.</p>
+              </div>
+              <!-- Feature card 2 -->
+              <div class="rounded-card border border-white/80 bg-white/60 p-4 shadow-sm">
+                <svg class="mb-3 h-5 w-5 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 18l5-7 4 5 3-4 6 9"/></svg>
+                <div class="mb-1 text-sm font-medium">Analysis</div>
+                <p class="text-[13px] leading-5 text-muted-foreground">Trend lines, reports, and flag clusters.</p>
+              </div>
+              <!-- Feature card 3 -->
+              <div class="rounded-card border border-white/80 bg-white/60 p-4 shadow-sm">
+                <svg class="mb-3 h-5 w-5 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 5h18M3 12h18M3 19h12"/></svg>
+                <div class="mb-1 text-sm font-medium">Directives</div>
+                <p class="text-[13px] leading-5 text-muted-foreground">Lifecycle, source traces, deletion.</p>
+              </div>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2 pt-2 text-xs text-muted-foreground">
+              <span class="mono uppercase tracking-[0.22em]">Compatible with</span>
+              <span class="chip-pill">Claude Code</span>
+              <span class="chip-pill">OpenCode</span>
+              <span class="chip-pill">Codex CLI</span>
+            </div>
+          </section>
+
+          <!-- Right: project picker form -->
+          <section class="space-y-5 p-10">
+            <div class="space-y-2">
+              <h2 class="text-xl font-semibold">Project scope</h2>
+              <p class="text-sm leading-6 text-muted-foreground">
+                Every API route is project-scoped. Enter the project id you want to inspect.
+              </p>
+            </div>
+
+            <div class="space-y-3">
+              <input value="secondsight-core"
+                     class="w-full rounded-input border border-border bg-white px-4 py-3 text-base ring-primary/15 focus:border-primary focus:outline-none focus:ring-4 numeric"
+                     placeholder="example-project" />
+
+              <!-- Primary CTA — teal -->
+              <button class="flex w-full items-center justify-between rounded-input bg-primary px-5 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90">
+                Enter dashboard
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 5l7 7-7 7"/></svg>
+              </button>
+            </div>
+
+            <div class="space-y-2">
+              <p class="eyebrow">Recent</p>
+              <div class="flex flex-wrap gap-2">
+                <button class="chip-pill hover:bg-primary/5"><span class="mono">secondsight-core</span></button>
+                <button class="chip-pill hover:bg-primary/5"><span class="mono">codex-companion</span></button>
+                <button class="chip-pill hover:bg-primary/5"><span class="mono">vicone-feedback-loop</span></button>
+              </div>
+            </div>
+
+            <p class="pt-1 text-[12px] leading-6 text-muted-foreground">
+              Recent project ids are kept locally in this browser — start typing to autocomplete.
+            </p>
+          </section>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- DASHBOARD HEADER (shared by §2 §3 §4)                         -->
+  <!-- ============================================================ -->
+  <template id="tpl-dashboard-header">
+  </template>
+
+  <!-- ============================================================ -->
+  <!-- §2  OBSERVATION                                               -->
+  <!-- ============================================================ -->
+  <section id="mock-observation" class="mockup-frame px-6 pt-6 pb-12">
+    <div class="mx-auto max-w-[1920px]">
+
+      <div class="mb-3 flex items-baseline justify-between">
+        <p class="eyebrow">§2 · Dashboard · /projects/secondsight-core/observation</p>
+        <p class="text-xs text-muted-foreground">Three-column ladder: Sessions → Segments → Events. Spatial truth.</p>
+      </div>
+
+      <!-- Dashboard header tile (glassmorphic) -->
+      <header class="mb-4 grid gap-4 rounded-tile border border-white/70 bg-white/55 p-5 shadow-ambient backdrop-blur-xl md:grid-cols-[1fr_auto]">
+        <div class="space-y-3">
+          <div class="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+            <span class="mono uppercase tracking-[0.22em] text-primary">SecondSight</span>
+            <span>/</span>
+            <span class="mono numeric text-foreground">secondsight-core</span>
+            <span class="ml-2 chip-pill"><span class="dot bg-emerald-500"></span>polling · last 4.2 s</span>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <!-- Active nav pill -->
+            <span class="inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary px-4 py-2 text-sm text-primary-foreground shadow-sm">
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12c3-7 15-7 18 0M3 12c3 7 15 7 18 0"/><circle cx="12" cy="12" r="3"/></svg>
+              Observation
+            </span>
+            <a href="#mock-analysis" class="inline-flex items-center gap-2 rounded-full border border-white/70 bg-white/60 px-4 py-2 text-sm hover:bg-white">
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 18l5-7 4 5 3-4 6 9"/></svg>
+              Analysis
+            </a>
+            <a href="#mock-directives" class="inline-flex items-center gap-2 rounded-full border border-white/70 bg-white/60 px-4 py-2 text-sm hover:bg-white">
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 5h18M3 12h18M3 19h12"/></svg>
+              Directives
+            </a>
+          </div>
+        </div>
+        <form class="flex flex-col gap-2 sm:flex-row">
+          <input value="secondsight-core" class="min-w-[240px] rounded-input border border-border bg-white px-4 py-2.5 text-sm numeric"/>
+          <button class="whitespace-nowrap rounded-input border border-border bg-white px-4 py-2.5 text-sm font-medium hover:bg-muted">Switch project</button>
+        </form>
+      </header>
+
+      <!-- Three-column ladder -->
+      <div class="grid gap-4 xl:grid-cols-[1.05fr_0.95fr_1.3fr]">
+
+        <!-- Column 1: SESSIONS -->
+        <div class="space-y-4 rounded-card border border-white/70 bg-white/55 p-5 shadow-ambient backdrop-blur-xl">
+          <div class="flex items-center justify-between">
+            <div>
+              <p class="eyebrow">Level 1</p>
+              <h2 class="text-2xl font-semibold">Sessions</h2>
+            </div>
+            <span class="chip-pill numeric">7 loaded</span>
+          </div>
+
+          <div class="space-y-3">
+            <!-- Active session card -->
+            <button class="block w-full rounded-chunk border border-primary/35 bg-primary p-4 text-left text-primary-foreground shadow-sm">
+              <div class="mb-3 flex items-center justify-between">
+                <div class="mono text-xs">ses_2026-05-14T03:14-7f3a…b2e1</div>
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+              </div>
+              <div class="grid grid-cols-2 gap-3 text-xs">
+                <div><div class="opacity-70">Events</div><div class="numeric mt-1 text-sm font-medium">147</div></div>
+                <div><div class="opacity-70">Segments</div><div class="numeric mt-1 text-sm font-medium">12</div></div>
+                <div><div class="opacity-70">Started</div><div class="mt-1 text-sm font-medium">May 14 · 03:14</div></div>
+                <div><div class="opacity-70">Span</div><div class="numeric mt-1 text-sm font-medium">38m 12s</div></div>
+              </div>
+            </button>
+
+            <!-- Inactive cards -->
+            <button class="block w-full rounded-chunk border border-white/70 bg-white/60 p-4 text-left hover:bg-white">
+              <div class="mb-3 flex items-center justify-between">
+                <div class="mono text-xs text-muted-foreground">ses_2026-05-14T01:08-c12d…a307</div>
+                <svg class="h-4 w-4 text-muted-foreground" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+              </div>
+              <div class="grid grid-cols-2 gap-3 text-xs">
+                <div><div class="text-muted-foreground">Events</div><div class="numeric mt-1 text-sm font-medium">52</div></div>
+                <div><div class="text-muted-foreground">Segments</div><div class="numeric mt-1 text-sm font-medium">5</div></div>
+                <div><div class="text-muted-foreground">Started</div><div class="mt-1 text-sm font-medium">May 14 · 01:08</div></div>
+                <div><div class="text-muted-foreground">Span</div><div class="numeric mt-1 text-sm font-medium">14m 02s</div></div>
+              </div>
+            </button>
+
+            <button class="block w-full rounded-chunk border border-white/70 bg-white/60 p-4 text-left hover:bg-white">
+              <div class="mb-3 flex items-center justify-between">
+                <div class="mono text-xs text-muted-foreground">ses_2026-05-13T22:47-9b80…1f4c</div>
+                <svg class="h-4 w-4 text-muted-foreground" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+              </div>
+              <div class="grid grid-cols-2 gap-3 text-xs">
+                <div><div class="text-muted-foreground">Events</div><div class="numeric mt-1 text-sm font-medium">203</div></div>
+                <div><div class="text-muted-foreground">Segments</div><div class="numeric mt-1 text-sm font-medium">18</div></div>
+                <div><div class="text-muted-foreground">Started</div><div class="mt-1 text-sm font-medium">May 13 · 22:47</div></div>
+                <div><div class="text-muted-foreground">Span</div><div class="numeric mt-1 text-sm font-medium">52m 41s</div></div>
+              </div>
+            </button>
+
+            <button class="block w-full rounded-chunk border border-white/70 bg-white/60 p-4 text-left hover:bg-white">
+              <div class="mb-3 flex items-center justify-between">
+                <div class="mono text-xs text-muted-foreground">ses_2026-05-13T19:22-4e1f…ab09</div>
+                <svg class="h-4 w-4 text-muted-foreground" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+              </div>
+              <div class="grid grid-cols-2 gap-3 text-xs">
+                <div><div class="text-muted-foreground">Events</div><div class="numeric mt-1 text-sm font-medium">78</div></div>
+                <div><div class="text-muted-foreground">Segments</div><div class="numeric mt-1 text-sm font-medium">6</div></div>
+                <div><div class="text-muted-foreground">Started</div><div class="mt-1 text-sm font-medium">May 13 · 19:22</div></div>
+                <div><div class="text-muted-foreground">Span</div><div class="numeric mt-1 text-sm font-medium">21m 18s</div></div>
+              </div>
+            </button>
+          </div>
+        </div>
+
+        <!-- Column 2: SEGMENTS -->
+        <div class="space-y-4 rounded-card border border-white/70 bg-white/55 p-5 shadow-ambient backdrop-blur-xl">
+          <div class="space-y-3">
+            <div>
+              <p class="eyebrow">Level 2</p>
+              <h2 class="text-2xl font-semibold">Segments</h2>
+            </div>
+            <div class="inline-flex max-w-full items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 mono text-xs uppercase tracking-[0.22em] text-primary">
+              <span class="opacity-60">Session</span>
+              <span class="break-all leading-4 normal-case tracking-normal">ses_2026-05-14T03:14-7f3a…b2e1</span>
+            </div>
+          </div>
+
+          <div class="space-y-3">
+            <!-- Active segment -->
+            <button class="block w-full rounded-chunk border border-primary/30 bg-primary/12 p-4 text-left text-primary shadow-sm">
+              <div class="mb-3 flex items-center justify-between">
+                <div class="inline-flex items-center gap-2">
+                  <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+                  <span class="font-medium">Segment 3</span>
+                </div>
+                <span class="mono text-xs">14 events</span>
+              </div>
+              <div class="grid grid-cols-2 gap-3 text-xs">
+                <div><div class="opacity-70">Tokens</div><div class="numeric mt-1 text-sm font-medium">8,412</div></div>
+                <div><div class="opacity-70">Duration</div><div class="numeric mt-1 text-sm font-medium">2,840ms</div></div>
+                <div class="col-span-2"><div class="opacity-70">Started</div><div class="mt-1 text-sm font-medium">May 14 · 03:19:48</div></div>
+              </div>
+            </button>
+
+            <button class="block w-full rounded-chunk border border-white/70 bg-white/60 p-4 text-left hover:bg-white">
+              <div class="mb-3 flex items-center justify-between">
+                <div class="inline-flex items-center gap-2 text-muted-foreground">
+                  <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+                  <span class="font-medium text-foreground">Segment 2</span>
+                </div>
+                <span class="mono text-xs text-muted-foreground">9 events</span>
+              </div>
+              <div class="grid grid-cols-2 gap-3 text-xs">
+                <div><div class="text-muted-foreground">Tokens</div><div class="numeric mt-1 text-sm font-medium">3,201</div></div>
+                <div><div class="text-muted-foreground">Duration</div><div class="numeric mt-1 text-sm font-medium">1,420ms</div></div>
+                <div class="col-span-2"><div class="text-muted-foreground">Started</div><div class="mt-1 text-sm font-medium">May 14 · 03:17:02</div></div>
+              </div>
+            </button>
+
+            <button class="block w-full rounded-chunk border border-white/70 bg-white/60 p-4 text-left hover:bg-white">
+              <div class="mb-3 flex items-center justify-between">
+                <div class="inline-flex items-center gap-2">
+                  <svg class="h-4 w-4 text-muted-foreground" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+                  <span class="font-medium">Segment 1</span>
+                </div>
+                <span class="mono text-xs text-muted-foreground">6 events</span>
+              </div>
+              <div class="grid grid-cols-2 gap-3 text-xs">
+                <div><div class="text-muted-foreground">Tokens</div><div class="numeric mt-1 text-sm font-medium">1,108</div></div>
+                <div><div class="text-muted-foreground">Duration</div><div class="numeric mt-1 text-sm font-medium">680ms</div></div>
+                <div class="col-span-2"><div class="text-muted-foreground">Started</div><div class="mt-1 text-sm font-medium">May 14 · 03:14:22</div></div>
+              </div>
+            </button>
+          </div>
+        </div>
+
+        <!-- Column 3: EVENT TIMELINE -->
+        <div class="space-y-4 rounded-card border border-white/70 bg-white/55 p-5 shadow-ambient backdrop-blur-xl">
+          <div class="flex items-center justify-between">
+            <div>
+              <p class="eyebrow">Level 3</p>
+              <h2 class="text-2xl font-semibold">Event timeline</h2>
+            </div>
+            <span class="chip-pill">Segment 3</span>
+          </div>
+
+          <div class="space-y-3">
+            <!-- Event 1: USER_PROMPT (depth 0) -->
+            <div class="rounded-chunk border border-white/80 bg-white/70 p-4">
+              <div class="mb-3 flex flex-wrap items-center gap-2">
+                <span class="chip-pill border-primary/20 bg-primary/10 text-primary">USER PROMPT</span>
+                <span class="chip-pill numeric">#41</span>
+              </div>
+              <div class="mb-3 flex flex-wrap gap-4 text-xs text-muted-foreground">
+                <span class="inline-flex items-center gap-1"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>03:19:48</span>
+                <span class="numeric">Tokens 612</span>
+                <span class="numeric">Duration 0ms</span>
+                <span class="numeric">Depth 0</span>
+              </div>
+              <pre class="overflow-x-auto rounded-[18px] bg-slate-950 p-4 mono text-xs leading-6 text-slate-100">{
+  "prompt": "Refactor the analysis runtime to swap logging to loguru, then commit.",
+  "files_referenced": ["src/secondsight/analysis/runtime.py"]
+}</pre>
+            </div>
+
+            <!-- Event 2: TOOL_USE_READ (depth 1) -->
+            <div class="rounded-chunk border border-white/80 bg-white/70 p-4" style="margin-left: 14px;">
+              <div class="mb-3 flex flex-wrap items-center gap-2">
+                <span class="chip-pill border-amber-200 bg-amber-50 text-amber-700">TOOL USE READ</span>
+                <span class="chip-pill numeric">#42</span>
+                <span class="chip-pill"><span class="mono">claude-sub-7b40</span></span>
+              </div>
+              <div class="mb-3 flex flex-wrap gap-4 text-xs text-muted-foreground">
+                <span class="numeric">03:19:49</span>
+                <span class="numeric">Tokens 412</span>
+                <span class="numeric">Duration 84ms</span>
+                <span class="numeric">Depth 1</span>
+              </div>
+            </div>
+
+            <!-- Event 3: TOOL_USE_EDIT (depth 1) -->
+            <div class="rounded-chunk border border-white/80 bg-white/70 p-4" style="margin-left: 14px;">
+              <div class="mb-3 flex flex-wrap items-center gap-2">
+                <span class="chip-pill border-amber-200 bg-amber-50 text-amber-700">TOOL USE EDIT</span>
+                <span class="chip-pill numeric">#43</span>
+              </div>
+              <div class="mb-3 flex flex-wrap gap-4 text-xs text-muted-foreground">
+                <span class="numeric">03:19:51</span>
+                <span class="numeric">Tokens 1,204</span>
+                <span class="numeric">Duration 318ms</span>
+                <span class="numeric">Depth 1</span>
+              </div>
+              <pre class="overflow-x-auto rounded-[18px] bg-slate-950 p-4 mono text-xs leading-6 text-slate-100">- import logging
+- _logger = logging.getLogger(__name__)
++ from loguru import logger</pre>
+            </div>
+
+            <!-- Event 4: TOOL_USE_BASH (depth 2) -->
+            <div class="rounded-chunk border border-white/80 bg-white/70 p-4" style="margin-left: 28px;">
+              <div class="mb-3 flex flex-wrap items-center gap-2">
+                <span class="chip-pill border-amber-200 bg-amber-50 text-amber-700">TOOL USE BASH</span>
+                <span class="chip-pill numeric">#44</span>
+              </div>
+              <div class="mb-3 flex flex-wrap gap-4 text-xs text-muted-foreground">
+                <span class="numeric">03:19:54</span>
+                <span class="numeric">Tokens 180</span>
+                <span class="numeric">Duration 1,242ms</span>
+                <span class="numeric">Depth 2</span>
+              </div>
+              <pre class="overflow-x-auto rounded-[18px] bg-slate-950 p-4 mono text-xs leading-6 text-slate-100">$ pytest tests/analysis/ -x
+# 4 passed, 0 failed in 1.24s</pre>
+            </div>
+
+            <!-- Event 5: ASSISTANT_RESPONSE (depth 0) -->
+            <div class="rounded-chunk border border-white/80 bg-white/70 p-4">
+              <div class="mb-3 flex flex-wrap items-center gap-2">
+                <span class="chip-pill">ASSISTANT RESPONSE</span>
+                <span class="chip-pill numeric">#45</span>
+              </div>
+              <div class="mb-3 flex flex-wrap gap-4 text-xs text-muted-foreground">
+                <span class="numeric">03:19:58</span>
+                <span class="numeric">Tokens 487</span>
+                <span class="numeric">Duration 612ms</span>
+                <span class="numeric">Depth 0</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="rounded-chunk border border-dashed border-border/80 bg-white/50 p-4">
+            <div class="mb-2 flex items-center gap-2 font-medium">
+              <svg class="h-4 w-4 text-accent" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.8 5.7L20 9l-5 4.2L16.4 20 12 16.7 7.6 20 9 13.2 4 9l6.2-1.3z"/></svg>
+              Spatial truth
+            </div>
+            <p class="text-sm leading-6 text-muted-foreground">
+              Nested events are indented by sub-agent depth so handoffs read like a single timeline
+              instead of flat log noise.
+            </p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- §3  ANALYSIS                                                  -->
+  <!-- ============================================================ -->
+  <section id="mock-analysis" class="mockup-frame px-6 pt-6 pb-12">
+    <div class="mx-auto max-w-[1920px]">
+
+      <div class="mb-3 flex items-baseline justify-between">
+        <p class="eyebrow">§3 · Dashboard · /projects/secondsight-core/analysis</p>
+        <p class="text-xs text-muted-foreground">Stat strip + analysis list + flag trends. Accent reserved for charts.</p>
+      </div>
+
+      <!-- Header tile (same shape; Analysis nav pill active) -->
+      <header class="mb-4 grid gap-4 rounded-tile border border-white/70 bg-white/55 p-5 shadow-ambient backdrop-blur-xl md:grid-cols-[1fr_auto]">
+        <div class="space-y-3">
+          <div class="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+            <span class="mono uppercase tracking-[0.22em] text-primary">SecondSight</span>
+            <span>/</span>
+            <span class="mono numeric text-foreground">secondsight-core</span>
+            <span class="ml-2 chip-pill"><span class="dot bg-emerald-500"></span>polling · last 4.2 s</span>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <a href="#mock-observation" class="inline-flex items-center gap-2 rounded-full border border-white/70 bg-white/60 px-4 py-2 text-sm hover:bg-white">
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12c3-7 15-7 18 0M3 12c3 7 15 7 18 0"/><circle cx="12" cy="12" r="3"/></svg>
+              Observation
+            </a>
+            <span class="inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary px-4 py-2 text-sm text-primary-foreground shadow-sm">
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 18l5-7 4 5 3-4 6 9"/></svg>
+              Analysis
+            </span>
+            <a href="#mock-directives" class="inline-flex items-center gap-2 rounded-full border border-white/70 bg-white/60 px-4 py-2 text-sm hover:bg-white">
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 5h18M3 12h18M3 19h12"/></svg>
+              Directives
+            </a>
+          </div>
+        </div>
+        <form class="flex flex-col gap-2 sm:flex-row">
+          <input value="secondsight-core" class="min-w-[240px] rounded-input border border-border bg-white px-4 py-2.5 text-sm numeric"/>
+          <button class="whitespace-nowrap rounded-input border border-border bg-white px-4 py-2.5 text-sm font-medium hover:bg-muted">Switch project</button>
+        </form>
+      </header>
+
+      <div class="grid gap-4 xl:grid-cols-[1.02fr_1.18fr_1fr]">
+
+        <!-- Left column: stat strip + analysis list -->
+        <div class="space-y-4">
+          <!-- Stat strip -->
+          <div class="grid gap-3 rounded-card border border-white/70 bg-white/55 p-5 shadow-ambient backdrop-blur-xl sm:grid-cols-3 xl:grid-cols-1">
+            <div>
+              <div class="eyebrow">Sessions analyzed</div>
+              <div class="numeric mt-2 text-3xl font-semibold">42</div>
+            </div>
+            <div>
+              <div class="eyebrow">Active conventions</div>
+              <div class="numeric mt-2 text-3xl font-semibold">7</div>
+            </div>
+            <div>
+              <div class="eyebrow">Last analyzed</div>
+              <div class="mt-2 text-sm font-medium">May 14, 2026 · 03:21</div>
+            </div>
+          </div>
+
+          <!-- Analysis list -->
+          <div class="space-y-4 rounded-card border border-white/70 bg-white/55 p-5 shadow-ambient backdrop-blur-xl">
+            <div class="flex items-center justify-between">
+              <div>
+                <p class="eyebrow">Session reports</p>
+                <h2 class="text-2xl font-semibold">Analysis list</h2>
+              </div>
+              <span class="chip-pill numeric">42 loaded</span>
+            </div>
+
+            <!-- Active item -->
+            <button class="block w-full rounded-chunk border border-primary/35 bg-primary p-4 text-left text-primary-foreground shadow-sm">
+              <div class="mb-2 flex items-center justify-between gap-3">
+                <div class="mono text-xs">ses_2026-05-14T03:14…b2e1</div>
+                <span class="chip-pill border-white/20 bg-white/15 text-white">3 flags</span>
+              </div>
+              <p class="mb-2 text-base font-medium leading-6">
+                Loguru migration committed without verifying caplog bridge — analysis runtime test fixtures may regress.
+              </p>
+              <div class="mb-2 text-xs opacity-80">May 14, 2026 · 03:21</div>
+              <div class="flex flex-wrap gap-2">
+                <span class="inline-flex items-center rounded-full border border-white/25 bg-white/15 px-2.5 py-0.5 font-mono text-[11px] text-white">untested_path</span>
+                <span class="inline-flex items-center rounded-full border border-white/25 bg-white/15 px-2.5 py-0.5 font-mono text-[11px] text-white">silent_failure</span>
+                <span class="inline-flex items-center rounded-full border border-white/25 bg-white/15 px-2.5 py-0.5 font-mono text-[11px] text-white">optimistic_completion</span>
+              </div>
+            </button>
+
+            <!-- Inactive items -->
+            <button class="block w-full rounded-chunk border border-white/70 bg-white/60 p-4 text-left hover:bg-white">
+              <div class="mb-2 flex items-center justify-between gap-3">
+                <div class="mono text-xs text-muted-foreground">ses_2026-05-14T01:08…a307</div>
+                <span class="chip-pill numeric">1 flag</span>
+              </div>
+              <p class="mb-2 text-base font-medium leading-6">
+                Tests passed but assertion checks were structurally tautological — caught by scar review.
+              </p>
+              <div class="mb-2 text-xs text-muted-foreground">May 14, 2026 · 01:24</div>
+              <div class="flex flex-wrap gap-2">
+                <span class="inline-flex items-center rounded-full border border-border/70 bg-slate-50 px-2.5 py-0.5 font-mono text-[11px] text-muted-foreground">tautological_assertion</span>
+              </div>
+            </button>
+
+            <button class="block w-full rounded-chunk border border-white/70 bg-white/60 p-4 text-left hover:bg-white">
+              <div class="mb-2 flex items-center justify-between gap-3">
+                <div class="mono text-xs text-muted-foreground">ses_2026-05-13T22:47…1f4c</div>
+                <span class="chip-pill numeric">4 flags</span>
+              </div>
+              <p class="mb-2 text-base font-medium leading-6">
+                Directive lifecycle PATCH route added without contract test — passes locally; will fail under concurrent toggle.
+              </p>
+              <div class="mb-2 text-xs text-muted-foreground">May 13, 2026 · 23:31</div>
+              <div class="flex flex-wrap gap-2">
+                <span class="inline-flex items-center rounded-full border border-border/70 bg-slate-50 px-2.5 py-0.5 font-mono text-[11px] text-muted-foreground">missing_contract_test</span>
+                <span class="inline-flex items-center rounded-full border border-border/70 bg-slate-50 px-2.5 py-0.5 font-mono text-[11px] text-muted-foreground">concurrent_write_race</span>
+                <span class="inline-flex items-center rounded-full border border-border/70 bg-slate-50 px-2.5 py-0.5 font-mono text-[11px] text-muted-foreground">scope_creep</span>
+                <span class="inline-flex items-center rounded-full border border-border/70 bg-slate-50 px-2.5 py-0.5 font-mono text-[11px] text-muted-foreground">silent_failure</span>
+              </div>
+            </button>
+
+            <button class="block w-full rounded-chunk border border-white/70 bg-white/60 p-4 text-left hover:bg-white">
+              <div class="mb-2 flex items-center justify-between gap-3">
+                <div class="mono text-xs text-muted-foreground">ses_2026-05-13T19:22…ab09</div>
+                <span class="chip-pill numeric">0 flags</span>
+              </div>
+              <p class="mb-2 text-base font-medium leading-6">
+                Clean refactor pass — extracted analysis dispatcher, all tests green, no scar entries.
+              </p>
+              <div class="mb-2 text-xs text-muted-foreground">May 13, 2026 · 19:48</div>
+            </button>
+          </div>
+        </div>
+
+        <!-- Middle column: flag trends -->
+        <div class="space-y-4 rounded-card border border-white/70 bg-white/55 p-5 shadow-ambient backdrop-blur-xl">
+          <div class="flex items-center justify-between">
+            <div>
+              <p class="eyebrow">Project-level summary</p>
+              <h2 class="text-2xl font-semibold">Flag trends</h2>
+            </div>
+            <span class="chip-pill">May 14 · 03:21</span>
+          </div>
+
+          <!-- Flag count tiles -->
+          <div class="grid gap-3 md:grid-cols-2">
+            <div class="rounded-chunk border border-white/80 bg-white/65 p-4">
+              <div class="eyebrow">Silent failure</div>
+              <div class="numeric mt-2 text-2xl font-semibold">14</div>
+            </div>
+            <div class="rounded-chunk border border-white/80 bg-white/65 p-4">
+              <div class="eyebrow">Optimistic completion</div>
+              <div class="numeric mt-2 text-2xl font-semibold">9</div>
+            </div>
+            <div class="rounded-chunk border border-white/80 bg-white/65 p-4">
+              <div class="eyebrow">Scope creep</div>
+              <div class="numeric mt-2 text-2xl font-semibold">6</div>
+            </div>
+            <div class="rounded-chunk border border-white/80 bg-white/65 p-4">
+              <div class="eyebrow">Untested path</div>
+              <div class="numeric mt-2 text-2xl font-semibold">4</div>
+            </div>
+          </div>
+
+          <!-- Faux area chart -->
+          <div class="h-[280px] rounded-[28px] border border-white/80 bg-[linear-gradient(180deg,rgba(14,165,233,0.06),rgba(255,255,255,0.75))] p-4">
+            <svg viewBox="0 0 560 220" class="h-full w-full">
+              <defs>
+                <linearGradient id="ag1" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#0ea5e9" stop-opacity="0.5"/><stop offset="100%" stop-color="#0ea5e9" stop-opacity="0.02"/></linearGradient>
+                <linearGradient id="ag2" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#f97316" stop-opacity="0.5"/><stop offset="100%" stop-color="#f97316" stop-opacity="0.02"/></linearGradient>
+                <linearGradient id="ag3" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#10b981" stop-opacity="0.5"/><stop offset="100%" stop-color="#10b981" stop-opacity="0.02"/></linearGradient>
+              </defs>
+              <!-- gridlines -->
+              <g stroke="rgba(148,163,184,0.25)" stroke-width="1">
+                <line x1="40" y1="40"  x2="540" y2="40"/>
+                <line x1="40" y1="90"  x2="540" y2="90"/>
+                <line x1="40" y1="140" x2="540" y2="140"/>
+                <line x1="40" y1="190" x2="540" y2="190"/>
+              </g>
+              <!-- y axis labels -->
+              <g fill="hsl(214 18% 36%)" font-size="10" font-family="IBM Plex Mono">
+                <text x="32" y="44" text-anchor="end">12</text>
+                <text x="32" y="94" text-anchor="end">8</text>
+                <text x="32" y="144" text-anchor="end">4</text>
+                <text x="32" y="194" text-anchor="end">0</text>
+              </g>
+              <!-- stacked areas (silent_failure base, then scope_creep, then optimistic_completion top) -->
+              <path d="M40,170 L120,150 L200,130 L280,100 L360,110 L440,80 L520,60 L520,190 L40,190 Z" fill="url(#ag1)" stroke="#0ea5e9" stroke-width="2"/>
+              <path d="M40,180 L120,170 L200,155 L280,135 L360,140 L440,120 L520,100 L520,170 L440,80 L360,110 L280,100 L200,130 L120,150 L40,170 Z" fill="url(#ag2)" stroke="#f97316" stroke-width="2"/>
+              <path d="M40,185 L120,180 L200,175 L280,160 L360,165 L440,150 L520,140 L520,100 L440,120 L360,140 L280,135 L200,155 L120,170 L40,180 Z" fill="url(#ag3)" stroke="#10b981" stroke-width="2"/>
+              <!-- x labels -->
+              <g fill="hsl(214 18% 36%)" font-size="9" font-family="IBM Plex Mono" text-anchor="middle">
+                <text x="40"  y="210">ses…3:14</text>
+                <text x="200" y="210">ses…1:08</text>
+                <text x="360" y="210">ses…22:47</text>
+                <text x="520" y="210">ses…19:22</text>
+              </g>
+            </svg>
+          </div>
+
+          <!-- Flag mix + promoted conventions row -->
+          <div class="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+            <div class="rounded-chunk border border-white/80 bg-white/60 p-4">
+              <div class="mb-4 flex items-center justify-between">
+                <div>
+                  <p class="eyebrow">Cross-session distribution</p>
+                  <h3 class="text-xl font-semibold">Flag type mix</h3>
+                </div>
+                <span class="chip-pill">4 slices</span>
+              </div>
+
+              <!-- Faux donut -->
+              <div class="relative mx-auto h-[180px] w-[180px]">
+                <svg viewBox="0 0 100 100" class="h-full w-full -rotate-90">
+                  <circle cx="50" cy="50" r="38" stroke="hsl(40 33% 91%)" stroke-width="14" fill="none"/>
+                  <!-- silent_failure 42% -->
+                  <circle cx="50" cy="50" r="38" stroke="#0ea5e9" stroke-width="14" fill="none" stroke-dasharray="100.3 138.5" stroke-dashoffset="0"/>
+                  <!-- optimistic_completion 27% -->
+                  <circle cx="50" cy="50" r="38" stroke="#f97316" stroke-width="14" fill="none" stroke-dasharray="64.5 174.3" stroke-dashoffset="-100.3"/>
+                  <!-- scope_creep 18% -->
+                  <circle cx="50" cy="50" r="38" stroke="#10b981" stroke-width="14" fill="none" stroke-dasharray="43 195.8" stroke-dashoffset="-164.8"/>
+                  <!-- untested_path 13% -->
+                  <circle cx="50" cy="50" r="38" stroke="#a855f7" stroke-width="14" fill="none" stroke-dasharray="31 207.8" stroke-dashoffset="-207.8"/>
+                </svg>
+                <div class="absolute inset-0 grid place-items-center text-center">
+                  <div>
+                    <div class="numeric text-2xl font-semibold">33</div>
+                    <div class="eyebrow !text-[10px]">flags</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="mt-4 space-y-3">
+                <div class="flex items-center justify-between text-sm">
+                  <div class="inline-flex items-center gap-2"><span class="dot" style="background:#0ea5e9"></span>Silent failure</div>
+                  <div class="text-right"><div class="numeric font-semibold">14</div><div class="text-xs text-muted-foreground">42%</div></div>
+                </div>
+                <div class="flex items-center justify-between text-sm">
+                  <div class="inline-flex items-center gap-2"><span class="dot" style="background:#f97316"></span>Optimistic completion</div>
+                  <div class="text-right"><div class="numeric font-semibold">9</div><div class="text-xs text-muted-foreground">27%</div></div>
+                </div>
+                <div class="flex items-center justify-between text-sm">
+                  <div class="inline-flex items-center gap-2"><span class="dot" style="background:#10b981"></span>Scope creep</div>
+                  <div class="text-right"><div class="numeric font-semibold">6</div><div class="text-xs text-muted-foreground">18%</div></div>
+                </div>
+                <div class="flex items-center justify-between text-sm">
+                  <div class="inline-flex items-center gap-2"><span class="dot" style="background:#a855f7"></span>Untested path</div>
+                  <div class="text-right"><div class="numeric font-semibold">4</div><div class="text-xs text-muted-foreground">13%</div></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="rounded-chunk border border-white/80 bg-white/60 p-4">
+              <div class="mb-4 flex items-center justify-between">
+                <div>
+                  <p class="eyebrow">Behavior pattern groups</p>
+                  <h3 class="text-xl font-semibold">Promoted conventions</h3>
+                </div>
+                <a href="#mock-directives" class="rounded-input border border-border bg-white px-3 py-1.5 text-xs hover:bg-muted">Open directives</a>
+              </div>
+
+              <ul class="space-y-2 text-sm">
+                <li class="flex items-start gap-3 rounded-chunk border border-white/80 bg-white/70 p-3">
+                  <span class="mt-1 dot" style="background:#0ea5e9"></span>
+                  <div>
+                    <div class="font-medium">Run the full test suite before claiming completion.</div>
+                    <div class="text-xs text-muted-foreground">Promoted from <span class="mono">optimistic_completion</span> · 6 sessions</div>
+                  </div>
+                </li>
+                <li class="flex items-start gap-3 rounded-chunk border border-white/80 bg-white/70 p-3">
+                  <span class="mt-1 dot" style="background:#10b981"></span>
+                  <div>
+                    <div class="font-medium">Use loguru, never <span class="mono">logging.getLogger</span> in <span class="mono">src/secondsight/</span>.</div>
+                    <div class="text-xs text-muted-foreground">Promoted from <span class="mono">silent_failure</span> · 4 sessions</div>
+                  </div>
+                </li>
+                <li class="flex items-start gap-3 rounded-chunk border border-white/80 bg-white/70 p-3">
+                  <span class="mt-1 dot" style="background:#f97316"></span>
+                  <div>
+                    <div class="font-medium">When fixing a bug, search for similar patterns elsewhere first.</div>
+                    <div class="text-xs text-muted-foreground">Promoted from <span class="mono">scope_creep</span> · 3 sessions</div>
+                  </div>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right column: behavior flag detail (drill-in from active analysis) -->
+        <div class="space-y-4 rounded-card border border-white/70 bg-white/55 p-5 shadow-ambient backdrop-blur-xl">
+          <div>
+            <p class="eyebrow">Selected session · behavior flags</p>
+            <h2 class="text-2xl font-semibold">ses_2026-05-14T03:14</h2>
+          </div>
+
+          <!-- Flag 1 — high confidence -->
+          <div class="rounded-chunk border border-white/80 bg-white/65 p-4">
+            <div class="mb-2 flex flex-wrap items-center gap-2">
+              <span class="chip-pill border-destructive/30 bg-destructive/10 text-destructive">
+                <span class="dot bg-destructive"></span>silent_failure
+              </span>
+              <span class="chip-pill chip-mono">conf · high</span>
+              <span class="chip-pill chip-mono">seg 3 · evt #43</span>
+            </div>
+            <p class="text-sm font-medium leading-6">
+              Edit to <span class="mono text-foreground/80">analysis/runtime.py</span> swapped logger but did not bridge caplog — pytest <span class="mono">caplog</span> capture will silently miss new loguru emissions.
+            </p>
+            <p class="mt-2 text-xs leading-5 text-muted-foreground">
+              <span class="mono uppercase tracking-[0.22em]">Reason</span> · pre-commit ran but no test exercises log output; assistant marked "complete" without invoking the affected fixture.
+            </p>
+          </div>
+
+          <!-- Flag 2 — medium -->
+          <div class="rounded-chunk border border-white/80 bg-white/65 p-4">
+            <div class="mb-2 flex flex-wrap items-center gap-2">
+              <span class="chip-pill border-accent/30 bg-accent/10 text-accent">
+                <span class="dot bg-accent"></span>untested_path
+              </span>
+              <span class="chip-pill chip-mono">conf · medium</span>
+              <span class="chip-pill chip-mono">seg 3 · evt #44</span>
+            </div>
+            <p class="text-sm font-medium leading-6">
+              Refactor introduced <span class="mono">_logger_bridge()</span> wrapper but no test covers the bridge re-entry case.
+            </p>
+            <p class="mt-2 text-xs leading-5 text-muted-foreground">
+              <span class="mono uppercase tracking-[0.22em]">Reason</span> · bridge is invoked once at import; concurrent re-import (e.g. pytest-xdist workers) is unverified.
+            </p>
+          </div>
+
+          <!-- Flag 3 — low -->
+          <div class="rounded-chunk border border-white/80 bg-white/65 p-4">
+            <div class="mb-2 flex flex-wrap items-center gap-2">
+              <span class="chip-pill bg-muted text-muted-foreground">
+                <span class="dot bg-muted-foreground/70"></span>optimistic_completion
+              </span>
+              <span class="chip-pill chip-mono">conf · low</span>
+              <span class="chip-pill chip-mono">seg 3 · evt #45</span>
+            </div>
+            <p class="text-sm font-medium leading-6">
+              Assistant response includes "all tests pass" but the latest test run touched only <span class="mono">tests/analysis/</span>, not the full suite.
+            </p>
+          </div>
+
+          <div class="rounded-chunk border border-dashed border-border/80 bg-white/50 p-4">
+            <div class="mb-2 flex items-center gap-2 font-medium">
+              <svg class="h-4 w-4 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
+              Polling notice
+            </div>
+            <p class="text-sm leading-6 text-muted-foreground">
+              New analysis runs after each segment completes — last refresh 4.2 s ago.
+            </p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- §4  DIRECTIVES                                                -->
+  <!-- ============================================================ -->
+  <section id="mock-directives" class="mockup-frame px-6 pt-6 pb-16">
+    <div class="mx-auto max-w-[1920px]">
+
+      <div class="mb-3 flex items-baseline justify-between">
+        <p class="eyebrow">§4 · Dashboard · /projects/secondsight-core/directives</p>
+        <p class="text-xs text-muted-foreground">Convention surface · lifecycle, source trace, before/after injection.</p>
+      </div>
+
+      <!-- Header tile, Directives active -->
+      <header class="mb-4 grid gap-4 rounded-tile border border-white/70 bg-white/55 p-5 shadow-ambient backdrop-blur-xl md:grid-cols-[1fr_auto]">
+        <div class="space-y-3">
+          <div class="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+            <span class="mono uppercase tracking-[0.22em] text-primary">SecondSight</span>
+            <span>/</span>
+            <span class="mono numeric text-foreground">secondsight-core</span>
+            <span class="ml-2 chip-pill"><span class="dot bg-emerald-500"></span>polling · last 4.2 s</span>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <a href="#mock-observation" class="inline-flex items-center gap-2 rounded-full border border-white/70 bg-white/60 px-4 py-2 text-sm hover:bg-white">
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12c3-7 15-7 18 0M3 12c3 7 15 7 18 0"/><circle cx="12" cy="12" r="3"/></svg>
+              Observation
+            </a>
+            <a href="#mock-analysis" class="inline-flex items-center gap-2 rounded-full border border-white/70 bg-white/60 px-4 py-2 text-sm hover:bg-white">
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 18l5-7 4 5 3-4 6 9"/></svg>
+              Analysis
+            </a>
+            <span class="inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary px-4 py-2 text-sm text-primary-foreground shadow-sm">
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 5h18M3 12h18M3 19h12"/></svg>
+              Directives
+            </span>
+          </div>
+        </div>
+        <form class="flex flex-col gap-2 sm:flex-row">
+          <input value="secondsight-core" class="min-w-[240px] rounded-input border border-border bg-white px-4 py-2.5 text-sm numeric"/>
+          <button class="whitespace-nowrap rounded-input border border-border bg-white px-4 py-2.5 text-sm font-medium hover:bg-muted">Switch project</button>
+        </form>
+      </header>
+
+      <div class="grid gap-4 xl:grid-cols-[0.88fr_1.12fr]">
+
+        <!-- Left: management panel -->
+        <div class="space-y-4 rounded-card border border-white/70 bg-white/55 p-5 shadow-ambient backdrop-blur-xl">
+          <div class="flex items-center justify-between">
+            <div>
+              <p class="eyebrow">Convention surface</p>
+              <h2 class="text-2xl font-semibold">Directive management</h2>
+            </div>
+            <button class="rounded-input border border-border bg-white px-3 py-1.5 text-xs hover:bg-muted">Show disabled</button>
+          </div>
+
+          <div class="grid gap-3 md:grid-cols-2">
+            <div class="rounded-chunk border border-white/80 bg-white/60 p-4">
+              <div class="eyebrow">Visible</div>
+              <div class="numeric mt-2 text-2xl font-semibold">7</div>
+            </div>
+            <div class="rounded-chunk border border-white/80 bg-white/60 p-4">
+              <div class="eyebrow">Active</div>
+              <div class="numeric mt-2 text-2xl font-semibold">5</div>
+            </div>
+            <div class="rounded-chunk border border-white/80 bg-white/60 p-4">
+              <div class="eyebrow">Soft-disabled</div>
+              <div class="numeric mt-2 text-2xl font-semibold">1</div>
+            </div>
+            <div class="rounded-chunk border border-white/80 bg-white/60 p-4">
+              <div class="eyebrow">Pending</div>
+              <div class="numeric mt-2 text-2xl font-semibold">1</div>
+            </div>
+          </div>
+
+          <div class="rounded-chunk border border-dashed border-border/80 bg-white/45 p-4 text-sm leading-6 text-muted-foreground">
+            Effectiveness is shown as target-flag frequency <span class="font-medium text-foreground">before</span> and
+            <span class="font-medium text-foreground">after</span> the convention was created. The paired guardrail
+            line is current overall flag load per session, the available task-quality proxy in this telemetry model.
+          </div>
+
+          <!-- Status legend -->
+          <div class="rounded-chunk border border-white/80 bg-white/55 p-4">
+            <div class="eyebrow mb-3">Status enum (per lifecycle contract)</div>
+            <ul class="space-y-2 text-sm">
+              <li class="flex items-center justify-between"><span class="inline-flex items-center gap-2"><span class="dot bg-emerald-500"></span>active</span><span class="mono text-xs text-muted-foreground">injected each session</span></li>
+              <li class="flex items-center justify-between"><span class="inline-flex items-center gap-2"><span class="dot bg-amber-500"></span>pending</span><span class="mono text-xs text-muted-foreground">awaiting confirmation</span></li>
+              <li class="flex items-center justify-between"><span class="inline-flex items-center gap-2"><span class="dot bg-slate-400"></span>soft_disabled</span><span class="mono text-xs text-muted-foreground">retained, not injected</span></li>
+              <li class="flex items-center justify-between"><span class="inline-flex items-center gap-2"><span class="dot bg-slate-300"></span>archived</span><span class="mono text-xs text-muted-foreground">read-only historical</span></li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Right: directive list -->
+        <div class="space-y-4">
+
+          <!-- Directive 1: active -->
+          <div class="space-y-4 rounded-card border border-white/70 bg-white/55 p-5 shadow-ambient backdrop-blur-xl">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div class="space-y-2">
+                <div class="flex flex-wrap gap-2">
+                  <span class="chip-pill border-emerald-300 bg-emerald-50 text-emerald-700"><span class="dot bg-emerald-500"></span>active</span>
+                  <span class="chip-pill chip-mono">prohibition</span>
+                  <span class="chip-pill chip-mono">silent_failure</span>
+                </div>
+                <h2 class="text-xl font-semibold leading-8">
+                  Use loguru as the logging framework. Do NOT introduce stdlib
+                  <span class="mono text-foreground/90">logging.getLogger(__name__)</span> in
+                  <span class="mono text-foreground/90">src/secondsight/</span>.
+                </h2>
+              </div>
+              <div class="text-right text-xs text-muted-foreground">
+                <div class="mono uppercase tracking-[0.22em]">Identity</div>
+                <div class="mt-1 text-sm text-foreground mono">log_framework_loguru_v1</div>
+              </div>
+            </div>
+
+            <div class="grid gap-3 md:grid-cols-4">
+              <div class="rounded-chunk border border-white/80 bg-white/55 p-4">
+                <div class="eyebrow">Frequency</div>
+                <div class="numeric mt-2 text-xl font-semibold">68%</div>
+              </div>
+              <div class="rounded-chunk border border-white/80 bg-white/55 p-4">
+                <div class="eyebrow">Confidence</div>
+                <div class="numeric mt-2 text-xl font-semibold">0.92</div>
+              </div>
+              <div class="rounded-chunk border border-white/80 bg-white/55 p-4">
+                <div class="eyebrow">Updated</div>
+                <div class="mt-2 text-sm font-medium">May 13 · 22:51</div>
+              </div>
+              <div class="rounded-chunk border border-white/80 bg-white/55 p-4">
+                <div class="eyebrow">Sources</div>
+                <div class="numeric mt-2 text-xl font-semibold">4</div>
+              </div>
+            </div>
+
+            <div class="space-y-3 rounded-chunk border border-white/80 bg-white/55 p-4">
+              <div class="text-sm font-medium">Source tracing</div>
+              <div class="flex flex-wrap gap-2">
+                <span class="chip-pill chip-mono hover:bg-primary/5">ses_05-14T03:14…b2e1</span>
+                <span class="chip-pill chip-mono hover:bg-primary/5">ses_05-13T22:47…1f4c</span>
+                <span class="chip-pill chip-mono hover:bg-primary/5">ses_05-12T18:09…77ad</span>
+                <span class="chip-pill chip-mono hover:bg-primary/5">ses_05-11T14:30…0c5b</span>
+              </div>
+              <p class="text-sm leading-6 text-muted-foreground">
+                Trigger pattern: <span class="font-medium text-foreground mono">grep "logging.getLogger" src/secondsight/</span>
+              </p>
+            </div>
+
+            <!-- Before / after injection -->
+            <div class="space-y-4 rounded-chunk border border-white/80 bg-[linear-gradient(180deg,rgba(249,115,22,0.08),rgba(255,255,255,0.7))] p-4">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p class="eyebrow">Convention effectiveness</p>
+                  <h3 class="text-lg font-semibold">Before / after injection</h3>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  <span class="chip-pill numeric">7 pre</span>
+                  <span class="chip-pill numeric">9 post</span>
+                </div>
+              </div>
+
+              <div class="grid gap-3 md:grid-cols-3">
+                <div class="rounded-chunk border border-white/80 bg-white/70 p-4">
+                  <div class="eyebrow">Pre flag rate</div>
+                  <div class="numeric mt-2 text-2xl font-semibold">0.43</div>
+                  <div class="text-xs text-muted-foreground">flags / session</div>
+                </div>
+                <div class="rounded-chunk border border-white/80 bg-white/70 p-4">
+                  <div class="eyebrow">Post flag rate</div>
+                  <div class="numeric mt-2 text-2xl font-semibold text-emerald-600">0.11</div>
+                  <div class="text-xs text-muted-foreground">flags / session · ↓ 74%</div>
+                </div>
+                <div class="rounded-chunk border border-white/80 bg-white/70 p-4">
+                  <div class="eyebrow">Overall load</div>
+                  <div class="numeric mt-2 text-2xl font-semibold">2.1</div>
+                  <div class="text-xs text-muted-foreground">flags / session · steady</div>
+                </div>
+              </div>
+
+              <!-- Sparkline -->
+              <svg viewBox="0 0 400 80" class="h-20 w-full">
+                <line x1="200" y1="10" x2="200" y2="70" stroke="hsl(var(--hairline))" stroke-dasharray="3 3"/>
+                <text x="200" y="9" font-size="8" font-family="IBM Plex Mono" text-anchor="middle" fill="hsl(214 18% 36%)">injection · May 11</text>
+                <!-- pre line -->
+                <polyline points="10,30 50,40 90,28 130,45 170,35 200,42 230,55 270,60 310,62 350,58 390,64"
+                          fill="none" stroke="#f97316" stroke-width="2"/>
+                <!-- post line emerald drop -->
+                <polyline points="200,42 230,55 270,60 310,62 350,58 390,64"
+                          fill="none" stroke="#10b981" stroke-width="2.5"/>
+              </svg>
+            </div>
+
+            <div class="flex flex-wrap gap-2 pt-1">
+              <button class="rounded-input border border-border bg-white px-4 py-2 text-sm hover:bg-muted">View injection log</button>
+              <button class="rounded-input border border-accent/30 bg-accent/10 px-4 py-2 text-sm text-accent hover:bg-accent/15">Soft-disable</button>
+            </div>
+          </div>
+
+          <!-- Directive 2: pending -->
+          <div class="space-y-4 rounded-card border border-white/70 bg-white/55 p-5 shadow-ambient backdrop-blur-xl">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div class="space-y-2">
+                <div class="flex flex-wrap gap-2">
+                  <span class="chip-pill border-amber-300 bg-amber-50 text-amber-700"><span class="dot bg-amber-500"></span>pending</span>
+                  <span class="chip-pill chip-mono">requirement</span>
+                  <span class="chip-pill chip-mono">optimistic_completion</span>
+                </div>
+                <h2 class="text-xl font-semibold leading-8">
+                  Run the full test suite before claiming a feature complete, and report any failure verbatim.
+                </h2>
+              </div>
+              <div class="text-right text-xs text-muted-foreground">
+                <div class="mono uppercase tracking-[0.22em]">Identity</div>
+                <div class="mt-1 text-sm text-foreground mono">full_suite_before_done_v1</div>
+              </div>
+            </div>
+
+            <div class="grid gap-3 md:grid-cols-4">
+              <div class="rounded-chunk border border-white/80 bg-white/55 p-4">
+                <div class="eyebrow">Frequency</div>
+                <div class="numeric mt-2 text-xl font-semibold">82%</div>
+              </div>
+              <div class="rounded-chunk border border-white/80 bg-white/55 p-4">
+                <div class="eyebrow">Confidence</div>
+                <div class="numeric mt-2 text-xl font-semibold">0.74</div>
+              </div>
+              <div class="rounded-chunk border border-white/80 bg-white/55 p-4">
+                <div class="eyebrow">Updated</div>
+                <div class="mt-2 text-sm font-medium">May 14 · 03:22</div>
+              </div>
+              <div class="rounded-chunk border border-white/80 bg-white/55 p-4">
+                <div class="eyebrow">Sources</div>
+                <div class="numeric mt-2 text-xl font-semibold">6</div>
+              </div>
+            </div>
+
+            <div class="rounded-chunk border border-amber-200 bg-amber-50/50 p-4 text-sm leading-6">
+              <div class="mb-1 inline-flex items-center gap-2 font-medium text-amber-800">
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.7L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0z"/></svg>
+                Awaiting confirmation
+              </div>
+              <p class="text-amber-900/80">
+                This directive was promoted automatically but has not yet been injected into agent prompts.
+                Confirm to begin tracking effectiveness, or supersede with a revised wording.
+              </p>
+              <div class="mt-3 flex flex-wrap gap-2">
+                <button class="rounded-input bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90">Approve &amp; activate</button>
+                <button class="rounded-input border border-border bg-white px-4 py-2 text-sm hover:bg-muted">Revise wording</button>
+                <button class="rounded-input border border-border bg-white px-4 py-2 text-sm text-muted-foreground hover:bg-muted">Dismiss</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Directive 3: soft_disabled (collapsed) -->
+          <div class="space-y-3 rounded-card border border-white/70 bg-white/40 p-5 shadow-ambient backdrop-blur-xl">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div class="space-y-2">
+                <div class="flex flex-wrap gap-2">
+                  <span class="chip-pill bg-muted text-muted-foreground"><span class="dot bg-slate-400"></span>soft_disabled</span>
+                  <span class="chip-pill chip-mono">preference</span>
+                  <span class="chip-pill chip-mono">scope_creep</span>
+                </div>
+                <h2 class="text-lg font-medium leading-7 text-muted-foreground line-through decoration-muted-foreground/60">
+                  Always run <span class="mono">terraform plan</span> before claiming infrastructure changes are complete.
+                </h2>
+              </div>
+              <div class="text-right text-xs text-muted-foreground">
+                <div class="mono uppercase tracking-[0.22em]">Identity</div>
+                <div class="mt-1 text-sm mono">terraform_plan_required_v1</div>
+              </div>
+            </div>
+            <p class="text-sm leading-6 text-muted-foreground">
+              <span class="mono uppercase tracking-[0.22em]">Disabled because</span> · superseded by a project-wide
+              <span class="mono">terraform fmt + validate + plan</span> hook on May 12.
+            </p>
+            <div class="flex flex-wrap gap-2">
+              <button class="rounded-input border border-border bg-white px-4 py-2 text-sm hover:bg-muted">Re-activate</button>
+              <button class="rounded-input border border-border bg-white px-4 py-2 text-sm text-muted-foreground hover:bg-muted">Archive permanently</button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="border-t border-border bg-white/40 px-6 py-8 text-xs text-muted-foreground">
+    <div class="mx-auto flex max-w-[1920px] flex-wrap items-center justify-between gap-3">
+      <span class="mono uppercase tracking-[0.22em]">SecondSight · design preview · v0.alpha</span>
+      <span>Tokens follow <span class="mono">frontend/mockups/DESIGN.md</span> SecondSight Overrides.</span>
+    </div>
+  </footer>
+
+</body>
+</html>

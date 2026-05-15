@@ -17,7 +17,48 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useAnalysisTrends, useDirectiveMutation, useDirectives, type Directive, type TrendsBucket } from "@/lib/api";
-import { formatDateTime, formatInteger, truncateMiddle } from "@/lib/format";
+import { formatDateTime, formatInteger, formatSessionId, truncateMiddle } from "@/lib/format";
+import { cn } from "@/lib/utils";
+
+type DirectiveStatusVisual = { dot: string; chip: string; label: string };
+
+function directiveStatusVisual(status: string): DirectiveStatusVisual {
+  switch (status) {
+    case "active":
+      return { dot: "bg-emerald-500", chip: "border-emerald-300/70 bg-emerald-50 text-emerald-700", label: "active" };
+    case "pending":
+      return { dot: "bg-amber-500", chip: "border-amber-300/70 bg-amber-50 text-amber-700", label: "pending" };
+    case "soft_disabled":
+    case "disabled":
+      return { dot: "bg-slate-400", chip: "border-border/70 bg-muted text-muted-foreground", label: "soft_disabled" };
+    case "archived":
+      return { dot: "bg-slate-300", chip: "border-border/70 bg-muted/60 text-muted-foreground", label: "archived" };
+    default:
+      return { dot: "bg-slate-400", chip: "border-border/70 bg-white/70 text-muted-foreground", label: status };
+  }
+}
+
+function DirectiveStatusBadge({ status }: { status: string }) {
+  const visual = directiveStatusVisual(status);
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.22em]",
+        visual.chip,
+      )}
+    >
+      <span className={cn("dot", visual.dot)} />
+      {visual.label}
+    </span>
+  );
+}
+
+const DIRECTIVE_STATUS_LEGEND: ReadonlyArray<{ status: string; note: string }> = [
+  { status: "active", note: "injected each session" },
+  { status: "pending", note: "awaiting confirmation" },
+  { status: "soft_disabled", note: "retained, not injected" },
+  { status: "archived", note: "read-only historical" },
+];
 
 type EffectivenessPoint = {
   sessionId: string;
@@ -145,62 +186,88 @@ export function DirectivesView() {
   );
 
   return (
-    <section className="grid flex-1 gap-4 xl:grid-cols-[0.88fr_1.12fr]">
-      <Card className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="font-mono text-xs uppercase tracking-[0.24em] text-muted-foreground">
-              Convention surface
-            </p>
-            <h2 className="text-2xl font-semibold">Directive management</h2>
-          </div>
-          <Button onClick={() => setShowDisabled((current) => !current)} variant="secondary">
-            {showDisabled ? "Hide disabled" : "Show disabled"}
-          </Button>
-        </div>
+    <section className="space-y-4">
+      <div className="section-meta">
+        <p className="eyebrow">§4 · Dashboard · /projects/{projectId}/directives</p>
+        <p className="section-note">
+          Convention surface · lifecycle, source trace, before/after injection.
+        </p>
+      </div>
 
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-2">
-          <div className="rounded-[24px] border border-white/80 bg-white/60 p-4">
-            <div className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
-              Visible directives
+      <div className="grid flex-1 items-start gap-4 xl:grid-cols-[0.88fr_1.12fr]">
+        <Card className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="eyebrow">Convention surface</p>
+              <h2 className="text-2xl font-semibold">Directive management</h2>
             </div>
-            <div className="numeric mt-2 text-2xl font-semibold">{formatInteger(directives.length)}</div>
+            <Button onClick={() => setShowDisabled((current) => !current)} variant="secondary">
+              {showDisabled ? "Hide disabled" : "Show disabled"}
+            </Button>
           </div>
-          <div className="rounded-[24px] border border-white/80 bg-white/60 p-4">
-            <div className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
-              Active
-            </div>
-            <div className="numeric mt-2 text-2xl font-semibold">
-              {formatInteger(directives.filter((directive) => directive.status === "active").length)}
-            </div>
-          </div>
-          <div className="rounded-[24px] border border-white/80 bg-white/60 p-4">
-            <div className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
-              Disabled
-            </div>
-            <div className="numeric mt-2 text-2xl font-semibold">
-              {formatInteger(directives.filter((directive) => directive.status === "disabled").length)}
-            </div>
-          </div>
-          <div className="rounded-[24px] border border-white/80 bg-white/60 p-4">
-            <div className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
-              Effectiveness tracked
-            </div>
-            <div className="numeric mt-2 text-2xl font-semibold">{formatInteger(trackedDirectives)}</div>
-          </div>
-        </div>
 
-        <div className="rounded-[24px] border border-dashed border-border/80 bg-white/45 p-4 text-sm leading-6 text-muted-foreground">
-          Effectiveness is shown as target-flag frequency before and after the convention was created.
-          The paired guardrail line is current overall flag load per session, which is the available
-          task-quality proxy in this telemetry model.
-        </div>
-      </Card>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-2">
+            <div className="rounded-[24px] border border-white/80 bg-white/60 p-4">
+              <div className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
+                Visible directives
+              </div>
+              <div className="numeric mt-2 text-2xl font-semibold">{formatInteger(directives.length)}</div>
+            </div>
+            <div className="rounded-[24px] border border-white/80 bg-white/60 p-4">
+              <div className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
+                Active
+              </div>
+              <div className="numeric mt-2 text-2xl font-semibold">
+                {formatInteger(directives.filter((directive) => directive.status === "active").length)}
+              </div>
+            </div>
+            <div className="rounded-[24px] border border-white/80 bg-white/60 p-4">
+              <div className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
+                Disabled
+              </div>
+              <div className="numeric mt-2 text-2xl font-semibold">
+                {formatInteger(directives.filter((directive) => directive.status === "disabled").length)}
+              </div>
+            </div>
+            <div className="rounded-[24px] border border-white/80 bg-white/60 p-4">
+              <div className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
+                Effectiveness tracked
+              </div>
+              <div className="numeric mt-2 text-2xl font-semibold">{formatInteger(trackedDirectives)}</div>
+            </div>
+          </div>
 
-      <div className="space-y-4">
+          <div className="rounded-chunk border border-dashed border-border/80 bg-white/45 p-4 text-sm leading-6 text-muted-foreground">
+            Effectiveness is shown as target-flag frequency before and after the convention was created.
+            The paired guardrail line is current overall flag load per session, which is the available
+            task-quality proxy in this telemetry model.
+          </div>
+
+          <div className="rounded-chunk border border-white/80 bg-white/55 p-4">
+            <div className="eyebrow mb-3">Status enum (per lifecycle contract)</div>
+            <ul className="space-y-2 text-sm">
+              {DIRECTIVE_STATUS_LEGEND.map((entry) => {
+                const visual = directiveStatusVisual(entry.status);
+                return (
+                  <li className="flex items-center justify-between gap-3" key={entry.status}>
+                    <span className="inline-flex items-center gap-2">
+                      <span className={cn("dot", visual.dot)} />
+                      <span className="font-mono text-xs uppercase tracking-[0.22em]">
+                        {visual.label}
+                      </span>
+                    </span>
+                    <span className="font-mono text-xs text-muted-foreground">{entry.note}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        </Card>
+
+        <div className="space-y-4">
         {!directives.length && (
           <Card className="flex min-h-[240px] flex-col items-center justify-center gap-3 text-center">
-            <p className="font-mono text-xs uppercase tracking-[0.24em] text-muted-foreground">
+            <p className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
               No directives yet
             </p>
             <p className="max-w-sm text-sm leading-6 text-muted-foreground">
@@ -218,21 +285,21 @@ export function DirectivesView() {
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="space-y-2">
                   <div className="flex flex-wrap gap-2">
-                    <Badge>{directive.status}</Badge>
+                    <DirectiveStatusBadge status={directive.status} />
                     <Badge>{directive.type}</Badge>
                     {directive.source_flag_type ? <Badge>{humanizeFlagType(directive.source_flag_type)}</Badge> : null}
                   </div>
                   <h2 className="text-xl font-semibold leading-8">{directive.instruction}</h2>
                 </div>
                 <div className="text-right text-xs text-muted-foreground">
-                  <div className="font-mono uppercase tracking-[0.2em]">Identity</div>
+                  <div className="font-mono uppercase tracking-[0.22em]">Identity</div>
                   <div className="mt-1 text-sm text-foreground">{truncateMiddle(directive.identity_key, 24)}</div>
                 </div>
               </div>
 
               <div className="grid gap-3 md:grid-cols-4">
                 <div className="rounded-[22px] border border-white/80 bg-white/55 p-4">
-                  <div className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                  <div className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
                     Frequency
                   </div>
                   <div className="numeric mt-2 text-xl font-semibold">
@@ -240,7 +307,7 @@ export function DirectivesView() {
                   </div>
                 </div>
                 <div className="rounded-[22px] border border-white/80 bg-white/55 p-4">
-                  <div className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                  <div className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
                     Confidence
                   </div>
                   <div className="numeric mt-2 text-xl font-semibold">
@@ -248,13 +315,13 @@ export function DirectivesView() {
                   </div>
                 </div>
                 <div className="rounded-[22px] border border-white/80 bg-white/55 p-4">
-                  <div className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                  <div className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
                     Updated
                   </div>
                   <div className="mt-2 text-sm font-medium">{formatDateTime(directive.updated_at)}</div>
                 </div>
                 <div className="rounded-[22px] border border-white/80 bg-white/55 p-4">
-                  <div className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                  <div className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
                     Sources
                   </div>
                   <div className="numeric mt-2 text-xl font-semibold">
@@ -270,7 +337,7 @@ export function DirectivesView() {
                     directive.source_sessions.map((sessionId) => (
                       <Link key={sessionId} to={`/projects/${projectId}/analysis?session=${sessionId}`}>
                         <Badge className="transition-colors duration-150 hover:bg-white hover:text-foreground">
-                          {truncateMiddle(sessionId, 18)}
+                          {formatSessionId(sessionId, 18)}
                         </Badge>
                       </Link>
                     ))
@@ -294,7 +361,7 @@ export function DirectivesView() {
                 <div className="space-y-4 rounded-[24px] border border-white/80 bg-[linear-gradient(180deg,rgba(249,115,22,0.08),rgba(255,255,255,0.7))] p-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
-                      <p className="font-mono text-xs uppercase tracking-[0.24em] text-muted-foreground">
+                      <p className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
                         Convention effectiveness
                       </p>
                       <h3 className="text-lg font-semibold">Before / after injection</h3>
@@ -307,7 +374,7 @@ export function DirectivesView() {
 
                   <div className="grid gap-3 md:grid-cols-3">
                     <div className="rounded-[22px] border border-white/80 bg-white/70 p-4">
-                      <div className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                      <div className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
                         Target flag avg
                       </div>
                       <div className="mt-2 text-sm text-muted-foreground">
@@ -322,7 +389,7 @@ export function DirectivesView() {
                       </div>
                     </div>
                     <div className="rounded-[22px] border border-white/80 bg-white/70 p-4">
-                      <div className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                      <div className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
                         Effect change
                       </div>
                       <div className="numeric mt-2 text-xl font-semibold">
@@ -333,7 +400,7 @@ export function DirectivesView() {
                       </div>
                     </div>
                     <div className="rounded-[22px] border border-white/80 bg-white/70 p-4">
-                      <div className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                      <div className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">
                         Overall flag load
                       </div>
                       <div className="mt-2 text-sm text-muted-foreground">
@@ -472,6 +539,7 @@ export function DirectivesView() {
             </Card>
           );
         })}
+        </div>
       </div>
     </section>
   );

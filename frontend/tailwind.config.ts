@@ -41,10 +41,15 @@ export default {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
+        tile: "32px",
+        card: "22px",
+        chunk: "24px",
+        input: "18px",
       },
       boxShadow: {
         ambient:
           "0 20px 60px rgba(15, 23, 42, 0.12), 0 6px 18px rgba(15, 23, 42, 0.08)",
+        tile: "0 24px 70px rgba(15, 23, 42, 0.10), 0 8px 22px rgba(15, 23, 42, 0.06)",
       },
       fontFamily: {
         sans: ["\"Space Grotesk\"", "ui-sans-serif", "sans-serif"],

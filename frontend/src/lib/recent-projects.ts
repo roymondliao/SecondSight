@@ -1,5 +1,10 @@
 const STORAGE_KEY = "secondsight:recent-projects";
 const MAX_ENTRIES = 10;
+export const DEFAULT_PROJECT_SUGGESTIONS = [
+  "SecondSight",
+  "secondsight-core",
+  "codex-companion",
+] as const;
 
 export function getRecentProjects(): string[] {
   try {
@@ -30,4 +35,14 @@ export function addRecentProject(projectId: string): string[] {
     // localStorage can throw in private mode / when quota is exceeded — fall through silently
   }
   return next;
+}
+
+export function mergeProjectSuggestions(projects: readonly string[]): string[] {
+  return Array.from(
+    new Set(
+      [...projects, ...DEFAULT_PROJECT_SUGGESTIONS].filter(
+        (value): value is string => typeof value === "string" && value.trim().length > 0,
+      ),
+    ),
+  );
 }
