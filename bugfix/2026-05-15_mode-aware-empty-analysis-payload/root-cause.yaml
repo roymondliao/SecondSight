@@ -1,0 +1,42 @@
+bug_id: mode-aware-empty-analysis-payload
+
+reproduction:
+  steps:
+    - "Persist a session with events in `events` table"
+    - "Call `Trigger.dispatch()` on a runtime wired with `mode_aware_dispatch`"
+    - "Observe that `Trigger.dispatch()` passes only `session_id` to `ModeAwareDispatch.dispatch()`"
+    - "Observe that `ModeAwareDispatch.dispatch()` defaulted missing `session_payload` to `{}`"
+  expected: "dispatcher receives a payload built from persisted session events"
+  actual: "dispatcher receives `{}` and the LLM reports empty session data"
+
+root_cause:
+  primary: |
+    The mode-aware path had a data-loading gap. `Trigger.dispatch()` delegated
+    to `ModeAwareDispatch.dispatch(session_id, project_id=...)` without a
+    payload, and `ModeAwareDispatch.dispatch()` converted `None` to `{}` rather
+    than loading events from storage.
+
+structural_cause: |
+  The legacy orchestrator path already knows how to pull session data from the
+  repository layer, but the newer mode-aware path treated payload delivery as a
+  caller responsibility without enforcing or backfilling that contract.
+
+why_hidden_so_long:
+  - "`analysis_outputs.status` stayed `success`, so operational signals did not show a failure"
+  - "No death test pinned the contract 'missing payload must still load DB events'"
+  - "The report text blamed extraction, but persistence layers were actually healthy"
+
+hypothesis_for_fix:
+  statement: |
+    If `ModeAwareDispatch` owns a reference to `EventsRepository` and builds a
+    prompt payload when `session_payload` is omitted, mode-aware analysis will
+    consume real session events and stop generating empty-session reports for
+    persisted sessions.
+  death_test:
+    location: tests/analysis/test_runtime_wiring_unit.py
+    description: |
+      Dispatch with only `session_id` and a seeded `events` row. Assert the
+      injected dispatcher receives a non-empty payload containing `session_id`,
+      `project_id`, `events`, and `user_prompt`.
+
+next_phase: fix

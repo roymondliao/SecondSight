@@ -11,6 +11,7 @@ These test the positive paths after CRITICAL FIX 1 is applied:
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -31,6 +32,9 @@ from secondsight.config.schema import (
     ProvidersConfig,
     SecondSightConfig,
 )
+from secondsight.event import Event, EventType
+from secondsight.storage.db_engine import DBEngine
+from secondsight.storage.events_repository import EventsRepository
 from secondsight.storage.retention import RetentionConfig
 
 
@@ -239,6 +243,83 @@ async def test_dispatch_with_no_repository_still_dispatches(tmp_path: Path) -> N
 
     assert result.status == "success"
     mock_cli_dispatcher.dispatch.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_loads_session_payload_from_events_repo_when_missing(
+    tmp_path: Path,
+) -> None:
+    """When only session_id is provided, ModeAwareDispatch must build payload from DB events."""
+    from secondsight.analysis.runtime import ModeAwareDispatch
+
+    config = _make_cli_config()
+    session_id = "sess-payload-db-001"
+    project_id = "proj-unit-001"
+
+    db_engine = DBEngine(tmp_path / "intelligence.db")
+    events_repo = EventsRepository(db_engine)
+    events_repo.create_schema()
+    events_repo.insert(
+        Event(
+            id="evt-user-001",
+            session_id=session_id,
+            project_id=project_id,
+            event_type=EventType.USER_PROMPT,
+            timestamp=datetime(2026, 5, 15, 9, 0, tzinfo=timezone.utc),
+            sequence_number=0,
+            segment_index=1,
+            data={
+                "action_metadata": {
+                    "prompt_text": "Investigate why analysis became empty.",
+                }
+            },
+        )
+    )
+
+    captured_payload: dict[str, object] = {}
+
+    async def capture_dispatch(session_id_arg: str, payload: dict, project_root=None):
+        captured_payload.update(payload)
+        return _make_success_output(session_id_arg)
+
+    mock_cli_dispatcher = MagicMock()
+    mock_cli_dispatcher.dispatch = capture_dispatch
+
+    mad = ModeAwareDispatch(
+        config=config,
+        state=None,
+        project_id=project_id,
+        repository=None,
+        events_repository=events_repo,
+        cli_dispatcher=mock_cli_dispatcher,
+        sdk_dispatcher=None,
+    )
+
+    result = await mad.dispatch(session_id, project_root=tmp_path)
+
+    assert result.status == "success"
+    assert captured_payload["session_id"] == session_id
+    assert captured_payload["project_id"] == project_id
+    assert captured_payload["user_prompt"] == "Investigate why analysis became empty."
+    assert captured_payload["supplementary_metrics"] == {
+        "total_events": 1,
+        "tool_calls": 0,
+        "segment_count": 1,
+    }
+    events = captured_payload["events"]
+    assert isinstance(events, list)
+    assert events == [
+        {
+            "event_id": "evt-user-001",
+            "type": "user_prompt",
+            "timestamp": "2026-05-15T09:00:00+00:00",
+            "sequence_number": 0,
+            "segment_index": 1,
+            "action_metadata": {
+                "prompt_text": "Investigate why analysis became empty.",
+            },
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------

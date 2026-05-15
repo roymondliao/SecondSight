@@ -1,0 +1,29 @@
+bug_id: mode-aware-empty-analysis-payload
+fixed_at: "2026-05-15"
+fix_scale: "small"
+fix_type: inline
+
+changes:
+  - file: src/secondsight/analysis/runtime.py
+    summary: |
+      Added `events_repository` to `ModeAwareDispatch`, built a serialized
+      session payload from persisted events when `session_payload` is omitted,
+      and wired the repository in `build_project_analysis_runtime()`.
+  - file: tests/analysis/test_runtime_wiring_unit.py
+    summary: |
+      Added a unit test that seeds a real event row and proves dispatch without
+      explicit payload still sends eventful data to the underlying dispatcher.
+
+verification:
+  targeted_tests:
+    - "uv run pytest tests/analysis/test_runtime_wiring_unit.py tests/analysis/test_runtime_dispatch_mode.py tests/analysis/test_runtime_concurrent_dispatch.py -q -> 24 passed"
+
+silent_failure_conditions:
+  - condition: "A caller explicitly passes `{}` as `session_payload`"
+    effect: "ModeAwareDispatch treats that as intentional payload and will not auto-load DB events"
+    mitigation: "Current fix closes the real production path where payload is omitted; explicit-empty callers should be audited separately if they exist"
+  - condition: "No rows exist in `events` for the session"
+    effect: "Payload still contains `events: []`; the analyzer can only report an empty session"
+    mitigation: "This is now an honest upstream-data failure rather than a silent drop from non-empty storage"
+
+phase_status: complete

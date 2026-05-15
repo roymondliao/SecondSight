@@ -1,0 +1,33 @@
+bug_id: mode-aware-empty-analysis-payload
+observed_at: "2026-05-15"
+observer: yuyu_liao
+
+symptom: |
+  Session `3d0491b8-9530-4d68-862f-a4e82694ed24` has 198 persisted events in
+  both filesystem storage and the `events` table, but the DB session report
+  headline/body says the analysis payload was empty and contained only `{}`.
+
+evidence:
+  - "filesystem: ~/.secondsight/projects/SecondSight/sessions/3d0491b8-9530-4d68-862f-a4e82694ed24/events/ contains many files"
+  - "DB: select count(*) from events where session_id='3d0491b8-9530-4d68-862f-a4e82694ed24' => 198"
+  - "DB: session_reports.body for that session says 'The session data payload was empty'"
+  - "DB: behavior_flags count for that session => 0"
+
+failure_classification:
+  level: 3
+  level_name: "false success"
+  rationale: |
+    Analysis completed with `analysis_outputs.status='success'`, but the core
+    side effect was invalid: the analyzer saw no session events and generated a
+    useless report. The system appeared healthy while the analysis result was
+    semantically empty.
+
+impact_scope:
+  - "Any mode-aware analysis path that dispatches with only `session_id` can silently analyze `{}` instead of real events"
+  - "Affected outputs persist to `analysis_outputs` and `session_reports`, so dashboards surface misleading success"
+
+duration:
+  broken_since: "2026-05-13 or later (mode-aware dispatch wiring era)"
+  detection_method: "operator report after inspecting a known non-empty session"
+
+next_phase: root-cause-tracing

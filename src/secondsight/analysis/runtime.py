@@ -133,6 +133,7 @@ class ModeAwareDispatch:
         repository: "AnalysisOutputsRepository | None" = None,
         flags_repository: BehaviorFlagsRepository | None = None,
         reports_repository: SessionReportsRepository | None = None,
+        events_repository: EventsRepository | None = None,
         cli_dispatcher: "AnalysisDispatcher | None" = None,
         sdk_dispatcher: "AnalysisDispatcher | None" = None,
     ) -> None:
@@ -148,6 +149,7 @@ class ModeAwareDispatch:
         self._repository = repository
         self._flags_repository = flags_repository
         self._reports_repository = reports_repository
+        self._events_repository = events_repository
         self._cli_dispatcher = cli_dispatcher
         self._sdk_dispatcher = sdk_dispatcher
 
@@ -256,6 +258,82 @@ class ModeAwareDispatch:
         if flags and self._flags_repository is not None:
             self._flags_repository.insert_many(flags)
 
+    def _load_session_payload(self, session_id: str, *, project_id: str) -> dict[str, Any]:
+        """Build a prompt payload from stored session events.
+
+        Mode-aware dispatch is often triggered with only a session_id. In that
+        case, loading the events here avoids silently degrading the analysis
+        prompt to bare `{}` even though the session exists in storage.
+        """
+        if self._events_repository is None:
+            logger.warning(
+                f"ModeAwareDispatch: no events_repository available for "
+                f"session_id={session_id!r}; falling back to empty payload"
+            )
+            return {}
+
+        events = self._events_repository.get_session_events(session_id)
+        if not events:
+            logger.warning(
+                f"ModeAwareDispatch: no events found for session_id={session_id!r}; "
+                f"building empty events payload"
+            )
+            return {
+                "session_id": session_id,
+                "project_id": project_id,
+                "events": [],
+            }
+
+        serialized_events: list[dict[str, Any]] = []
+        first_prompt_text: str | None = None
+        for event in events:
+            event_ts = event.timestamp
+            if event_ts.tzinfo is None:
+                event_ts = event_ts.replace(tzinfo=timezone.utc)
+            else:
+                event_ts = event_ts.astimezone(timezone.utc)
+            event_payload: dict[str, Any] = {
+                "event_id": event.id,
+                "type": event.event_type.value,
+                "timestamp": event_ts.isoformat(),
+                "sequence_number": event.sequence_number,
+                "segment_index": event.segment_index,
+            }
+            if event.sub_agent_id is not None:
+                event_payload["sub_agent_id"] = event.sub_agent_id
+            if event.depth:
+                event_payload["depth"] = event.depth
+            if event.duration_ms is not None:
+                event_payload["duration_ms"] = event.duration_ms
+            if event.token_count is not None:
+                event_payload["token_count"] = event.token_count
+            for key, value in event.data.items():
+                if key not in event_payload:
+                    event_payload[key] = value
+            serialized_events.append(event_payload)
+
+            if first_prompt_text is None:
+                action_metadata = event.data.get("action_metadata")
+                if isinstance(action_metadata, dict):
+                    prompt_text = action_metadata.get("prompt_text")
+                    if isinstance(prompt_text, str) and prompt_text:
+                        first_prompt_text = prompt_text
+
+        effective_project_id = events[0].project_id if events else project_id
+        return {
+            "session_id": session_id,
+            "project_id": effective_project_id,
+            "user_prompt": first_prompt_text,
+            "events": serialized_events,
+            "supplementary_metrics": {
+                "total_events": len(serialized_events),
+                "tool_calls": sum(
+                    1 for event in events if event.event_type.value == "tool_use_start"
+                ),
+                "segment_count": len({event.segment_index for event in events}),
+            },
+        }
+
     async def dispatch(
         self,
         session_id: str,
@@ -297,12 +375,15 @@ class ModeAwareDispatch:
             and reason='dispatch_in_progress' (the first dispatch is still running).
             The no-op result is NOT persisted to analysis_outputs.
         """
-        if session_payload is None:
-            session_payload = {}
-
         # Resolve the project_id for this dispatch: prefer the call-time override,
         # then fall back to the construction-time project_id.
         effective_project_id = project_id if project_id is not None else self._project_id
+
+        if session_payload is None:
+            session_payload = self._load_session_payload(
+                session_id,
+                project_id=effective_project_id,
+            )
 
         # Resolve project_root: prefer call-time argument, then fall back to
         # the construction-time project_root (set for the per-project instance).
@@ -648,6 +729,7 @@ def build_project_analysis_runtime(
         repository=outputs_repo,
         flags_repository=flags_repo,
         reports_repository=reports_repo,
+        events_repository=events_repository,
     )
 
     trigger = Trigger(
