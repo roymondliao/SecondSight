@@ -1,0 +1,98 @@
+feature: "analysis-output-recovery-phase2"
+status: "passed_with_manual_review"
+review_date: "2026-05-16"
+
+capability:
+  built_in_security_review_available: false
+  degradation: >
+    No separate platform security/privacy review tool was available in this Codex
+    environment. Review was performed manually against the full committed feature
+    diff, then repeated after the security fix commit.
+
+scope:
+  base_ref: "HEAD~2 before commit 44791ba"
+  reviewed_commits:
+    - "44791ba Unify analysis output recovery observability"
+    - "5013c24 Redact recovery error details"
+  reviewed_files:
+    - "src/secondsight/analysis/cli_dispatcher.py"
+    - "src/secondsight/analysis/output_recovery.py"
+    - "src/secondsight/analysis/sdk_dispatcher.py"
+    - "src/secondsight/sdk/router.py"
+    - "src/secondsight/storage/analysis_outputs_repository.py"
+    - "tests/analysis/test_cli_dispatcher.py"
+    - "tests/analysis/test_output_recovery.py"
+    - "tests/analysis/test_sdk_dispatcher.py"
+    - "tests/sdk/test_router.py"
+    - "changes/2026-05-15_analysis-output-recovery-phase2/*"
+    - "changes/2026-05-16_executor-failure-evidence-adapters/*"
+  excluded_unrelated_worktree_items:
+    - "scripts/hooks/session-start.sh"
+    - "reference_opensoure/awesome-design-md/"
+    - "reference_opensoure/claude-code-prompt-improver/"
+
+checks:
+  secret_material_in_repo:
+    result: "pass"
+    notes: >
+      Pre-commit secret checks passed. The feature added no real API keys,
+      passwords, private keys, or credential fixtures.
+  persisted_error_details:
+    result: "pass_after_fix"
+    notes: >
+      Initial review found that expanded `error_details`, `raw_error_details`,
+      and `recovery_trace` persistence could retain provider exception text,
+      CLI stderr, or raw evidence containing secrets or unbounded model output.
+      Commit 5013c24 added recursive sanitization, secret-pattern redaction,
+      and string length caps through shared recovery helpers.
+  subprocess_surface:
+    result: "pass"
+    notes: >
+      The diff does not add shell execution or change command construction to
+      use shell=True. CLI subprocess execution remains argv-based.
+  network_surface:
+    result: "pass"
+    notes: >
+      No new external network paths were introduced. SDK routing still delegates
+      to the existing LLMRouter provider path.
+  database_surface:
+    result: "pass"
+    notes: >
+      The only storage change narrows a runtime import to TYPE_CHECKING. No SQL
+      query construction or schema write path was changed.
+  denial_of_service:
+    result: "pass"
+    notes: >
+      Retry counts remain bounded by config and the built-in cap. Persisted
+      error detail strings are now capped by sanitizer.
+
+issues:
+  critical: []
+  high: []
+  medium:
+    - id: "SPR-P2-001"
+      status: "fixed"
+      severity: "medium"
+      location: "src/secondsight/analysis/output_recovery.py"
+      description: >
+        Expanded recovery forensics could persist raw provider/CLI error text
+        without secret redaction or length caps.
+      fix_commit: "5013c24"
+      verification:
+        - "tests/analysis/test_output_recovery.py::TestRetryDecisions::test_recovery_error_details_redacts_secret_values_and_bounds_strings"
+        - "targeted suite: 104 passed"
+  low: []
+
+accepted_risks:
+  - description: >
+      Manual security/privacy review was used because no dedicated platform
+      review capability was available in this environment.
+    owner: "human gate"
+    carry_forward_to_validation: true
+
+final_result:
+  issues_found: 1
+  issues_fixed: 1
+  fix_rounds: 1
+  issues_remaining: 0
+  proceed_to_validate_and_ship: true
