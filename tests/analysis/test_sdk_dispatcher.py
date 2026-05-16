@@ -567,6 +567,58 @@ def test_sdk_failure_output_namespaces_colliding_raw_error_details():
     }
 
 
+def test_sdk_failure_output_redacts_secret_from_session_summary_body():
+    from secondsight.analysis.output_recovery import (
+        ClassifiedFailure,
+        FailureClass,
+        RecoveryAttempt,
+        RecoveryTrace,
+        RetryDecision,
+        RetryMode,
+    )
+    from secondsight.analysis.sdk_dispatcher import SDKAnalysisDispatcher
+
+    dispatcher = SDKAnalysisDispatcher.__new__(SDKAnalysisDispatcher)
+    cast(Any, dispatcher)._primary_model_name = _TEST_PRIMARY_MODEL
+    failure = ClassifiedFailure(
+        failure_class=FailureClass.FATAL_AUTH_OR_CONFIG,
+        reason="fatal_auth_or_config",
+        error="provider rejected api_key=sk-test-secret-1234567890",
+    )
+    decision = RetryDecision(
+        should_retry=False,
+        retry_mode=RetryMode.NONE,
+        reason="fatal_auth_or_config",
+        failure_class=FailureClass.FATAL_AUTH_OR_CONFIG,
+        attempt_number=1,
+        max_attempts=1,
+        next_attempt_number=None,
+    )
+    trace = RecoveryTrace(
+        attempts=[
+            RecoveryAttempt(
+                attempt_number=1,
+                executor="sdk",
+                failure_class=FailureClass.FATAL_AUTH_OR_CONFIG,
+                reason="fatal_auth_or_config",
+                error=failure.error,
+            )
+        ],
+        final_decision=decision,
+    )
+
+    output = dispatcher._make_failure_output(
+        session_id="sess-summary-secret",
+        failure=failure,
+        decision=decision,
+        trace=trace,
+        retry_count=0,
+    )
+
+    assert "sk-test-secret-1234567890" not in output.session_summary.body
+    assert "[REDACTED]" in output.session_summary.body
+
+
 # ---------------------------------------------------------------------------
 # DC4 death tests
 # ---------------------------------------------------------------------------

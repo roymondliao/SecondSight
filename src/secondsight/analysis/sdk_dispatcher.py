@@ -59,6 +59,7 @@ from secondsight.analysis.output_recovery import (
     classify_attempt_failure_class,
     classify_output_failure,
     decide_retry,
+    sanitize_error_details,
 )
 from secondsight.analysis.schemas import BehaviorFlagDraft, BehaviorFlagType, FLAG_DEFINITIONS
 from secondsight.config.schema import AnalysisConfig
@@ -436,7 +437,7 @@ class SDKAnalysisDispatcher:
                 "session_summary": {
                     "headline": "SDK analysis failed",
                     "key_findings": [],
-                    "body": f"SDK dispatch failure: {failure.error}",
+                    "body": f"SDK dispatch failure: {sanitize_error_details(failure.error)}",
                 },
                 "dispatched_via": "sdk",
                 "cli_agent": None,

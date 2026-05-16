@@ -794,6 +794,7 @@ def _make_failure_output(
         retry_feedback=retry_feedback,
         extra_error_details=extra_error_details,
     )
+    summary_message = str(sanitize_error_details(message)) if message else ""
 
     return AnalysisOutput.model_validate(
         {
@@ -804,7 +805,7 @@ def _make_failure_output(
             "session_summary": {
                 "headline": "Analysis failed",
                 "key_findings": [],
-                "body": f"Dispatch failure: {reason}. {message}".strip(),
+                "body": f"Dispatch failure: {reason}. {summary_message}".strip(),
             },
             "dispatched_via": "cli",
             "cli_agent": agent_name,

@@ -708,6 +708,31 @@ class TestDC6_SubprocessNonZeroExit:
         assert result.error_details["stderr"] == stderr_text
 
     @pytest.mark.asyncio
+    async def test_nonzero_exit_redacts_secret_from_session_summary_body(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        stderr_text = "fatal: authentication failed token=super-secret-token-12345"
+
+        async def create_proc(*args, **kwargs):
+            return _make_proc_mock(stdout="", stderr=stderr_text, returncode=1)
+
+        dispatcher = _make_dispatcher()
+
+        with patch(
+            "secondsight.analysis.cli_dispatcher.asyncio.create_subprocess_exec",
+            side_effect=create_proc,
+        ):
+            result = await dispatcher.dispatch(
+                session_id="sess-001",
+                project_root=tmp_path,
+                session_payload={"events": []},
+            )
+
+        assert "super-secret-token-12345" not in result.session_summary.body
+        assert "[REDACTED]" in result.session_summary.body
+
+    @pytest.mark.asyncio
     async def test_exit_code_1_no_retry(self, tmp_path: Path) -> None:
         """Exit code 1 (general failure) also gets no retry."""
         call_count = 0
