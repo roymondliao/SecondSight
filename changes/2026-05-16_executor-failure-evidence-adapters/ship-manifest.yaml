@@ -1,0 +1,65 @@
+delivered_capability: "Executor-specific failure evidence adapters now feed shared recovery classification for CLI and SDK analysis dispatch."
+
+known_failure_modes:
+  - mode: "CLI auth/rate-limit classification for untyped failures can drift if Claude or Codex changes raw stderr/stdout wording."
+    severity: degradation
+    detection: "error_details.evidence_confidence='heuristic' with evidence_executor='claude_code' or 'codex'; monitor failure_class distribution and unexpected fatal_execution_error spikes."
+  - mode: "New SDK framework config wording without typed exception/status/attempts can classify as fatal_execution_error until SDK evidence extraction is updated."
+    severity: degradation
+    detection: "error_details.evidence_source missing for SDK RouterTerminalError config failures; monitor fatal_execution_error with dispatched_via='sdk'."
+  - mode: "The full E2E suite still has an unrelated legacy config serve warning regression."
+    severity: degradation
+    detection: "tests/e2e/test_legacy_config_upgrade.py::TestDTLegacyConfigWithStateServe::test_legacy_config_with_state_serve_warns_and_succeeds fails; tracked in changes/2026-05-16_legacy-config-serve-warning-regression/fast-track.yaml."
+
+accepted_risks:
+  - risk: "CLI adapter registry is dispatcher-local rather than a standalone plugin interface."
+    accepted_by: "engineering"
+    expires: "2026-06-16"
+  - risk: "Adapter-local heuristic markers remain necessary for untyped CLI failures, but they are evidence-scoped and confidence-labeled."
+    accepted_by: "engineering"
+    expires: "2026-06-16"
+  - risk: "E2E legacy config warning failure is unrelated to executor failure evidence adapters and remains tracked separately."
+    accepted_by: "engineering"
+    expires: "2026-06-16"
+
+silent_failure_surface: low
+
+monitoring_hooks:
+  - "Monitor AnalysisOutput.error_details.failure_class grouped by dispatched_via and evidence_executor."
+  - "Alert or inspect when evidence_confidence='heuristic' grows unexpectedly for CLI failures."
+  - "Inspect SDK fatal_execution_error events that lack evidence_source, because those indicate a missing SDK evidence adapter case."
+  - "Regression tests cover shared evidence classification, CLI adapter evidence, SDK router attempt evidence, unsupported CLI agents, and summary redaction."
+
+kill_switch: "Revert commits c30ebcc..HEAD for this feature, or temporarily avoid affected dispatch mode via analysis.mode/config while preserving existing precheck behavior."
+
+validation:
+  acceptance_regression:
+    command: "uv run pytest tests/analysis/test_output_recovery.py tests/analysis/test_cli_adapters.py tests/analysis/test_cli_dispatcher.py tests/analysis/test_sdk_dispatcher.py -q"
+    result: "132 passed"
+  e2e:
+    command: "uv run pytest tests/e2e -q"
+    result: "15 passed, 5 skipped, 1 failed"
+    failing_test: "tests/e2e/test_legacy_config_upgrade.py::TestDTLegacyConfigWithStateServe::test_legacy_config_with_state_serve_warns_and_succeeds"
+    classification: "known unrelated regression tracked by fast-track"
+  scoped_pre_commit:
+    result: "passed for feature/security fix files"
+
+security_privacy:
+  result: "pass_after_fix"
+  issues_found: 1
+  issues_fixed: 1
+  issues_remaining: 0
+  artifact: "changes/2026-05-16_executor-failure-evidence-adapters/security-privacy-review.yaml"
+
+reconciliation:
+  spec_drift: "within_tolerance"
+  notes:
+    - "Implemented evidence contract, CLI adapter extraction, SDK/router evidence extraction, shared attempt-class mapper, and removal of shared raw auth marker fallback."
+    - "Added security hardening beyond original plan: failure session summaries now sanitize raw error messages."
+
+code_review:
+  mode: "inline"
+  result: "pass_with_residual_risks"
+  notes:
+    - "No correctness blockers found in changed files after iteration and security fix."
+    - "Residual maintainability risk is dispatcher-local adapter registry; acceptable for current two-agent scope and captured above."
