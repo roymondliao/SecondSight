@@ -1,0 +1,43 @@
+type: fast_track
+description: >
+  Restore the legacy config warning on `secondsight serve` when a legacy
+  `[analysis].default_agent` config exists alongside state.json.
+death_clause: >
+  If `secondsight serve` exits successfully with legacy config + state.json but
+  emits no warning mentioning the legacy/default_agent upgrade path, this fix is
+  considered failed.
+acceptance:
+  - "`uv run pytest tests/e2e/test_legacy_config_upgrade.py::TestDTLegacyConfigWithStateServe::test_legacy_config_with_state_serve_warns_and_succeeds -q` passes"
+  - "The serve precheck still exits 0 when state.json resolves the CLI agent and the binary is found"
+  - "The loaded config keeps `general.mode == 'cli'`; legacy `default_agent` must not silently switch the mode to SDK"
+root_cause_observed: >
+  During validation for analysis-output-recovery-phase2, full `tests/e2e` ran
+  `15 passed, 5 skipped, 1 failed`. The failed test captured loguru stderr
+  output from serve/precheck but `caplog.records` contained no WARNING message,
+  so users with an existing state.json would not see the expected legacy config
+  upgrade warning.
+failure_evidence:
+  command: "uv run pytest tests/e2e -q"
+  result: "15 passed, 5 skipped, 1 failed"
+  failing_test: "tests/e2e/test_legacy_config_upgrade.py::TestDTLegacyConfigWithStateServe::test_legacy_config_with_state_serve_warns_and_succeeds"
+  assertion: "Expected WARN log to mention 'legacy' or 'default_agent'; got warn_messages=''"
+scar_tag: 1
+scar_items:
+  - "Root cause is localized to legacy config warning/log bridge behavior, but exact production owner should be verified before fixing because the failure may be in config loader, serve precheck, or loguru-to-caplog bridge expectations."
+files_expected_to_change:
+  - "src/secondsight/config/loader.py"
+  - "src/secondsight/cli/serve.py"
+  - "tests/e2e/test_legacy_config_upgrade.py"
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: "Follow-up should reuse the existing legacy config warning path or log bridge, not add a second warning implementation just for serve."
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: "The fix should live at the boundary that decides legacy config upgrade visibility for serve, not inside unrelated analysis recovery code."
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: "A minimal fix should restore one observable warning path; no new config migration abstraction is justified unless inspection proves the warning path is duplicated."
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: "Do not duplicate the test's config/state setup elsewhere; keep the existing e2e as the death test for this regression."
