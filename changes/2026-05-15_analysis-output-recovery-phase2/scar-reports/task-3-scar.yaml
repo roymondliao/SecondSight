@@ -1,0 +1,33 @@
+task_id: task-3
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: "The shared error_details taxonomy is enforced by CLI/SDK dispatcher builders and tests, not by `AnalysisOutput` schema-level validation. A future direct `AnalysisOutput.model_validate(...)` caller can still emit non-shared keys without failing validation."
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: "A future dispatcher path that bypasses `merge_recovery_error_details()` could overwrite canonical fields such as `reason`, `failure_class`, or `error` inside `error_details`; current CLI/SDK paths are covered, but the schema does not make that impossible globally."
+    deferred_to_feature_iteration: true
+
+assumptions_made:
+  - assumption: "Keeping CLI timeout outputs at `status='unknown'` is compatible with the shared observability contract as long as `reason`, `failure_class`, `attempts`, and `retry_exhausted` use the shared taxonomy."
+    verified: true
+    note: "Verified by dispatcher death tests asserting `transport_timeout` taxonomy on the CLI timeout path while preserving `status='unknown'`."
+    deferred_to_feature_iteration: false
+
+debt_registered: true
+debt_location: "src/secondsight/analysis/output.py — error_details is still an untyped dict"
+
+resolved_items:
+  - original_section: "known_shortcuts"
+    original_description: "CLI retry exhaustion still emitted legacy parse/schema reasons instead of shared `retry_exhausted` semantics."
+    resolution: "CLI `_run_once()` now uses `decide_retry()` to stamp shared `reason`, `failure_class`, `attempts`, `retry_exhausted`, and `retry_mode` fields on failure outputs."
+  - original_section: "silent_failure_conditions"
+    original_description: "Mode-specific raw evidence dictionaries could overwrite shared observability keys during `error_details` merges."
+    resolution: "Added shared `merge_recovery_error_details()` and CLI/SDK tests so raw evidence that collides with canonical fields is preserved under `raw_error_details` instead of overwriting shared fields."
+  - original_section: "known_shortcuts"
+    original_description: "CLI pre-dispatch `state_missing` still reported `reason: state_missing` instead of a shared fatal taxonomy value."
+    resolution: "Mapped the path to `fatal_execution_error` and preserved the legacy executor reason as `error_details.executor_reason='state_missing'`."
+  - original_section: "silent_failure_conditions"
+    original_description: "If downstream observability tooling keys only on shared taxonomy values, the CLI-only `state_missing` path would remain a dashboard outlier."
+    resolution: "Added dispatcher coverage asserting `state_missing` now emits shared `reason` and `failure_class` while keeping raw executor evidence."

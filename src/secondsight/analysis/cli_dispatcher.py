@@ -66,9 +66,12 @@ from secondsight.analysis.cli_adapters import claude_code as _claude_code_adapte
 from secondsight.analysis.cli_adapters import codex as _codex_adapter
 from secondsight.analysis.output import AnalysisOutput
 from secondsight.analysis.output_recovery import (
-    build_retry_feedback,
+    FailureClass,
+    RetryMode,
+    build_recovery_error_details,
     classify_empty_output,
     classify_output_failure,
+    decide_retry,
     normalize_llm_json_text,
 )
 from secondsight.config.constants import BUILTIN_ANALYSIS_MAX_RETRY_COUNT_CAP
@@ -230,12 +233,14 @@ class CLIAnalysisDispatcher:
             )
             return "", _make_failure_output(
                 session_id=session_id,
-                reason="state_missing",
+                reason=FailureClass.FATAL_EXECUTION_ERROR.value,
+                failure_class=FailureClass.FATAL_EXECUTION_ERROR.value,
                 agent_name=_UNKNOWN_AGENT,
                 message=(
                     "default_agent='auto' requires state.json. "
                     "Run 'secondsight init' to set up the agent."
                 ),
+                extra_error_details={"executor_reason": "state_missing"},
             )
 
         agent_name = self._state.init_agent
@@ -257,8 +262,9 @@ class CLIAnalysisDispatcher:
         max_retries = (
             self._config.retry.output_repair_max_attempts if self._config.retry.enabled else 0
         )
+        max_attempts = max_retries + 1
 
-        for attempt in range(max_retries + 1):
+        for attempt in range(max_attempts):
             is_retry = attempt > 0
             if is_retry:
                 logger.warning(
@@ -274,6 +280,7 @@ class CLIAnalysisDispatcher:
                 project_root=project_root,
                 session_id=session_id,
                 attempt=attempt,
+                max_attempts=max_attempts,
             )
 
             if result is None:
@@ -283,8 +290,6 @@ class CLIAnalysisDispatcher:
             # Non-retryable: return immediately
             if result.status == "unknown":
                 return result  # timeout -- no point retrying
-            if result.error_details and result.error_details.get("reason") == "subprocess_exit":
-                return result  # non-zero exit -- no point retrying
 
             # Success -- update retry_count to reflect actual attempt number
             if result.status == "success":
@@ -301,29 +306,33 @@ class CLIAnalysisDispatcher:
                 if result.error_details
                 else "unknown"
             )
+            retry_mode = (
+                str(result.error_details.get("retry_mode", RetryMode.NONE.value))
+                if result.error_details
+                else RetryMode.NONE.value
+            )
+            retry_exhausted = (
+                bool(result.error_details.get("retry_exhausted", False))
+                if result.error_details
+                else False
+            )
             last_feedback = (
                 str(result.error_details.get("retry_feedback", "")) if result.error_details else ""
             )
-            if attempt < max_retries:
+            if retry_mode == RetryMode.OUTPUT_REPAIR.value and not retry_exhausted:
                 continue
-            # Exhausted retries: mark final retry count
-            return AnalysisOutput.model_validate(
-                {
-                    **result.model_dump(),
-                    "retry_count": max_retries,
-                    "error_details": {
-                        **(result.error_details or {}),
-                        "attempts": max_retries + 1,
-                    },
-                }
-            )
+            return result
 
         # Should not reach here
         return _make_failure_output(
             session_id=session_id,
-            reason="internal_error",
+            reason="fatal_execution_error",
+            failure_class=FailureClass.FATAL_EXECUTION_ERROR.value,
             agent_name=agent_name,
             message="Retry loop exhausted without returning -- this is a bug.",
+            attempts=max_attempts,
+            retry_exhausted=False,
+            retry_mode=RetryMode.NONE.value,
         )
 
     async def _run_once(
@@ -334,6 +343,7 @@ class CLIAnalysisDispatcher:
         project_root: Path,
         session_id: str,
         attempt: int,
+        max_attempts: int,
     ) -> AnalysisOutput:
         """Spawn subprocess once, parse output, return AnalysisOutput."""
         # Build command + env (env filtering centralized here -- adapters do not own env)
@@ -381,11 +391,16 @@ class CLIAnalysisDispatcher:
                 _tmpdir_ctx.cleanup()
             return _make_failure_output(
                 session_id=session_id,
-                reason="subprocess_exit",
+                reason=FailureClass.FATAL_EXECUTION_ERROR.value,
+                failure_class=FailureClass.FATAL_EXECUTION_ERROR.value,
                 agent_name=agent_name,
                 exit_code=-1,
                 stderr=str(exc),
                 retry_count=attempt,
+                attempts=attempt + 1,
+                retry_exhausted=False,
+                retry_mode=RetryMode.NONE.value,
+                extra_error_details={"executor_reason": "subprocess_exit"},
             )
 
         # Await output with timeout
@@ -433,6 +448,7 @@ class CLIAnalysisDispatcher:
                 session_id=session_id,
                 agent_name=agent_name,
                 stderr=stderr_raw,
+                attempts=attempt + 1,
             )
 
         # Check exit code
@@ -463,11 +479,15 @@ class CLIAnalysisDispatcher:
                 _tmpdir_ctx.cleanup()
             return _make_failure_output(
                 session_id=session_id,
-                reason="subprocess_exit",
+                reason=FailureClass.FATAL_EXECUTION_ERROR.value,
+                failure_class=FailureClass.FATAL_EXECUTION_ERROR.value,
                 agent_name=agent_name,
                 exit_code=proc.returncode,
                 stderr=stderr_raw,
                 retry_count=attempt,
+                attempts=attempt + 1,
+                retry_exhausted=False,
+                retry_mode=RetryMode.NONE.value,
                 extra_error_details=claude_failure_context,
             )
 
@@ -483,11 +503,16 @@ class CLIAnalysisDispatcher:
                     _tmpdir_ctx.cleanup()
                 return _make_failure_output(
                     session_id=session_id,
-                    reason="output_file_missing",
+                    reason=FailureClass.FATAL_EXECUTION_ERROR.value,
+                    failure_class=FailureClass.FATAL_EXECUTION_ERROR.value,
                     agent_name=agent_name,
                     stderr=stderr_raw,
                     retry_count=attempt,
                     error=str(exc),
+                    attempts=attempt + 1,
+                    retry_exhausted=False,
+                    retry_mode=RetryMode.NONE.value,
+                    extra_error_details={"executor_reason": "output_file_missing"},
                 )
             finally:
                 # Cleanup temp directory (also cleans up the output file)
@@ -517,17 +542,25 @@ class CLIAnalysisDispatcher:
                 f"CLI dispatch: empty stdout from {agent_name!r} (session {session_id!r})"
             )
             classified_failure = classify_empty_output(source="stdout")
+            decision = decide_retry(
+                classified_failure,
+                attempt_number=attempt + 1,
+                max_attempts=max_attempts,
+                feedback_max_chars=self._config.retry.feedback_max_chars,
+            )
             return _make_failure_output(
                 session_id=session_id,
-                reason=classified_failure.reason,
+                reason=decision.reason,
+                failure_class=decision.failure_class.value,
                 agent_name=agent_name,
                 stderr=stderr_raw,
                 error=classified_failure.error,
                 retry_count=attempt,
-                retry_feedback=build_retry_feedback(
-                    classified_failure,
-                    max_chars=self._config.retry.feedback_max_chars,
-                ),
+                attempts=attempt + 1,
+                retry_exhausted=decision.reason == "retry_exhausted",
+                retry_mode=decision.retry_mode.value,
+                extra_error_details=classified_failure.details,
+                retry_feedback=decision.retry_feedback,
             )
 
         try:
@@ -550,25 +583,38 @@ class CLIAnalysisDispatcher:
             # Standalone json.JSONDecodeError (shouldn't fire since model_validate_json
             # wraps it in ValidationError, but kept as a belt-and-suspenders guard)
             classified_failure = classify_output_failure(exc)
+            decision = decide_retry(
+                classified_failure,
+                attempt_number=attempt + 1,
+                max_attempts=max_attempts,
+                feedback_max_chars=self._config.retry.feedback_max_chars,
+            )
             logger.warning(
                 f"CLI dispatch: JSON decode error from {agent_name!r} "
                 f"(session {session_id!r}, attempt {attempt + 1}): {exc}"
             )
             return _make_failure_output(
                 session_id=session_id,
-                reason=classified_failure.reason,
+                reason=decision.reason,
+                failure_class=decision.failure_class.value,
                 agent_name=agent_name,
                 stderr=stderr_raw,
                 error=classified_failure.error,
                 retry_count=attempt,
+                attempts=attempt + 1,
+                retry_exhausted=decision.reason == "retry_exhausted",
+                retry_mode=decision.retry_mode.value,
                 extra_error_details=classified_failure.details,
-                retry_feedback=build_retry_feedback(
-                    classified_failure,
-                    max_chars=self._config.retry.feedback_max_chars,
-                ),
+                retry_feedback=decision.retry_feedback,
             )
         except ValidationError as exc:
             classified_failure = classify_output_failure(exc)
+            decision = decide_retry(
+                classified_failure,
+                attempt_number=attempt + 1,
+                max_attempts=max_attempts,
+                feedback_max_chars=self._config.retry.feedback_max_chars,
+            )
             logger.log(
                 "WARNING",
                 f"CLI dispatch: {classified_failure.reason} from {agent_name!r} "
@@ -576,35 +622,43 @@ class CLIAnalysisDispatcher:
             )
             return _make_failure_output(
                 session_id=session_id,
-                reason=classified_failure.reason,
+                reason=decision.reason,
+                failure_class=decision.failure_class.value,
                 agent_name=agent_name,
                 stderr=stderr_raw,
                 error=classified_failure.error,
                 retry_count=attempt,
+                attempts=attempt + 1,
+                retry_exhausted=decision.reason == "retry_exhausted",
+                retry_mode=decision.retry_mode.value,
                 extra_error_details=classified_failure.details,
-                retry_feedback=build_retry_feedback(
-                    classified_failure,
-                    max_chars=self._config.retry.feedback_max_chars,
-                ),
+                retry_feedback=decision.retry_feedback,
             )
         except Exception as exc:
             classified_failure = classify_output_failure(exc)
+            decision = decide_retry(
+                classified_failure,
+                attempt_number=attempt + 1,
+                max_attempts=max_attempts,
+                feedback_max_chars=self._config.retry.feedback_max_chars,
+            )
             logger.error(
                 f"CLI dispatch: unexpected parse error from {agent_name!r} "
                 f"(session {session_id!r}, attempt {attempt + 1}): {exc}"
             )
             return _make_failure_output(
                 session_id=session_id,
-                reason=classified_failure.reason,
+                reason=decision.reason,
+                failure_class=decision.failure_class.value,
                 agent_name=agent_name,
                 stderr=stderr_raw,
                 error=classified_failure.error,
                 retry_count=attempt,
+                attempts=attempt + 1,
+                retry_exhausted=decision.reason == "retry_exhausted",
+                retry_mode=decision.retry_mode.value,
                 extra_error_details=classified_failure.details,
-                retry_feedback=build_retry_feedback(
-                    classified_failure,
-                    max_chars=self._config.retry.feedback_max_chars,
-                ),
+                retry_feedback=decision.retry_feedback,
             )
 
 
@@ -676,10 +730,14 @@ def _make_failure_output(
     session_id: str,
     reason: str,
     agent_name: str,
+    failure_class: str,
     exit_code: int | None = None,
     stderr: str = "",
     error: str = "",
     retry_count: int = 0,
+    attempts: int = 1,
+    retry_exhausted: bool = False,
+    retry_mode: str = RetryMode.NONE.value,
     message: str = "",
     extra_error_details: dict[str, Any] | None = None,
     retry_feedback: str = "",
@@ -690,19 +748,19 @@ def _make_failure_output(
     or _UNKNOWN_AGENT sentinel when the agent could not be resolved (e.g. state_missing).
     This prevents the "claude_code" lie when no agent was identified.
     """
-    error_details: dict[str, Any] = {"reason": reason}
-    if exit_code is not None:
-        error_details["exit_code"] = exit_code
-    if stderr:
-        error_details["stderr"] = stderr
-    if error:
-        error_details["error"] = error
-    if message:
-        error_details["message"] = message
-    if extra_error_details:
-        error_details.update(extra_error_details)
-    if retry_feedback:
-        error_details["retry_feedback"] = retry_feedback
+    error_details = build_recovery_error_details(
+        reason=reason,
+        failure_class=failure_class,
+        attempts=attempts,
+        retry_exhausted=retry_exhausted,
+        retry_mode=retry_mode,
+        error=error,
+        exit_code=exit_code,
+        stderr=stderr,
+        message=message,
+        retry_feedback=retry_feedback,
+        extra_error_details=extra_error_details,
+    )
 
     return AnalysisOutput.model_validate(
         {
@@ -729,6 +787,7 @@ def _make_unknown_output(
     session_id: str,
     agent_name: str,
     stderr: str = "",
+    attempts: int = 1,
 ) -> AnalysisOutput:
     """Construct an AnalysisOutput with status='unknown' for timeout cases."""
     return AnalysisOutput.model_validate(
@@ -748,7 +807,11 @@ def _make_unknown_output(
             "fallback_used": False,
             "retry_count": 0,
             "error_details": {
-                "reason": "timeout",
+                "reason": FailureClass.TRANSPORT_TIMEOUT.value,
+                "failure_class": FailureClass.TRANSPORT_TIMEOUT.value,
+                "attempts": attempts,
+                "retry_exhausted": False,
+                "retry_mode": RetryMode.NONE.value,
                 "stderr": stderr,
             },
         }

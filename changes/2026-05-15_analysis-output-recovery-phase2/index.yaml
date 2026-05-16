@@ -1,0 +1,32 @@
+feature: analysis-output-recovery-phase2
+status: iteration_complete
+plan_ref_doc: changes/2026-05-15_analysis-output-recovery-phase2/2-plan.md
+acceptance_ref_doc: changes/2026-05-15_analysis-output-recovery-phase2/acceptance.yaml
+overview_ref_doc: changes/2026-05-15_analysis-output-recovery-phase2/overview.md
+iteration_log: changes/2026-05-15_analysis-output-recovery-phase2/iteration-log.yaml
+research_refs:
+  kickoff: changes/2026-05-15_analysis-output-recovery-phase2/1-kickoff.md
+  problem_autopsy: changes/2026-05-15_analysis-output-recovery-phase2/problem-autopsy.md
+  pre_thinking: changes/2026-05-15_analysis-output-recovery-phase2/2-pre-thinking.md
+
+tasks:
+  - id: task-1
+    title: "Expand shared recovery taxonomy and internal models"
+    status: done
+    depends_on: []
+    scar_count: 2
+    unresolved_assumptions: 0
+
+  - id: task-2
+    title: "Adopt shared recovery layer in SDK dispatcher"
+    status: done
+    depends_on: [task-1]
+    scar_count: 3
+    unresolved_assumptions: 0
+
+  - id: task-3
+    title: "Unify CLI/SDK observability and error_details taxonomy"
+    status: done
+    depends_on: [task-1, task-2]
+    scar_count: 2
+    unresolved_assumptions: 0

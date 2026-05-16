@@ -120,6 +120,14 @@ class AttemptRecord:
     duration_ms: float
 
 
+@dataclass(frozen=True)
+class RouterCallResult:
+    """Successful router call result plus attribution for dispatcher outputs."""
+
+    output: Any
+    fallback_used: bool
+
+
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
@@ -317,6 +325,17 @@ class LLMRouter:
             RouterChainExhaustedError — all models tried; all raised transport errors.
             RouterChainTimeoutError   — chain_total_timeout_s exceeded.
         """
+        result = await self.call_with_metadata(model_input=model_input, output_type=output_type)
+        return result.output
+
+    async def call_with_metadata(
+        self,
+        *,
+        model_input: Any,
+        output_type: type[Any],
+    ) -> RouterCallResult:
+        """Run the model chain and return output plus per-call success attribution."""
+
         chain: list[ModelSpec] = [self._primary] + self._fallbacks
         total_models = len(chain)
         attempts: list[AttemptRecord] = []
@@ -391,7 +410,10 @@ class LLMRouter:
                     f"duration_ms={duration_ms:.1f} attempt={attempt_idx + 1} "
                     f"total_attempts={total_models} outcome=success"
                 )
-                return result.output
+                return RouterCallResult(
+                    output=result.output,
+                    fallback_used=attempt_idx > 0,
+                )
 
             except asyncio.TimeoutError:
                 duration_ms = (time.monotonic() - call_start) * 1000
@@ -730,6 +752,7 @@ __all__ = [
     "AttemptRecord",
     "LLMRouter",
     "ModelSpec",
+    "RouterCallResult",
     "RouterChainExhaustedError",
     "RouterChainTimeoutError",
     "RouterConfig",

@@ -1,0 +1,14 @@
+feature: executor-failure-evidence-adapters
+status: kickoff
+origin:
+  source_feature: changes/2026-05-15_analysis-output-recovery-phase2
+  source_iteration: "Level 2 scar triage"
+  source_scar_items:
+    - "Config-only auth/provider failures still rely on message heuristics when no typed exception is available."
+    - "Shared classifier currently carries executor/provider-specific message marker knowledge."
+
+docs:
+  kickoff: changes/2026-05-16_executor-failure-evidence-adapters/1-kickoff.md
+  problem_autopsy: changes/2026-05-16_executor-failure-evidence-adapters/problem-autopsy.md
+
+tasks: []

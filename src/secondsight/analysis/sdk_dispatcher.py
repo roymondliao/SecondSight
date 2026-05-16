@@ -1,6 +1,6 @@
 """SDKAnalysisDispatcher — pydantic-ai SDK dispatch path (Task 5).
 
-Wraps LLMRouter.call() into a uniform dispatch interface that produces
+Wraps LLMRouter.call_with_metadata() into a uniform dispatch interface that produces
 AnalysisOutput instances for Task 6's ProjectAnalysisRuntime.dispatch() to call.
 
 Design choices:
@@ -43,8 +43,20 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
+from pydantic import ValidationError
 
 from secondsight.analysis.output import AnalysisOutput
+from secondsight.analysis.output_recovery import (
+    ClassifiedFailure,
+    FailureClass,
+    RecoveryAttempt,
+    RecoveryTrace,
+    RetryDecision,
+    RetryMode,
+    build_recovery_error_details,
+    classify_output_failure,
+    decide_retry,
+)
 from secondsight.analysis.schemas import BehaviorFlagDraft, BehaviorFlagType, FLAG_DEFINITIONS
 from secondsight.config.schema import AnalysisConfig
 from secondsight.sdk._specs import ModelSpec
@@ -52,7 +64,6 @@ from secondsight.sdk.model_selection import _infer_provider
 from secondsight.sdk.router import (
     LLMRouter,
     RouterChainExhaustedError,
-    RouterTerminalError,
 )
 
 
@@ -68,7 +79,7 @@ class SDKAnalysisDispatcher:
     Task 6's ProjectAnalysisRuntime.dispatch() calls this uniformly alongside
     CLIAnalysisDispatcher — no mode-branching required at the caller.
 
-    Wraps LLMRouter.call() and produces AnalysisOutput with dispatched_via='sdk'.
+    Wraps LLMRouter.call_with_metadata() and produces AnalysisOutput with dispatched_via='sdk'.
 
     Args:
         config: AnalysisConfig. sdk.primary_model and sdk.fallback_model are used.
@@ -109,10 +120,8 @@ class SDKAnalysisDispatcher:
             chain_total_timeout_s=float(config.timeout_seconds) * 1.5,
         )
 
-        # Track whether fallback was used in the most recent dispatch.
-        # This is set during call() via the router's attempt trace.
+        # Used to guard primary/fallback error attribution on exhausted chains.
         self._primary_spec = primary_spec
-        self._fallbacks = fallbacks
 
         if prompt_loader is not None:
             self._render = prompt_loader
@@ -139,8 +148,8 @@ class SDKAnalysisDispatcher:
 
         Conforms to the AnalysisDispatcher Protocol (analysis/dispatcher.py).
         project_root is accepted for Protocol uniformity but IGNORED by the SDK path.
-        The SDK dispatcher has no subprocess cwd requirement — it calls LLMRouter.call()
-        directly. CLI callers pass project_root; SDK discards it silently. This
+        The SDK dispatcher has no subprocess cwd requirement — it calls
+        LLMRouter.call_with_metadata() directly. CLI callers pass project_root; SDK discards it silently. This
         asymmetry is documented at the Protocol level, not hidden here.
 
         Tries primary model first. On transport failure, falls back if configured.
@@ -158,82 +167,135 @@ class SDKAnalysisDispatcher:
             dispatch contract matches CLIAnalysisDispatcher).
         """
         try:
-            # _build_system_prompt is inside try so template render failures produce
-            # AnalysisOutput(status='failure') rather than propagating to the caller.
-            # The exception-free dispatch contract requires ALL exceptions to be caught.
             system_prompt = self._build_system_prompt(session_payload)
-            result = await self._router.call(
-                model_input=system_prompt,
-                output_type=list[
-                    BehaviorFlagDraft
-                ],  # pydantic-ai validates each item against schema
+            max_attempts = (
+                self._config.retry.output_repair_max_attempts + 1
+                if self._config.retry.enabled
+                else 1
             )
-            logger.info(
-                f"SDK dispatch: success for session {session_id!r} "
-                f"primary_model={self._primary_model_name!r}"
-            )
-            # Determine if fallback was used by inspecting router attempt count.
-            # The router uses primary first; fallback is only tried after primary fails.
-            # We detect fallback by checking if result came from fallback (opaque to us here).
-            # Simplification: for MVP, if the primary model was in the chain, we assume
-            # primary succeeded unless we catch an error. Fallback detection is handled
-            # by the except branches below.
-            return self._make_success_output(
-                session_id=session_id,
-                behavior_flags=result if isinstance(result, list) else [],
-                fallback_used=False,
-            )
+            recovery_attempts: list[RecoveryAttempt] = []
+            current_prompt = system_prompt
 
-        except RouterChainExhaustedError as exc:
-            # All models tried and all failed. Check if fallback was attempted.
-            fallback_was_attempted = len(exc.attempts) > 1
-            # Pin ordering invariant: attempts[0] must be the primary model.
-            # LLMRouter appends attempts in dispatch order (primary first), but
-            # this is not documented as a contract. Assert here so that if the
-            # ordering changes, DC4 attribution (primary_error/fallback_error)
-            # fails loudly rather than silently swapping labels.
-            if exc.attempts:
-                assert exc.attempts[0].model_name == self._primary_spec.name, (
-                    f"attempts ordering violated: expected primary={self._primary_spec.name!r}, "
-                    f"got attempts[0].model_name={exc.attempts[0].model_name!r}. "
-                    f"If LLMRouter changed attempt ordering, update _make_dual_failure_output "
-                    f"to find the primary attempt by model_name rather than index."
-                )
-            primary_error = str(exc.attempts[0]) if exc.attempts else str(exc)
-            fallback_error = str(exc.attempts[1]) if len(exc.attempts) > 1 else ""
+            for attempt_number in range(1, max_attempts + 1):
+                try:
+                    router_result = await self._router.call_with_metadata(
+                        model_input=current_prompt,
+                        output_type=list[
+                            BehaviorFlagDraft
+                        ],  # pydantic-ai validates each item against schema
+                    )
+                except AssertionError:
+                    raise
+                except Exception as exc:
+                    router_context = self._extract_router_failure_context(exc)
+                    failure = self._classify_dispatch_failure(exc)
+                    decision = decide_retry(
+                        failure,
+                        attempt_number=attempt_number,
+                        max_attempts=max_attempts,
+                        feedback_max_chars=self._config.retry.feedback_max_chars,
+                    )
+                    recovery_attempts.append(
+                        RecoveryAttempt(
+                            attempt_number=attempt_number,
+                            executor="sdk",
+                            failure_class=failure.failure_class,
+                            reason=failure.reason,
+                            error=failure.error,
+                            details={
+                                **failure.details,
+                                **router_context["trace_details"],
+                            },
+                        )
+                    )
+                    trace = RecoveryTrace(
+                        attempts=list(recovery_attempts),
+                        final_decision=decision,
+                    )
 
-            if fallback_was_attempted and fallback_error:
-                logger.warning(
-                    f"SDK dispatch: DC4 — both providers failed for session {session_id!r}. "
-                    f"primary_error={primary_error!r} fallback_error={fallback_error!r}"
+                    logger.warning(
+                        f"SDK dispatch: attempt {attempt_number}/{max_attempts} failed "
+                        f"for session {session_id!r}. "
+                        f"failure_class={failure.failure_class.value!r} "
+                        f"retry_mode={decision.retry_mode.value!r} "
+                        f"should_retry={decision.should_retry}"
+                    )
+
+                    if decision.should_retry:
+                        current_prompt = (
+                            self._augment_prompt_with_retry_feedback(
+                                system_prompt,
+                                decision.retry_feedback,
+                            )
+                            if decision.retry_mode is RetryMode.OUTPUT_REPAIR
+                            else system_prompt
+                        )
+                        continue
+
+                    return self._make_failure_output(
+                        session_id=session_id,
+                        failure=failure,
+                        decision=decision,
+                        trace=trace,
+                        retry_count=attempt_number - 1,
+                        fallback_used=router_context["fallback_used"],
+                        extra_error_details=router_context["error_details"],
+                    )
+
+                logger.info(
+                    f"SDK dispatch: success for session {session_id!r} "
+                    f"primary_model={self._primary_model_name!r} "
+                    f"attempt={attempt_number}/{max_attempts} "
+                    f"fallback_used={router_result.fallback_used}"
                 )
-                return self._make_dual_failure_output(
+                return self._make_success_output(
                     session_id=session_id,
-                    primary_error=primary_error,
-                    fallback_error=fallback_error,
-                )
-            else:
-                logger.warning(
-                    f"SDK dispatch: primary failed, no fallback for session {session_id!r}. "
-                    f"error={primary_error!r}"
-                )
-                return self._make_single_failure_output(
-                    session_id=session_id,
-                    error=str(exc),
+                    behavior_flags=(
+                        router_result.output if isinstance(router_result.output, list) else []
+                    ),
+                    fallback_used=router_result.fallback_used,
+                    retry_count=attempt_number - 1,
                 )
 
-        except RouterTerminalError as exc:
-            logger.warning(f"SDK dispatch: terminal error for session {session_id!r}: {exc}")
-            return self._make_single_failure_output(
-                session_id=session_id,
-                error=str(exc),
-            )
+            raise RuntimeError("SDK dispatch retry loop exited without returning")
 
+        except AssertionError:
+            raise
         except Exception as exc:
             logger.error(f"SDK dispatch: unexpected error for session {session_id!r}: {exc}")
-            return self._make_single_failure_output(
-                session_id=session_id,
+            failure = ClassifiedFailure(
+                failure_class=FailureClass.FATAL_EXECUTION_ERROR,
+                reason="fatal_execution_error",
                 error=f"{type(exc).__name__}: {exc}",
+            )
+            decision = RetryDecision(
+                should_retry=False,
+                retry_mode=RetryMode.NONE,
+                reason=failure.reason,
+                failure_class=failure.failure_class,
+                attempt_number=1,
+                max_attempts=1,
+                next_attempt_number=None,
+            )
+            trace = RecoveryTrace(
+                attempts=[
+                    RecoveryAttempt(
+                        attempt_number=1,
+                        executor="sdk",
+                        failure_class=failure.failure_class,
+                        reason=failure.reason,
+                        error=failure.error,
+                        details=dict(failure.details),
+                    )
+                ],
+                final_decision=decision,
+            )
+            return self._make_failure_output(
+                session_id=session_id,
+                failure=failure,
+                decision=decision,
+                trace=trace,
+                retry_count=0,
             )
 
     # ---------------------------------------------------------------------------
@@ -280,6 +342,7 @@ class SDKAnalysisDispatcher:
         session_id: str,
         behavior_flags: list[Any],
         fallback_used: bool,
+        retry_count: int = 0,
     ) -> AnalysisOutput:
         """Build a success AnalysisOutput for SDK dispatch.
 
@@ -332,17 +395,34 @@ class SDKAnalysisDispatcher:
                 "cli_agent": None,
                 "primary_model": self._primary_model_name,
                 "fallback_used": fallback_used,
-                "retry_count": 0,
+                "retry_count": retry_count,
                 "error_details": error_details,
             }
         )
 
-    def _make_single_failure_output(
+    def _make_failure_output(
         self,
         session_id: str,
-        error: str,
+        failure: ClassifiedFailure,
+        decision: RetryDecision,
+        trace: RecoveryTrace,
+        retry_count: int,
+        fallback_used: bool = False,
+        extra_error_details: dict[str, Any] | None = None,
     ) -> AnalysisOutput:
-        """Build a failure AnalysisOutput when only primary failed (no fallback attempted)."""
+        """Build a failure AnalysisOutput with shared recovery taxonomy details."""
+        error_details = build_recovery_error_details(
+            reason=decision.reason,
+            failure_class=decision.failure_class,
+            attempts=len(trace.attempts),
+            retry_exhausted=decision.reason == "retry_exhausted",
+            retry_mode=decision.retry_mode,
+            error=failure.error,
+            recovery_trace=trace.to_log_dict(),
+            extra_error_details=failure.details,
+            additional_error_details=extra_error_details,
+        )
+
         return AnalysisOutput.model_validate(
             {
                 "schema_version": "1.0",
@@ -352,53 +432,119 @@ class SDKAnalysisDispatcher:
                 "session_summary": {
                     "headline": "SDK analysis failed",
                     "key_findings": [],
-                    "body": f"SDK dispatch failure: {error}",
+                    "body": f"SDK dispatch failure: {failure.error}",
                 },
                 "dispatched_via": "sdk",
                 "cli_agent": None,
                 "primary_model": self._primary_model_name,
-                "fallback_used": False,
-                "retry_count": 0,
-                "error_details": {"error": error},
+                "fallback_used": fallback_used,
+                "retry_count": retry_count,
+                "error_details": error_details,
             }
         )
 
-    def _make_dual_failure_output(
-        self,
-        session_id: str,
-        primary_error: str,
-        fallback_error: str,
-    ) -> AnalysisOutput:
-        """Build a failure AnalysisOutput when BOTH primary and fallback failed (DC4).
+    def _extract_router_failure_context(self, exc: Exception) -> dict[str, Any]:
+        """Preserve SDK router trace evidence without changing shared taxonomy."""
 
-        DC4 enforcement: AnalysisOutput.check_cross_fields() validator requires
-        error_details to contain BOTH 'primary_error' and 'fallback_error' keys
-        when status='failure' AND fallback_used=True.
-        """
-        return AnalysisOutput.model_validate(
-            {
-                "schema_version": "1.0",
-                "session_id": session_id,
-                "status": "failure",
-                "behavior_flags": [],
-                "session_summary": {
-                    "headline": "SDK analysis failed (both providers)",
-                    "key_findings": [],
-                    "body": (
-                        f"SDK dispatch: both primary and fallback providers failed. "
-                        f"primary_error={primary_error!r} fallback_error={fallback_error!r}"
-                    ),
-                },
-                "dispatched_via": "sdk",
-                "cli_agent": None,
-                "primary_model": self._primary_model_name,
-                "fallback_used": True,
-                "retry_count": 0,
-                "error_details": {
-                    "primary_error": primary_error,
-                    "fallback_error": fallback_error,
-                },
+        if not isinstance(exc, RouterChainExhaustedError):
+            return {
+                "fallback_used": False,
+                "error_details": {},
+                "trace_details": {},
             }
+
+        attempt_classes = [attempt.exception_class for attempt in exc.attempts]
+        extra_error_details: dict[str, Any] = {"attempt_classes": attempt_classes}
+        fallback_used = len(exc.attempts) > 1
+
+        if fallback_used:
+            assert exc.attempts[0].model_name == self._primary_spec.name, (
+                f"attempts ordering violated: expected primary={self._primary_spec.name!r}, "
+                f"got attempts[0].model_name={exc.attempts[0].model_name!r}. "
+                f"If LLMRouter changed attempt ordering, update _extract_router_failure_context "
+                f"to find the primary attempt by model_name rather than index."
+            )
+            extra_error_details["primary_error"] = str(exc.attempts[0])
+            extra_error_details["fallback_error"] = str(exc.attempts[1])
+
+        return {
+            "fallback_used": fallback_used,
+            "error_details": extra_error_details,
+            "trace_details": extra_error_details,
+        }
+
+    def _classify_dispatch_failure(self, exc: Exception) -> ClassifiedFailure:
+        """Classify wrapped SDK failures without losing validation semantics."""
+
+        validation_error = self._find_validation_error(exc)
+        if validation_error is None:
+            failure = classify_output_failure(exc)
+            if (
+                failure.failure_class is FailureClass.FATAL_EXECUTION_ERROR
+                and type(exc).__name__ not in failure.error
+            ):
+                return ClassifiedFailure(
+                    failure_class=failure.failure_class,
+                    reason=failure.reason,
+                    error=f"{type(exc).__name__}: {failure.error}",
+                    details=dict(failure.details),
+                )
+            return failure
+
+        failure = classify_output_failure(validation_error)
+        if str(exc) == str(validation_error):
+            return failure
+
+        return ClassifiedFailure(
+            failure_class=failure.failure_class,
+            reason=failure.reason,
+            error=failure.error,
+            details={
+                **failure.details,
+                "outer_error": str(exc),
+            },
+        )
+
+    def _find_validation_error(self, exc: Exception) -> ValidationError | None:
+        """Find the first ValidationError in __cause__/__context__ chains."""
+
+        queue: list[BaseException] = [exc]
+        seen: set[int] = set()
+
+        while queue:
+            current = queue.pop(0)
+            current_id = id(current)
+            if current_id in seen:
+                continue
+            seen.add(current_id)
+
+            if isinstance(current, ValidationError):
+                return current
+
+            cause = getattr(current, "__cause__", None)
+            context = getattr(current, "__context__", None)
+            if isinstance(cause, BaseException):
+                queue.append(cause)
+            if isinstance(context, BaseException):
+                queue.append(context)
+
+        return None
+
+    def _augment_prompt_with_retry_feedback(
+        self,
+        original_prompt: str,
+        retry_feedback: str,
+    ) -> str:
+        """Append shared output-repair feedback to the next SDK attempt."""
+
+        if not retry_feedback:
+            return original_prompt
+
+        return (
+            original_prompt
+            + "\n\n[IMPORTANT: Previous attempt failed validation -- fix it]\n"
+            + retry_feedback
+            + "\n\nReturn ONLY the requested structured output.\n"
         )
 
 

@@ -1,0 +1,36 @@
+feature: analysis-output-recovery-phase2
+coverage_type: planned
+
+scenarios:
+  - name: "DC1 — CLI and SDK classify schema mismatch consistently"
+    type: death_path
+    given: "CLI output and SDK structured-output both fail validation for the same missing field pattern"
+    when: "shared classifier runs"
+    then:
+      - "both paths produce failure_class=schema_mismatch"
+      - "both paths apply the same output-repair retry policy"
+
+  - name: "DC2 — transport timeout is not treated as output-repair retry"
+    type: death_path
+    given: "provider or subprocess transport times out"
+    when: "failure is classified"
+    then:
+      - "failure class is transport_timeout"
+      - "feedback builder does not emit schema-fix instructions"
+
+  - name: "DC3 — fatal auth/config failure short-circuits retry"
+    type: death_path
+    given: "SDK path has invalid provider credentials"
+    when: "dispatcher classifies the failure"
+    then:
+      - "failure class is fatal_auth_or_config"
+      - "retry decision is no-retry"
+
+  - name: "Happy path — SDK output-repair retry recovers on second attempt"
+    type: happy_path
+    given: "first SDK output fails validation, second succeeds"
+    when: "shared recovery layer drives retry"
+    then:
+      - "result is success"
+      - "retry_count is 1"
+      - "error_details taxonomy matches CLI semantics"

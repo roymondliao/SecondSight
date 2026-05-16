@@ -1,0 +1,69 @@
+feature: analysis-output-recovery-phase2
+
+signal_lost_initial: 6
+
+budget:
+  max_rounds: 3
+  reviewer_retry_limit: 2
+
+rounds:
+  - round: 1
+    signal_lost_before: 6
+    budget_context:
+      remaining_rounds_at_start: 2
+      stagnation_count_at_start: 0
+      net_rot_previous_round: 0
+      strategy_hint: converge
+    items_triaged: 6
+    triage_result:
+      fix:
+        - description: "CLI/SDK recovery error_details canonical fields were still assembled separately, so future taxonomy changes required synchronized dispatcher edits."
+          rationale: "This was current-scope phase2 recovery debt, not executor adapter architecture."
+      accept:
+        - description: "Task 2 expanded beyond its original file map by adding LLMRouter.call_with_metadata / RouterCallResult."
+          expiry_date: "2026-06-16"
+          rationale: "Router cooperation is required for honest SDK fallback attribution; this is a planning/file-map discipline scar, not a runtime defect."
+      defer:
+        - description: "Config-only auth/provider failures still rely on message heuristics when no typed exception is available."
+          deferred_to: "changes/2026-05-16_executor-failure-evidence-adapters"
+          rationale: "This requires an executor failure evidence adapter contract, not a local phase2 retry-policy fix."
+        - description: "Config-only SDK auth/provider failures still rely on shared message markers."
+          deferred_to: "changes/2026-05-16_executor-failure-evidence-adapters"
+          rationale: "SDK should emit controlled evidence through router/framework boundaries; CLI should emit adapter evidence."
+        - description: "FailureClass.NORMALIZABLE_FORMAT_ERROR exists but current call sites do not emit it."
+          deferred_to: "future recovery observability follow-up"
+          rationale: "Current CLI normalizes wrapper noise before validation; normalized success is not a failure, and replacing JSON/schema failure classes would hide the real retry cause."
+        - description: "AnalysisOutput.error_details remains an untyped dict, so schema-level enforcement of shared recovery fields is not global."
+          deferred_to: "future AnalysisOutput contract migration"
+          rationale: "Full schema enforcement would affect non-recovery failure paths such as runtime dispatch guards and should get a compatibility plan."
+        - description: "A future dispatcher path could bypass recovery helpers and hand-build error_details incorrectly."
+          deferred_to: "future AnalysisOutput contract migration"
+          rationale: "Round 1 reduced current CLI/SDK drift with a shared builder, but global prevention requires schema-level typing."
+    fixes_applied: 1
+    fixes_scar_count: 0
+    budget_spent:
+      implementer_dispatches: 0
+      reviewer_dispatches: 0
+      reviewer_retries: 0
+      validation_runs: 1
+    evidence_gained:
+      - "Added build_recovery_error_details() as the single shared recovery envelope builder."
+      - "CLI and SDK failure-output builders now call build_recovery_error_details() instead of assembling canonical fields independently."
+      - "tests/analysis/test_output_recovery.py covers canonical envelope construction and raw collision preservation."
+      - "Targeted suite passed: 103 tests across output_recovery, CLI dispatcher, SDK dispatcher, and router."
+      - "Created changes/2026-05-16_executor-failure-evidence-adapters to capture the broader adapter/evidence architecture feature."
+    residual_risk:
+      - "Executor-specific message heuristics remain in phase2 code until the new adapter evidence feature is planned and implemented."
+      - "AnalysisOutput.error_details is still a dict; schema-level taxonomy enforcement remains deferred."
+    signal_lost_after: 5
+    decision: stop
+
+summary:
+  rounds_executed: 1
+  signal_lost: "6 -> 5"
+  items_fixed: 1
+  items_accepted: 1
+  items_deferred: 5
+  new_feature_changes:
+    - changes/2026-05-16_executor-failure-evidence-adapters
+  next_gate: security-privacy-review

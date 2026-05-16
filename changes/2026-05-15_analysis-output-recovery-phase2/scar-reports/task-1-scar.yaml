@@ -1,0 +1,31 @@
+task_id: task-1
+completion_status: done
+
+known_shortcuts:
+  - description: "FailureClass.NORMALIZABLE_FORMAT_ERROR is available for the shared contract, but current Phase 1 call sites do not emit it yet."
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: "Config-only failures that arrive without typed auth/config exceptions still fall back to message heuristics, so upstream library message drift can misclassify some provider failures."
+
+assumptions_made:
+  - assumption: "RouterChainExhaustedError.attempts records expose exception_class values that the shared classifier can map back to timeout/rate-limit/api transport buckets."
+    verified: true
+    note: "Verified by tests/analysis/test_output_recovery.py::TestClassification::test_router_chain_attempt_trace_maps_to_shared_transport_taxonomy against the project RouterChainExhaustedError + AttemptRecord types."
+
+debt_registered: true
+debt_location: "src/secondsight/analysis/output_recovery.py:396 and src/secondsight/analysis/output_recovery.py:483"
+
+resolved_items:
+  - original_section: "assumptions_made"
+    original_description: "RouterChainExhaustedError.attempts records expose exception_class values that the shared classifier can map back to timeout/rate-limit/api transport buckets."
+    resolution: "Added a parameterized test that exercises the real RouterChainExhaustedError/AttemptRecord types for timeout, rate-limit, and API-connection traces."
+  - original_section: "silent_failure_conditions"
+    original_description: "RouterChainExhaustedError with AuthenticationError attempts was being misclassified as transport_api_error and could incorrectly trigger transport retry."
+    resolution: "Restricted attempt-trace classification to the router exhaustion type, used ordered attempt classes, and mapped AuthenticationError terminal exhaustion to fatal_auth_or_config with RetryMode.NONE."
+  - original_section: "known_shortcuts"
+    original_description: "RecoveryTrace.final_decision accepted Mapping[str, Any], weakening the shared internal contract."
+    resolution: "Tightened RecoveryTrace.final_decision to RetryDecision | None and added a runtime guard plus tests for both accepted and rejected shapes."
+  - original_section: "silent_failure_conditions"
+    original_description: "Exception wrappers could hide typed auth/config or transport failures behind outer RuntimeError messages, forcing message-heuristic classification."
+    resolution: "Added exception-chain walking for auth/config and transport detection so preserved cause/context types are classified before falling back to message heuristics."

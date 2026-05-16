@@ -1,0 +1,40 @@
+task_id: task-2
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: "Task 2 had to expand beyond the original file map and add LLMRouter.call_with_metadata / RouterCallResult because SDK dispatcher cannot honestly infer fallback success attribution without router cooperation."
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: "Config-only SDK auth/provider failures that arrive without typed auth/config exceptions still rely on shared message markers, so upstream provider message drift can misclassify them."
+    deferred_to_feature_iteration: true
+
+assumptions_made:
+  - assumption: "RouterTerminalError keeps chained ValidationError and AuthenticationError causes reachable through __cause__ or __context__, allowing the dispatcher to reuse the shared classifier instead of reimplementing provider-specific parsing."
+    verified: true
+    note: "Verified by new SDK dispatcher tests that drive schema-retry and auth no-retry behavior through wrapped exceptions."
+    deferred_to_feature_iteration: false
+  - assumption: "Appending shared retry feedback to the rendered SDK prompt preserves the pydantic-ai output_type contract while still giving the model enough repair guidance on the next attempt."
+    verified: true
+    note: "Verified by tests that inspect the second router call for schema retries and confirm transport retries do not receive schema feedback."
+    deferred_to_feature_iteration: false
+
+debt_registered: true
+debt_location: "src/secondsight/analysis/output_recovery.py auth/config message heuristics; src/secondsight/sdk/router.py call_with_metadata contract"
+
+resolved_items:
+  - original_section: "assumptions_made"
+    original_description: "RouterTerminalError-wrapped ValidationError can be sent directly to the shared classifier and still produce schema-mismatch retry behavior."
+    resolution: "Added dispatcher-side ValidationError chain unwrapping before shared classification and covered both retry-success and retry-exhausted paths in tests."
+  - original_section: "silent_failure_conditions"
+    original_description: "Fatal SDK execution failures can lose the concrete exception type in error_details, weakening forensics."
+    resolution: "Fatal execution failures now prefix error_details.error with the exception class name while retaining shared reason/failure_class/recovery_trace fields."
+  - original_section: "known_shortcuts"
+    original_description: "SDK success outputs still set fallback_used=false even when the fallback model wins, because LLMRouter.call() does not expose which model produced a successful result."
+    resolution: "Added RouterCallResult and LLMRouter.call_with_metadata(), wired SDK success output to per-call router attribution, and replaced dispatch-patched fallback success tests with real dispatcher path coverage."
+  - original_section: "known_shortcuts"
+    original_description: "Router success attribution was briefly represented as mutable instance side-channel state, which could be corrupted by concurrent SDK dispatches sharing a router."
+    resolution: "Removed the mutable side-channel and changed SDK dispatcher to consume per-call RouterCallResult from call_with_metadata(); then removed unused RouterCallResult.model_name so the public contract only exposes consumed fields."
+  - original_section: "silent_failure_conditions"
+    original_description: "Dispatcher-built AnalysisOutput validation errors could be caught inside the model retry loop and misclassified as model output schema failures."
+    resolution: "Moved success output construction outside the router-call retry catch and made unexpected dispatcher failures return fatal_execution_error without output-repair retry."

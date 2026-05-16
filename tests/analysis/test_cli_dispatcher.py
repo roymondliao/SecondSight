@@ -31,11 +31,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from secondsight.analysis import cli_dispatcher as cli_dispatcher_module
 from secondsight.analysis.cli_dispatcher import (
     CLIAnalysisDispatcher,
     OpencodeNotSupportedError,
 )
-from secondsight.config.schema import AnalysisCLIConfig, AnalysisCLIModelsConfig, AnalysisConfig
+from secondsight.config.schema import (
+    AnalysisCLIConfig,
+    AnalysisCLIModelsConfig,
+    AnalysisConfig,
+    AnalysisRetryConfig,
+)
 from secondsight.state import SecondSightState
 
 # ---------------------------------------------------------------------------
@@ -252,7 +258,10 @@ class TestDC1_SubprocessTimeout:
 
         assert result.status == "unknown"
         assert result.error_details is not None
-        assert result.error_details["reason"] == "timeout"
+        assert result.error_details["reason"] == "transport_timeout"
+        assert result.error_details["failure_class"] == "transport_timeout"
+        assert result.error_details["attempts"] == 1
+        assert result.error_details["retry_exhausted"] is False
 
     @pytest.mark.asyncio
     async def test_timeout_sends_sigterm_before_sigkill(self, tmp_path: Path) -> None:
@@ -470,8 +479,10 @@ class TestDC2_SchemaParseRetry:
 
         assert result.status == "failure"
         assert result.error_details is not None
-        assert result.error_details["reason"] == "json_decode"
+        assert result.error_details["reason"] == "retry_exhausted"
+        assert result.error_details["failure_class"] == "json_decode"
         assert result.error_details["attempts"] == 3  # initial + 2 retries
+        assert result.error_details["retry_exhausted"] is True
         assert result.retry_count == 2
         # Dispatcher must try 3 times total (initial + 2 retries)
         assert call_count == 3
@@ -499,8 +510,54 @@ class TestDC2_SchemaParseRetry:
 
         assert result.status == "failure"
         assert result.error_details is not None
-        assert result.error_details["reason"] == "schema_mismatch"
+        assert result.error_details["reason"] == "retry_exhausted"
+        assert result.error_details["failure_class"] == "schema_mismatch"
+        assert result.error_details["attempts"] == 3
+        assert result.error_details["retry_exhausted"] is True
         assert result.retry_count == 2
+
+    @pytest.mark.asyncio
+    async def test_schema_retry_exhaustion_uses_shared_taxonomy_and_keeps_cli_stderr(
+        self, tmp_path: Path
+    ) -> None:
+        """Schema exhaustion must align with SDK fields without dropping CLI stderr evidence."""
+        bad_json = json.dumps({"status": "ok"})
+        dispatcher = _make_dispatcher(
+            config=AnalysisConfig(
+                timeout_seconds=30,
+                cli=AnalysisCLIConfig(
+                    default_agent="claude_code",
+                    models=AnalysisCLIModelsConfig(),
+                ),
+                retry=AnalysisRetryConfig(
+                    output_repair_max_attempts=0,
+                    feedback_max_chars=400,
+                ),
+            )
+        )
+
+        async def create_proc(*args, **kwargs):
+            return _make_proc_mock(
+                stdout=bad_json, stderr="schema-warning: missing session summary"
+            )
+
+        with patch(
+            "secondsight.analysis.cli_dispatcher.asyncio.create_subprocess_exec",
+            side_effect=create_proc,
+        ):
+            result = await dispatcher.dispatch(
+                session_id="sess-schema-exhausted",
+                project_root=tmp_path,
+                session_payload={"events": []},
+            )
+
+        assert result.status == "failure"
+        assert result.error_details is not None
+        assert result.error_details["reason"] == "retry_exhausted"
+        assert result.error_details["failure_class"] == "schema_mismatch"
+        assert result.error_details["attempts"] == 1
+        assert result.error_details["retry_exhausted"] is True
+        assert result.error_details["stderr"] == "schema-warning: missing session summary"
 
     @pytest.mark.asyncio
     async def test_empty_stdout_treated_as_json_decode_failure(self, tmp_path: Path) -> None:
@@ -522,7 +579,10 @@ class TestDC2_SchemaParseRetry:
 
         assert result.status == "failure"
         assert result.error_details is not None
-        assert result.error_details["reason"] == "json_decode"
+        assert result.error_details["reason"] == "retry_exhausted"
+        assert result.error_details["failure_class"] == "json_decode"
+        assert result.error_details["attempts"] == 3
+        assert result.error_details["retry_exhausted"] is True
 
     @pytest.mark.asyncio
     async def test_retry_prompt_uses_structured_feedback(self, tmp_path: Path) -> None:
@@ -615,8 +675,11 @@ class TestDC6_SubprocessNonZeroExit:
 
         assert result.status == "failure"
         assert result.error_details is not None
-        assert result.error_details["reason"] == "subprocess_exit"
+        assert result.error_details["reason"] == "fatal_execution_error"
+        assert result.error_details["failure_class"] == "fatal_execution_error"
         assert result.error_details["exit_code"] == 127
+        assert result.error_details["attempts"] == 1
+        assert result.error_details["retry_exhausted"] is False
         # NO retry on non-zero exit
         assert call_count == 1
         assert result.retry_count == 0
@@ -709,7 +772,8 @@ class TestDC6_SubprocessNonZeroExit:
 
         assert result.status == "failure"
         assert result.error_details is not None
-        assert result.error_details["reason"] == "subprocess_exit"
+        assert result.error_details["reason"] == "fatal_execution_error"
+        assert result.error_details["failure_class"] == "fatal_execution_error"
         assert result.error_details["api_error_status"] == 429
         assert result.error_details["message"] == "You've hit your org's monthly usage limit"
         assert any("api_error_status=429" in record.message for record in caplog.records)
@@ -789,6 +853,10 @@ class TestDC_UnknownAgent:
         assert result.cli_agent == "unknown", (
             f"Expected cli_agent='unknown' for state_missing, got {result.cli_agent!r}"
         )
+        assert result.error_details is not None
+        assert result.error_details["reason"] == "fatal_execution_error"
+        assert result.error_details["failure_class"] == "fatal_execution_error"
+        assert result.error_details["executor_reason"] == "state_missing"
         mock_create.assert_not_called()
 
 
@@ -1086,6 +1154,80 @@ class TestAutoAgentResolution:
 # ===========================================================================
 # UNIT TESTS -- happy path
 # ===========================================================================
+
+
+class TestSharedObservabilityContract:
+    """Shared observability contract for non-retryable CLI failures."""
+
+    def test_failure_output_namespaces_colliding_raw_error_details(self) -> None:
+        """CLI raw evidence must not overwrite shared observability fields."""
+        result = cli_dispatcher_module._make_failure_output(
+            session_id="sess-cli-collision",
+            reason="schema_mismatch",
+            failure_class="schema_mismatch",
+            agent_name="claude_code",
+            attempts=1,
+            error="validated error",
+            extra_error_details={
+                "reason": "raw reason",
+                "failure_class": "raw class",
+                "attempts": 99,
+                "error": "raw provider error",
+                "stderr_excerpt": "bad output",
+            },
+        )
+
+        assert result.error_details is not None
+        assert result.error_details["reason"] == "schema_mismatch"
+        assert result.error_details["failure_class"] == "schema_mismatch"
+        assert result.error_details["attempts"] == 1
+        assert result.error_details["error"] == "validated error"
+        assert result.error_details["stderr_excerpt"] == "bad output"
+        assert result.error_details["raw_error_details"] == {
+            "reason": "raw reason",
+            "failure_class": "raw class",
+            "attempts": 99,
+            "error": "raw provider error",
+        }
+
+    @pytest.mark.asyncio
+    async def test_subprocess_exit_uses_shared_failure_taxonomy(self, tmp_path: Path) -> None:
+        """CLI non-zero exit must emit shared taxonomy fields plus CLI-specific evidence."""
+        dispatcher = _make_dispatcher(
+            config=AnalysisConfig(
+                timeout_seconds=30,
+                cli=AnalysisCLIConfig(
+                    default_agent="claude_code",
+                    models=AnalysisCLIModelsConfig(),
+                ),
+                retry=AnalysisRetryConfig(
+                    output_repair_max_attempts=2,
+                    feedback_max_chars=400,
+                ),
+            )
+        )
+
+        async def create_proc(*args, **kwargs):
+            return _make_proc_mock(stdout="", stderr="fatal cli exit", returncode=1)
+
+        with patch(
+            "secondsight.analysis.cli_dispatcher.asyncio.create_subprocess_exec",
+            side_effect=create_proc,
+        ):
+            result = await dispatcher.dispatch(
+                session_id="sess-cli-exit",
+                project_root=tmp_path,
+                session_payload={"events": []},
+            )
+
+        assert result.status == "failure"
+        assert result.error_details is not None
+        assert result.error_details["reason"] == "fatal_execution_error"
+        assert result.error_details["failure_class"] == "fatal_execution_error"
+        assert result.error_details["attempts"] == 1
+        assert result.error_details["retry_exhausted"] is False
+        assert result.error_details["exit_code"] == 1
+        assert result.error_details["stderr"] == "fatal cli exit"
 
 
 class TestHappyPath:

@@ -212,12 +212,6 @@ class TestDeathPaths:
         """
         import litellm
 
-        rate_limit_exc = litellm.RateLimitError(
-            message="rate limited",
-            llm_provider="openai",
-            model="gpt-4o-mini",
-        )
-
         factories_called: list[str] = []
 
         def _factory(spec: ModelSpec) -> Any:
@@ -374,11 +368,12 @@ class TestDegradation:
         )
 
         with caplog.at_level(logging.INFO):
-            result = await router.call(model_input="test prompt", output_type=str)
+            result = await router.call_with_metadata(model_input="test prompt", output_type=str)
 
-        assert result == "fallback output"
+        assert result.output == "fallback output"
         assert "gpt-4o-mini" in call_log
         assert "gemini-2.0-flash" in call_log
+        assert result.fallback_used is True
 
         # Log must mention fallback_triggered.
         assert "fallback" in caplog.text.lower()
@@ -420,9 +415,10 @@ class TestHappyPaths:
         )
 
         with caplog.at_level(logging.INFO):
-            result = await router.call(model_input="hello", output_type=str)
+            result = await router.call_with_metadata(model_input="hello", output_type=str)
 
-        assert result == "primary output"
+        assert result.output == "primary output"
+        assert result.fallback_used is False
         # Only the primary model was instantiated.
         assert call_log == ["gpt-4o-mini"], f"Expected only primary to be called, got: {call_log}"
 

@@ -14,12 +14,15 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 
-from secondsight.analysis.output import AnalysisOutput
 from secondsight.storage.analysis_outputs_table import analysis_outputs, metadata
 from secondsight.storage.db_engine import DBEngine
+
+if TYPE_CHECKING:
+    from secondsight.analysis.output import AnalysisOutput
 
 
 class AnalysisOutputsRepository:

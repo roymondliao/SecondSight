@@ -9,19 +9,30 @@ Death cases:
 
 from __future__ import annotations
 
-from typing import Any
-from unittest.mock import patch
+from collections.abc import Callable
+import json
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import litellm
 import pytest
 from pydantic import ValidationError
 
 from secondsight.analysis.output import AnalysisOutput
+from secondsight.analysis.schemas import BehaviorFlagDraft
 from secondsight.config.schema import (
     AnalysisConfig,
     AnalysisCLIConfig,
+    AnalysisRetryConfig,
     AnalysisSDKConfig,
 )
-from secondsight.sdk.router import RouterTerminalError
+from secondsight.state import SecondSightState
+from secondsight.sdk.router import (
+    AttemptRecord,
+    RouterCallResult,
+    RouterChainExhaustedError,
+    RouterTerminalError,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -41,6 +52,9 @@ def _make_sdk_config(
     primary_model: str = _TEST_PRIMARY_MODEL,
     fallback_model: str = _TEST_FALLBACK_MODEL,
     timeout_seconds: int = 30,
+    retry_enabled: bool = True,
+    output_repair_max_attempts: int = 2,
+    feedback_max_chars: int = 1200,
 ) -> AnalysisConfig:
     return AnalysisConfig(
         timeout_seconds=timeout_seconds,
@@ -48,6 +62,11 @@ def _make_sdk_config(
         sdk=AnalysisSDKConfig(
             primary_model=primary_model,
             fallback_model=fallback_model,
+        ),
+        retry=AnalysisRetryConfig(
+            enabled=retry_enabled,
+            output_repair_max_attempts=output_repair_max_attempts,
+            feedback_max_chars=feedback_max_chars,
         ),
     )
 
@@ -79,6 +98,379 @@ def _make_valid_output_dict(
     return d
 
 
+class _FakeRouter:
+    def __init__(self, responses: list[Any]) -> None:
+        self._responses = list(responses)
+        self.calls: list[dict[str, Any]] = []
+
+    async def call(self, *, model_input: Any, output_type: type[Any]) -> Any:
+        result = await self.call_with_metadata(model_input=model_input, output_type=output_type)
+        return result.output
+
+    async def call_with_metadata(
+        self,
+        *,
+        model_input: Any,
+        output_type: type[Any],
+    ) -> RouterCallResult:
+        self.calls.append({"model_input": model_input, "output_type": output_type})
+        response = self._responses.pop(0)
+        if callable(response):
+            return response()
+        if isinstance(response, BaseException):
+            raise response
+        if isinstance(response, RouterCallResult):
+            return response
+        return RouterCallResult(
+            output=response,
+            fallback_used=False,
+        )
+
+
+def _make_router_terminal_error_with_cause(cause: Exception) -> Callable[[], None]:
+    def _raise() -> None:
+        raise RouterTerminalError(f"terminal_error: {type(cause).__name__}: {cause}") from cause
+
+    return _raise
+
+
+def _make_schema_validation_router_error() -> Callable[[], None]:
+    try:
+        BehaviorFlagDraft.model_validate(
+            {
+                "flag_type": "NOT_A_REAL_FLAG",
+                "event_ids": ["evt-1"],
+                "reason": "bad flag",
+                "confidence": "high",
+            }
+        )
+    except ValidationError as exc:
+        return _make_router_terminal_error_with_cause(exc)
+
+    raise AssertionError("Expected invalid BehaviorFlagDraft payload to raise ValidationError")
+
+
+def _make_cli_proc_mock(
+    stdout: str = "",
+    stderr: str = "",
+    returncode: int = 0,
+) -> MagicMock:
+    mock_proc = MagicMock()
+    mock_proc.returncode = returncode
+    mock_proc.communicate = AsyncMock(return_value=(stdout.encode(), stderr.encode()))
+    mock_proc.kill = MagicMock()
+    mock_proc.terminate = MagicMock()
+    mock_proc.wait = AsyncMock(return_value=None)
+    return mock_proc
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 death tests: shared recovery adoption
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_structured_output_validation_failure_enters_output_repair_retry():
+    """Structured output validation failure must use shared output-repair retry."""
+    from secondsight.analysis.sdk_dispatcher import SDKAnalysisDispatcher
+
+    dispatcher = SDKAnalysisDispatcher(
+        config=_make_sdk_config(output_repair_max_attempts=1, feedback_max_chars=400),
+        resolved_keys={"anthropic": "sk-valid", "openai": "sk-openai-valid", "custom": ""},
+    )
+    fake_router = _FakeRouter([_make_schema_validation_router_error(), []])
+    cast(Any, dispatcher)._router = fake_router
+    cast(Any, dispatcher)._build_system_prompt = lambda session_payload: "BASE PROMPT"
+
+    output = await dispatcher.dispatch(
+        session_id="sess-schema-retry",
+        session_payload={"events": []},
+    )
+
+    assert output.status == "success"
+    assert output.retry_count == 1
+    assert len(fake_router.calls) == 2, "Schema mismatch must trigger one shared retry"
+    assert (
+        "Previous output did not match the required JSON schema."
+        in fake_router.calls[1]["model_input"]
+    )
+    assert "Fix the schema issues below" in fake_router.calls[1]["model_input"]
+
+
+@pytest.mark.asyncio
+async def test_provider_auth_config_failure_is_no_retry():
+    """Provider auth/config failure must fail fast with shared fatal classification."""
+    from secondsight.analysis.sdk_dispatcher import SDKAnalysisDispatcher
+
+    dispatcher = SDKAnalysisDispatcher(
+        config=_make_sdk_config(output_repair_max_attempts=2),
+        resolved_keys={"anthropic": "sk-valid", "openai": "sk-openai-valid", "custom": ""},
+    )
+    auth_error = litellm.AuthenticationError(
+        message="bad api key",
+        llm_provider="openai",
+        model=_TEST_PRIMARY_MODEL,
+    )
+    fake_router = _FakeRouter([_make_router_terminal_error_with_cause(auth_error)])
+    cast(Any, dispatcher)._router = fake_router
+    cast(Any, dispatcher)._build_system_prompt = lambda session_payload: "BASE PROMPT"
+
+    output = await dispatcher.dispatch(
+        session_id="sess-auth-fail",
+        session_payload={"events": []},
+    )
+
+    assert output.status == "failure"
+    assert output.retry_count == 0
+    assert len(fake_router.calls) == 1, "Fatal auth/config failures must not retry"
+    assert output.error_details is not None
+    assert output.error_details["reason"] == "fatal_auth_or_config"
+    assert output.error_details["failure_class"] == "fatal_auth_or_config"
+    assert output.error_details["retry_exhausted"] is False
+
+
+@pytest.mark.asyncio
+async def test_transport_timeout_uses_transport_classification_not_schema_feedback():
+    """Transport timeout must be classified without spending output-repair retry budget."""
+    from secondsight.analysis.sdk_dispatcher import SDKAnalysisDispatcher
+
+    dispatcher = SDKAnalysisDispatcher(
+        config=_make_sdk_config(output_repair_max_attempts=1),
+        resolved_keys={"anthropic": "sk-valid", "openai": "sk-openai-valid", "custom": ""},
+    )
+    timeout_error = RouterChainExhaustedError(
+        "chain_exhausted after transport timeout",
+        attempts=[
+            AttemptRecord(
+                model_name=_TEST_PRIMARY_MODEL,
+                exception_class="TimeoutError",
+                duration_ms=125.0,
+            ),
+            AttemptRecord(
+                model_name=_TEST_FALLBACK_MODEL,
+                exception_class="TimeoutError",
+                duration_ms=120.0,
+            ),
+        ],
+    )
+    fake_router = _FakeRouter([timeout_error])
+    cast(Any, dispatcher)._router = fake_router
+    cast(Any, dispatcher)._build_system_prompt = lambda session_payload: "BASE PROMPT"
+
+    output = await dispatcher.dispatch(
+        session_id="sess-timeout-retry",
+        session_payload={"events": []},
+    )
+
+    assert output.status == "failure"
+    assert output.retry_count == 0
+    assert len(fake_router.calls) == 1
+    assert output.error_details is not None
+    assert output.error_details["reason"] == "transport_timeout"
+    assert output.error_details["failure_class"] == "transport_timeout"
+    assert output.error_details["retry_exhausted"] is False
+    assert output.error_details["retry_mode"] == "transport"
+
+
+@pytest.mark.asyncio
+async def test_schema_retry_exhaustion_reports_same_shared_taxonomy_in_cli_and_sdk(tmp_path):
+    """Same schema-mismatch exhaustion must produce the same shared observability fields."""
+    from secondsight.analysis.cli_dispatcher import CLIAnalysisDispatcher
+    from secondsight.analysis.sdk_dispatcher import SDKAnalysisDispatcher
+
+    retry_config = AnalysisRetryConfig(output_repair_max_attempts=0, feedback_max_chars=400)
+    cli_dispatcher = CLIAnalysisDispatcher(
+        config=AnalysisConfig(
+            timeout_seconds=30,
+            cli=AnalysisCLIConfig(),
+            retry=retry_config,
+        ),
+        state=SecondSightState(
+            schema_version="1.0",
+            init_agent="claude_code",
+            init_at="2026-05-14T00:00:00+00:00",
+            secondsight_version="0.1.0",
+        ),
+    )
+    sdk_dispatcher = SDKAnalysisDispatcher(
+        config=_make_sdk_config(output_repair_max_attempts=0, feedback_max_chars=400),
+        resolved_keys={"anthropic": "sk-valid", "openai": "sk-openai-valid", "custom": ""},
+    )
+    bad_cli_json = json.dumps({"status": "ok"})
+    fake_router = _FakeRouter([_make_schema_validation_router_error()])
+    cast(Any, sdk_dispatcher)._router = fake_router
+    cast(Any, sdk_dispatcher)._build_system_prompt = lambda session_payload: "BASE PROMPT"
+
+    with patch(
+        "secondsight.analysis.cli_dispatcher.asyncio.create_subprocess_exec",
+        return_value=_make_cli_proc_mock(stdout=bad_cli_json, stderr="cli-schema-stderr"),
+    ):
+        cli_output = await cli_dispatcher.dispatch(
+            session_id="sess-cross-mode-schema",
+            project_root=tmp_path,
+            session_payload={"events": []},
+        )
+
+    sdk_output = await sdk_dispatcher.dispatch(
+        session_id="sess-cross-mode-schema",
+        session_payload={"events": []},
+    )
+
+    assert cli_output.error_details is not None
+    assert sdk_output.error_details is not None
+    for field, expected in {
+        "reason": "retry_exhausted",
+        "failure_class": "schema_mismatch",
+        "attempts": 1,
+        "retry_exhausted": True,
+    }.items():
+        assert cli_output.error_details[field] == expected
+        assert sdk_output.error_details[field] == expected
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 unit tests: shared failure details
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_schema_retry_exhaustion_reports_shared_error_details():
+    """Exhausted schema retry must surface shared reason/class/attempt accounting."""
+    from secondsight.analysis.sdk_dispatcher import SDKAnalysisDispatcher
+
+    dispatcher = SDKAnalysisDispatcher(
+        config=_make_sdk_config(output_repair_max_attempts=0, feedback_max_chars=400),
+        resolved_keys={"anthropic": "sk-valid", "openai": "sk-openai-valid", "custom": ""},
+    )
+    fake_router = _FakeRouter([_make_schema_validation_router_error()])
+    cast(Any, dispatcher)._router = fake_router
+    cast(Any, dispatcher)._build_system_prompt = lambda session_payload: "BASE PROMPT"
+
+    output = await dispatcher.dispatch(
+        session_id="sess-schema-exhausted",
+        session_payload={"events": []},
+    )
+
+    assert output.status == "failure"
+    assert output.error_details is not None
+    assert output.error_details["reason"] == "retry_exhausted"
+    assert output.error_details["failure_class"] == "schema_mismatch"
+    assert output.error_details["attempts"] == 1
+    assert output.error_details["retry_exhausted"] is True
+
+
+@pytest.mark.asyncio
+async def test_transport_failure_preserves_sdk_attempt_trace_details():
+    """Router attempt classes must survive shared classification into SDK error_details."""
+    from secondsight.analysis.sdk_dispatcher import SDKAnalysisDispatcher
+
+    dispatcher = SDKAnalysisDispatcher(
+        config=_make_sdk_config(output_repair_max_attempts=0),
+        resolved_keys={"anthropic": "sk-valid", "openai": "sk-openai-valid", "custom": ""},
+    )
+    timeout_error = RouterChainExhaustedError(
+        "chain_exhausted after transport timeout",
+        attempts=[
+            AttemptRecord(
+                model_name=_TEST_PRIMARY_MODEL,
+                exception_class="TimeoutError",
+                duration_ms=125.0,
+            ),
+            AttemptRecord(
+                model_name=_TEST_FALLBACK_MODEL,
+                exception_class="TimeoutError",
+                duration_ms=120.0,
+            ),
+        ],
+    )
+    fake_router = _FakeRouter([timeout_error])
+    cast(Any, dispatcher)._router = fake_router
+    cast(Any, dispatcher)._build_system_prompt = lambda session_payload: "BASE PROMPT"
+
+    output = await dispatcher.dispatch(
+        session_id="sess-timeout-failure",
+        session_payload={"events": []},
+    )
+
+    assert output.status == "failure"
+    assert output.error_details is not None
+    assert output.error_details["failure_class"] == "transport_timeout"
+    assert output.error_details["reason"] == "transport_timeout"
+    assert output.error_details["attempts"] == 1
+    assert output.error_details["attempt_classes"] == ["TimeoutError", "TimeoutError"]
+    assert output.error_details["retry_exhausted"] is False
+
+
+def test_sdk_failure_output_namespaces_colliding_raw_error_details():
+    """SDK raw evidence must not overwrite shared observability fields."""
+    from secondsight.analysis.output_recovery import (
+        ClassifiedFailure,
+        FailureClass,
+        RecoveryAttempt,
+        RecoveryTrace,
+        RetryDecision,
+        RetryMode,
+    )
+    from secondsight.analysis.sdk_dispatcher import SDKAnalysisDispatcher
+
+    dispatcher = SDKAnalysisDispatcher.__new__(SDKAnalysisDispatcher)
+    cast(Any, dispatcher)._primary_model_name = _TEST_PRIMARY_MODEL
+    failure = ClassifiedFailure(
+        failure_class=FailureClass.TRANSPORT_TIMEOUT,
+        reason="transport_timeout",
+        error="provider timed out",
+        details={"reason": "raw reason", "error": "raw provider error", "request_id": "req-123"},
+    )
+    decision = RetryDecision(
+        should_retry=False,
+        retry_mode=RetryMode.TRANSPORT,
+        reason="transport_timeout",
+        failure_class=FailureClass.TRANSPORT_TIMEOUT,
+        attempt_number=1,
+        max_attempts=3,
+        next_attempt_number=None,
+    )
+    trace = RecoveryTrace(
+        attempts=[
+            RecoveryAttempt(
+                attempt_number=1,
+                executor="sdk",
+                failure_class=FailureClass.TRANSPORT_TIMEOUT,
+                reason="transport_timeout",
+                error="provider timed out",
+            )
+        ],
+        final_decision=decision,
+    )
+
+    output = dispatcher._make_failure_output(
+        session_id="sess-raw-collision",
+        failure=failure,
+        decision=decision,
+        trace=trace,
+        retry_count=0,
+        extra_error_details={
+            "failure_class": "raw class",
+            "attempts": 99,
+            "attempt_classes": ["TimeoutError"],
+        },
+    )
+
+    assert output.error_details is not None
+    assert output.error_details["reason"] == "transport_timeout"
+    assert output.error_details["failure_class"] == "transport_timeout"
+    assert output.error_details["error"] == "provider timed out"
+    assert output.error_details["attempts"] == 1
+    assert output.error_details["request_id"] == "req-123"
+    assert output.error_details["attempt_classes"] == ["TimeoutError"]
+    assert output.error_details["raw_error_details"] == {
+        "reason": "raw reason",
+        "error": "raw provider error",
+        "failure_class": "raw class",
+        "attempts": 99,
+    }
+
+
 # ---------------------------------------------------------------------------
 # DC4 death tests
 # ---------------------------------------------------------------------------
@@ -93,35 +485,35 @@ async def test_dc4_both_providers_fail_error_details_has_both_errors():
     """
     from secondsight.analysis.sdk_dispatcher import SDKAnalysisDispatcher
 
-    config = _make_sdk_config()
     resolved_keys = {"anthropic": "sk-valid", "openai": "sk-openai-valid", "custom": ""}
 
-    primary_error = "primary_model_failed: connection refused"
-    fallback_error = "fallback_model_failed: rate limit"
+    dispatcher = SDKAnalysisDispatcher(
+        config=_make_sdk_config(output_repair_max_attempts=0),
+        resolved_keys=resolved_keys,
+    )
+    chain_error = RouterChainExhaustedError(
+        "both providers failed",
+        attempts=[
+            AttemptRecord(
+                model_name=_TEST_PRIMARY_MODEL,
+                exception_class="TimeoutError",
+                duration_ms=100.0,
+            ),
+            AttemptRecord(
+                model_name=_TEST_FALLBACK_MODEL,
+                exception_class="RateLimitError",
+                duration_ms=125.0,
+            ),
+        ],
+    )
+    fake_router = _FakeRouter([chain_error])
+    cast(Any, dispatcher)._router = fake_router
+    cast(Any, dispatcher)._build_system_prompt = lambda session_payload: "BASE PROMPT"
 
-    async def _mock_dispatch(self, session_id, session_payload):
-        # Simulate both-fail path producing correct AnalysisOutput
-        return AnalysisOutput.model_validate(
-            _make_valid_output_dict(
-                session_id=session_id,
-                status="failure",
-                fallback_used=True,
-                error_details={
-                    "primary_error": primary_error,
-                    "fallback_error": fallback_error,
-                },
-            )
-        )
-
-    with patch.object(SDKAnalysisDispatcher, "dispatch", _mock_dispatch):
-        dispatcher = SDKAnalysisDispatcher(
-            config=config,
-            resolved_keys=resolved_keys,
-        )
-        output = await dispatcher.dispatch(
-            session_id="sess-dc4",
-            session_payload={"events": []},
-        )
+    output = await dispatcher.dispatch(
+        session_id="sess-dc4",
+        session_payload={"events": []},
+    )
 
     assert output.status == "failure"
     assert output.fallback_used is True
@@ -132,6 +524,45 @@ async def test_dc4_both_providers_fail_error_details_has_both_errors():
     assert "fallback_error" in output.error_details, (
         "DC4: error_details must have 'fallback_error' key"
     )
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_contract_validation_error_does_not_enter_output_repair_retry():
+    """Dispatcher-built AnalysisOutput validation errors are dispatcher bugs, not model output."""
+    from secondsight.analysis.sdk_dispatcher import SDKAnalysisDispatcher
+
+    dispatcher = SDKAnalysisDispatcher(
+        config=_make_sdk_config(output_repair_max_attempts=2),
+        resolved_keys={"anthropic": "sk-valid", "openai": "sk-openai-valid", "custom": ""},
+    )
+    fake_router = _FakeRouter([[]])
+    cast(Any, dispatcher)._router = fake_router
+    cast(Any, dispatcher)._build_system_prompt = lambda session_payload: "BASE PROMPT"
+
+    def _broken_success_output(*args: Any, **kwargs: Any) -> AnalysisOutput:
+        return AnalysisOutput.model_validate(
+            {
+                "schema_version": "1.0",
+                "session_id": "bad-output",
+                "status": "success",
+                "behavior_flags": [],
+                "dispatched_via": "sdk",
+                "primary_model": _TEST_PRIMARY_MODEL,
+            }
+        )
+
+    cast(Any, dispatcher)._make_success_output = _broken_success_output
+
+    output = await dispatcher.dispatch(
+        session_id="sess-dispatcher-contract-bug",
+        session_payload={"events": []},
+    )
+
+    assert len(fake_router.calls) == 1, "Dispatcher output bugs must not trigger model retry"
+    assert output.status == "failure"
+    assert output.error_details is not None
+    assert output.error_details["failure_class"] == "fatal_execution_error"
+    assert output.error_details["retry_exhausted"] is False
 
 
 @pytest.mark.asyncio
@@ -210,23 +641,15 @@ async def test_happy_path_primary_succeeds():
     config = _make_sdk_config()
     resolved_keys = {"anthropic": "sk-valid-for-test", "openai": "sk-openai", "custom": ""}
 
-    expected_output = AnalysisOutput.model_validate(
-        _make_valid_output_dict(
-            session_id="sess-happy",
-            status="success",
-            fallback_used=False,
-        )
+    dispatcher = SDKAnalysisDispatcher(config=config, resolved_keys=resolved_keys)
+    fake_router = _FakeRouter([RouterCallResult(output=[], fallback_used=False)])
+    cast(Any, dispatcher)._router = fake_router
+    cast(Any, dispatcher)._build_system_prompt = lambda session_payload: "BASE PROMPT"
+
+    output = await dispatcher.dispatch(
+        session_id="sess-happy",
+        session_payload={"events": []},
     )
-
-    async def _mock_dispatch(self, session_id, session_payload):
-        return expected_output
-
-    with patch.object(SDKAnalysisDispatcher, "dispatch", _mock_dispatch):
-        dispatcher = SDKAnalysisDispatcher(config=config, resolved_keys=resolved_keys)
-        output = await dispatcher.dispatch(
-            session_id="sess-happy",
-            session_payload={"events": []},
-        )
 
     assert output.status == "success"
     assert output.dispatched_via == "sdk"
@@ -246,24 +669,15 @@ async def test_fallback_engaged_when_primary_fails():
     config = _make_sdk_config()
     resolved_keys = {"anthropic": "sk-ant", "openai": "sk-openai", "custom": ""}
 
-    fallback_output = AnalysisOutput.model_validate(
-        _make_valid_output_dict(
-            session_id="sess-fallback",
-            status="success",
-            primary_model=_TEST_PRIMARY_MODEL,
-            fallback_used=True,
-        )
+    dispatcher = SDKAnalysisDispatcher(config=config, resolved_keys=resolved_keys)
+    fake_router = _FakeRouter([RouterCallResult(output=[], fallback_used=True)])
+    cast(Any, dispatcher)._router = fake_router
+    cast(Any, dispatcher)._build_system_prompt = lambda session_payload: "BASE PROMPT"
+
+    output = await dispatcher.dispatch(
+        session_id="sess-fallback",
+        session_payload={"events": []},
     )
-
-    async def _mock_dispatch(self, session_id, session_payload):
-        return fallback_output
-
-    with patch.object(SDKAnalysisDispatcher, "dispatch", _mock_dispatch):
-        dispatcher = SDKAnalysisDispatcher(config=config, resolved_keys=resolved_keys)
-        output = await dispatcher.dispatch(
-            session_id="sess-fallback",
-            session_payload={"events": []},
-        )
 
     assert output.status == "success"
     assert output.fallback_used is True
@@ -590,12 +1004,12 @@ async def test_dc4_attempt_ordering_assertion_fires_on_wrong_order():
         attempts=wrong_order_attempts,
     )
 
-    async def _mock_call(self_router: Any, **kwargs: Any) -> None:
+    async def _mock_call_with_metadata(self_router: Any, **kwargs: Any) -> None:
         raise wrong_order_exc
 
     from unittest.mock import patch
 
-    with patch.object(type(dispatcher._router), "call", _mock_call):
+    with patch.object(type(dispatcher._router), "call_with_metadata", _mock_call_with_metadata):
         with pytest.raises(AssertionError, match="attempts ordering violated"):
             await dispatcher.dispatch(
                 session_id="sess-ordering-test",
