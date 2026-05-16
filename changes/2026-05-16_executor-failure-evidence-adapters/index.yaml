@@ -1,5 +1,5 @@
 feature: executor-failure-evidence-adapters
-status: implementation_complete
+status: iteration_complete
 origin:
   source_feature: changes/2026-05-15_analysis-output-recovery-phase2
   source_iteration: "Level 2 scar triage"
@@ -14,6 +14,7 @@ docs:
   plan: changes/2026-05-16_executor-failure-evidence-adapters/2-plan.md
   acceptance: changes/2026-05-16_executor-failure-evidence-adapters/acceptance.yaml
   overview: changes/2026-05-16_executor-failure-evidence-adapters/overview.md
+  iteration_log: changes/2026-05-16_executor-failure-evidence-adapters/iteration-log.yaml
 
 tasks:
   - id: task-1

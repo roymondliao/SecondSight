@@ -1,0 +1,47 @@
+feature: executor-failure-evidence-adapters
+signal_lost_initial: 6
+
+budget:
+  max_rounds: 3
+  reviewer_retry_limit: 2
+
+rounds:
+  - round: 1
+    signal_lost_before: 6
+    budget_context:
+      remaining_rounds_at_start: 2
+      stagnation_count_at_start: 0
+      net_rot_previous_round: 0
+      strategy_hint: converge
+    items_triaged: 6
+    triage_result:
+      fix:
+        - "Task 1 evidence contract exists but CLI/SDK paths did not emit evidence."
+        - "Shared recovery still retained raw auth/config message marker fallback."
+        - "CLI dispatcher branched directly on agent_name instead of using adapter registry."
+        - "Codex non-zero subprocess exit lacked adapter-owned evidence metadata."
+        - "SDK attempt-class classification duplicated shared recovery helper logic."
+        - "SDK no-attempt controlled config failures relied on shared message-marker fallback."
+      accept: []
+      defer: []
+    fixes_applied: 2
+    fixes_scar_count: 5
+    budget_spent:
+      implementer_dispatches: 0
+      reviewer_dispatches: 0
+      reviewer_retries: 0
+      validation_runs: 8
+    evidence_gained:
+      - "Task 2/3 implementation paths now emit ExecutorFailureEvidence for CLI and SDK."
+      - "Death tests prove unsupported CLI agents fail before subprocess spawn instead of falling back to Claude."
+      - "Death tests prove Codex non-zero stderr is classified via Codex adapter evidence."
+      - "Shared classify_attempt_failure_class() is used by SDK and shared router attempt classification."
+      - "Death tests prove raw auth wording no longer triggers shared auth/config classification without adapter evidence."
+      - "Death tests prove SDK-controlled no-provider-key RouterTerminalError is classified via SDK evidence."
+    residual_risk:
+      - "CLI adapter registry is dispatcher-local, not a standalone plugin interface."
+      - "Adapter-local auth/rate-limit heuristics still depend on CLI wording when typed/status evidence is unavailable; confidence metadata makes this explicit."
+      - "New SDK framework config wording without typed exception/status/attempts requires updating SDK evidence extraction."
+    signal_lost_after: 0
+    decision: stop
+    decision_reason: "All original feature-level scar items were fixed; remaining notes are residual implementation risks recorded by iteration fix scar reports."
