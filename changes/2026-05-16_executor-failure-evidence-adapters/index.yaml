@@ -15,6 +15,7 @@ docs:
   acceptance: changes/2026-05-16_executor-failure-evidence-adapters/acceptance.yaml
   overview: changes/2026-05-16_executor-failure-evidence-adapters/overview.md
   iteration_log: changes/2026-05-16_executor-failure-evidence-adapters/iteration-log.yaml
+  security_privacy_review: changes/2026-05-16_executor-failure-evidence-adapters/security-privacy-review.yaml
 
 tasks:
   - id: task-1
