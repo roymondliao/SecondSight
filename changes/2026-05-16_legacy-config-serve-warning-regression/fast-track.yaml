@@ -16,28 +16,43 @@ root_cause_observed: >
   output from serve/precheck but `caplog.records` contained no WARNING message,
   so users with an existing state.json would not see the expected legacy config
   upgrade warning.
+root_cause_confirmed: >
+  `secondsight.cli.serve` imported `secondsight_home` as an import-time alias.
+  Tests and CLI wrappers patch the shared `secondsight.cli._home.secondsight_home`
+  resolver, but the alias in `serve.py` kept pointing at the original function.
+  The serve command therefore loaded the real default home instead of the temp
+  legacy config home, bypassing the expected loader warning path.
+resolution: >
+  `serve.py` now imports the `_home` module and calls
+  `cli_home.secondsight_home(...)` at command runtime, preserving the lazy
+  resolution contract documented by `_home.py` and restoring the existing patch
+  seam used by serve tests.
 failure_evidence:
   command: "uv run pytest tests/e2e -q"
   result: "15 passed, 5 skipped, 1 failed"
   failing_test: "tests/e2e/test_legacy_config_upgrade.py::TestDTLegacyConfigWithStateServe::test_legacy_config_with_state_serve_warns_and_succeeds"
   assertion: "Expected WARN log to mention 'legacy' or 'default_agent'; got warn_messages=''"
-scar_tag: 1
-scar_items:
-  - "Root cause is localized to legacy config warning/log bridge behavior, but exact production owner should be verified before fixing because the failure may be in config loader, serve precheck, or loguru-to-caplog bridge expectations."
-files_expected_to_change:
-  - "src/secondsight/config/loader.py"
+scar_tag: none
+scar_items: []
+files_changed:
   - "src/secondsight/cli/serve.py"
-  - "tests/e2e/test_legacy_config_upgrade.py"
+validation:
+  - command: "uv run pytest tests/e2e/test_legacy_config_upgrade.py::TestDTLegacyConfigWithStateServe::test_legacy_config_with_state_serve_warns_and_succeeds -q"
+    result: "1 passed"
+  - command: "uv run pytest tests/cli/test_serve_precheck.py -q"
+    result: "5 passed"
+  - command: "uv run pytest tests/e2e/test_legacy_config_upgrade.py -q"
+    result: "12 passed"
 quality_checklist:
   - criterion: "C5 Reuse"
     checked: true
-    note: "Follow-up should reuse the existing legacy config warning path or log bridge, not add a second warning implementation just for serve."
+    note: "Reused the existing `_home.secondsight_home` resolver and existing loader warning path; no duplicate warning logic was added."
   - criterion: "C6 Clear Structure"
     checked: true
-    note: "The fix should live at the boundary that decides legacy config upgrade visibility for serve, not inside unrelated analysis recovery code."
+    note: "The fix lives in the serve command's home-resolution boundary, where the stale alias caused the wrong home directory to be loaded."
   - criterion: "C7 Elegant Logic"
     checked: true
-    note: "A minimal fix should restore one observable warning path; no new config migration abstraction is justified unless inspection proves the warning path is duplicated."
+    note: "One import and one call site changed; no new config migration abstraction was introduced."
   - criterion: "C8 No Redundancy"
     checked: true
-    note: "Do not duplicate the test's config/state setup elsewhere; keep the existing e2e as the death test for this regression."
+    note: "Kept the existing e2e as the death test and avoided adding overlapping test setup or a second home resolver."

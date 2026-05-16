@@ -35,7 +35,7 @@ import uvicorn
 from loguru import logger
 
 from secondsight.api.server import ServerConfig, create_app
-from secondsight.cli._home import secondsight_home as resolve_secondsight_home
+from secondsight.cli import _home as cli_home
 from secondsight.daemon import StopOutcome, daemon_status, daemonize, stop_daemon
 
 app = typer.Typer(name="serve", help="Manage the SecondSight daemon server.")
@@ -144,7 +144,7 @@ def serve(
     if ctx.invoked_subcommand is not None:  # pragma: no cover — no subcmds
         return
 
-    resolved_home: Path = resolve_secondsight_home(home)
+    resolved_home: Path = cli_home.secondsight_home(home)
 
     if stop:
         _do_stop(resolved_home)
