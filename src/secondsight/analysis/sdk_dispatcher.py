@@ -64,6 +64,7 @@ from secondsight.sdk.model_selection import _infer_provider
 from secondsight.sdk.router import (
     LLMRouter,
     RouterChainExhaustedError,
+    RouterTerminalError,
 )
 
 
@@ -446,7 +447,7 @@ class SDKAnalysisDispatcher:
     def _extract_router_failure_context(self, exc: Exception) -> dict[str, Any]:
         """Preserve SDK router trace evidence without changing shared taxonomy."""
 
-        if not isinstance(exc, RouterChainExhaustedError):
+        if not isinstance(exc, (RouterChainExhaustedError, RouterTerminalError)):
             return {
                 "fallback_used": False,
                 "error_details": {},

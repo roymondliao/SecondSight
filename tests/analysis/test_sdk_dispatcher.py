@@ -401,6 +401,51 @@ async def test_transport_failure_preserves_sdk_attempt_trace_details():
     assert output.error_details["retry_exhausted"] is False
 
 
+@pytest.mark.asyncio
+async def test_fallback_terminal_failure_marks_fallback_used_and_preserves_both_errors():
+    """If fallback is attempted then terminally fails, failure output must say so."""
+    from secondsight.analysis.sdk_dispatcher import SDKAnalysisDispatcher
+
+    dispatcher = SDKAnalysisDispatcher(
+        config=_make_sdk_config(output_repair_max_attempts=0),
+        resolved_keys={"anthropic": "sk-valid", "openai": "sk-openai-valid", "custom": ""},
+    )
+    terminal_error = RouterTerminalError(
+        "terminal_error: UnexpectedModelBehavior on fallback",
+        attempts=[
+            AttemptRecord(
+                model_name=_TEST_PRIMARY_MODEL,
+                exception_class="RateLimitError",
+                duration_ms=125.0,
+            ),
+            AttemptRecord(
+                model_name=_TEST_FALLBACK_MODEL,
+                exception_class="UnexpectedModelBehavior",
+                duration_ms=120.0,
+            ),
+        ],
+    )
+    fake_router = _FakeRouter([terminal_error])
+    cast(Any, dispatcher)._router = fake_router
+    cast(Any, dispatcher)._build_system_prompt = lambda session_payload: "BASE PROMPT"
+
+    output = await dispatcher.dispatch(
+        session_id="sess-fallback-terminal-failure",
+        session_payload={"events": []},
+    )
+
+    assert output.status == "failure"
+    assert output.fallback_used is True
+    assert output.error_details is not None
+    assert output.error_details["failure_class"] == "fatal_execution_error"
+    assert output.error_details["attempt_classes"] == [
+        "RateLimitError",
+        "UnexpectedModelBehavior",
+    ]
+    assert "primary_error" in output.error_details
+    assert "fallback_error" in output.error_details
+
+
 def test_sdk_failure_output_namespaces_colliding_raw_error_details():
     """SDK raw evidence must not overwrite shared observability fields."""
     from secondsight.analysis.output_recovery import (

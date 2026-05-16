@@ -31,6 +31,7 @@ from secondsight.sdk.router import (
     LLMRouter,
     ModelSpec,
     RouterChainExhaustedError,
+    RouterTerminalError,
 )
 
 
@@ -651,6 +652,42 @@ class TestHappyPaths:
 
         # Fallback must NOT be called (terminal error).
         assert call_log == ["gpt-4o-mini"], f"Fallback called for terminal error: {call_log}"
+
+    @pytest.mark.asyncio
+    async def test_terminal_error_after_fallback_preserves_attempt_trace(self) -> None:
+        """Primary transport failure + fallback terminal error must keep both attempts."""
+        import litellm
+
+        terminal = pydantic_ai.exceptions.UnexpectedModelBehavior("fallback returned garbage")
+        call_count = {"n": 0}
+
+        def _factory(spec: ModelSpec) -> Any:
+            call_count["n"] += 1
+            m = AsyncMock()
+            if call_count["n"] == 1:
+                m.run.side_effect = litellm.RateLimitError(
+                    message="rate limited",
+                    llm_provider="openai",
+                    model=spec.name,
+                )
+            else:
+                m.run.side_effect = terminal
+            return m
+
+        router = LLMRouter(
+            primary=ModelSpec(name="gpt-4o-mini", provider="openai"),
+            fallbacks=[ModelSpec(name="gemini-2.0-flash", provider="google")],
+            resolved_keys=_TEST_RESOLVED_KEYS,
+            agent_factory=_factory,
+        )
+
+        with pytest.raises(RouterTerminalError) as exc_info:
+            await router.call_with_metadata(model_input="test", output_type=str)
+
+        assert [attempt.model_name for attempt in exc_info.value.attempts] == [
+            "gpt-4o-mini",
+            "gemini-2.0-flash",
+        ]
 
 
 # ---------------------------------------------------------------------------

@@ -160,6 +160,10 @@ class RouterTerminalError(AnalysisAgentError):
     non-fallback-eligible errors.
     """
 
+    def __init__(self, message: str, attempts: list[AttemptRecord] | None = None) -> None:
+        super().__init__(message)
+        self.attempts = attempts or []
+
 
 # ---------------------------------------------------------------------------
 # Classification result
@@ -438,6 +442,14 @@ class LLMRouter:
                 classify_result = _classify(exc, _seen_auth_errors)
 
                 if classify_result == _ClassifyResult.TERMINAL:
+                    terminal_attempts = [
+                        *attempts,
+                        AttemptRecord(
+                            model_name=spec.name,
+                            exception_class=type(exc).__name__,
+                            duration_ms=duration_ms,
+                        ),
+                    ]
                     # Find and log the root ValidationError if present (DC-3 diagnosis).
                     root_validation = _find_validation_error(exc)
                     if root_validation is not None:
@@ -453,7 +465,8 @@ class LLMRouter:
                             f"(DC-3 cost-leak prevention, not retrying). "
                             f"outer_exc={type(exc).__name__!r} "
                             f"validation_error={root_validation!s} "
-                            f"model={spec.name!r} attempt={attempt_idx + 1}/{total_models}"
+                            f"model={spec.name!r} attempt={attempt_idx + 1}/{total_models}",
+                            attempts=terminal_attempts,
                         ) from exc
                     else:
                         logger.warning(
@@ -464,7 +477,8 @@ class LLMRouter:
                         )
                         raise RouterTerminalError(
                             f"terminal_error: {type(exc).__name__}: {exc}. "
-                            f"model={spec.name!r} attempt={attempt_idx + 1}/{total_models}"
+                            f"model={spec.name!r} attempt={attempt_idx + 1}/{total_models}",
+                            attempts=terminal_attempts,
                         ) from exc
 
                 elif classify_result == _ClassifyResult.AUTH_ONCE:
