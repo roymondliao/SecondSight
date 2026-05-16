@@ -7,13 +7,14 @@ capability:
   degradation: >
     No separate platform security/privacy review tool was available in this Codex
     environment. Review was performed manually against the full committed feature
-    diff, then repeated after the security fix commit.
+    diff, then repeated after the security fix commit and final code-review fix.
 
 scope:
   base_ref: "HEAD~2 before commit 44791ba"
   reviewed_commits:
     - "44791ba Unify analysis output recovery observability"
     - "5013c24 Redact recovery error details"
+    - "07b9e6c Preserve fallback terminal attempt attribution"
   reviewed_files:
     - "src/secondsight/analysis/cli_dispatcher.py"
     - "src/secondsight/analysis/output_recovery.py"
@@ -65,6 +66,13 @@ checks:
     notes: >
       Retry counts remain bounded by config and the built-in cap. Persisted
       error detail strings are now capped by sanitizer.
+  final_code_review_fix:
+    result: "pass"
+    notes: >
+      Commit 07b9e6c extends RouterTerminalError with attempt traces so SDK
+      failure attribution remains honest when fallback is attempted and then
+      terminally fails. The additional attempt evidence flows through the same
+      sanitized recovery error_details builder added in 5013c24.
 
 issues:
   critical: []
@@ -80,7 +88,8 @@ issues:
       fix_commit: "5013c24"
       verification:
         - "tests/analysis/test_output_recovery.py::TestRetryDecisions::test_recovery_error_details_redacts_secret_values_and_bounds_strings"
-        - "targeted suite: 104 passed"
+        - "targeted suite after security fix: 104 passed"
+        - "targeted suite after final code-review fix: 106 passed"
   low: []
 
 accepted_risks:

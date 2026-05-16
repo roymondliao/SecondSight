@@ -1,0 +1,145 @@
+delivered_capability: >
+  CLI and SDK analysis dispatch now share recovery classification, output-repair
+  retry decisions, feedback semantics, attempt accounting, sanitized failure
+  forensics, and comparable error_details taxonomy.
+
+commits:
+  implementation:
+    - "44791ba Unify analysis output recovery observability"
+  security_fixes:
+    - "5013c24 Redact recovery error details"
+  review_fixes:
+    - "07b9e6c Preserve fallback terminal attempt attribution"
+  documentation:
+    - "26b2f73 Document phase2 security review"
+  related_tracking:
+    - "360f406 [scar:1] Track legacy config serve warning regression"
+
+validation:
+  acceptance:
+    command: >
+      uv run pytest
+      tests/analysis/test_sdk_dispatcher.py::test_schema_retry_exhaustion_reports_same_shared_taxonomy_in_cli_and_sdk
+      tests/analysis/test_output_recovery.py::TestRetryDecisions::test_transport_failures_are_classified_but_do_not_use_output_repair_budget
+      tests/analysis/test_output_recovery.py::TestFeedback::test_transport_failures_do_not_emit_schema_fix_instructions
+      tests/analysis/test_sdk_dispatcher.py::test_provider_auth_config_failure_is_no_retry
+      tests/analysis/test_sdk_dispatcher.py::test_structured_output_validation_failure_enters_output_repair_retry -q
+    result: "5 passed"
+  regression:
+    command: >
+      uv run pytest tests/analysis/test_output_recovery.py
+      tests/analysis/test_sdk_dispatcher.py tests/analysis/test_cli_dispatcher.py
+      tests/sdk/test_router.py -q
+    result: "106 passed"
+  e2e:
+    command: "uv run pytest tests/e2e -q"
+    result: "15 passed, 5 skipped, 1 failed"
+    failure_recorded_as: "changes/2026-05-16_legacy-config-serve-warning-regression/fast-track.yaml"
+    notes: >
+      The E2E failure is in legacy config serve warning visibility and does not
+      touch the analysis output recovery files. It is recorded as a separate
+      fast-track follow-up instead of being hidden inside this ship manifest.
+  pre_commit:
+    result: "targeted pre-commit passed for all touched production/test/docs files"
+  security_privacy_review:
+    result: "passed_with_manual_review"
+    artifact: "changes/2026-05-15_analysis-output-recovery-phase2/security-privacy-review.yaml"
+    issues_found: 1
+    issues_fixed: 1
+    issues_remaining: 0
+  final_code_review:
+    result: "PASS"
+    notes: >
+      Final review confirmed the fallback terminal failure attribution lie was
+      fixed by RouterTerminalError attempt traces and SDK dispatcher extraction.
+
+known_failure_modes:
+  - mode: >
+      Config-only provider/auth failures without typed exceptions can still be
+      misclassified if upstream CLI/provider wording drifts.
+    severity: degradation
+    detection: >
+      error_details.failure_class distribution drifts toward fatal_execution_error
+      for auth/config scenarios; tracked in
+      changes/2026-05-16_executor-failure-evidence-adapters.
+  - mode: >
+      Future dispatch paths can bypass recovery helpers and construct untyped
+      error_details directly.
+    severity: silent_corruption
+    detection: >
+      Tests that compare shared error_details fields across CLI/SDK fail, or
+      analysis_outputs rows lack reason/failure_class/attempts/retry_exhausted.
+  - mode: >
+      Normalized wrapper noise succeeds silently instead of emitting
+      normalizable_format_error telemetry.
+    severity: degradation
+    detection: >
+      CLI normalization logs show wrapper-stripping strategy, but
+      failure_class=normalizable_format_error remains unused.
+  - mode: >
+      Legacy config + state.json serve warning is currently missing from caplog
+      in the E2E suite.
+    severity: degradation
+    detection: >
+      tests/e2e/test_legacy_config_upgrade.py::TestDTLegacyConfigWithStateServe::test_legacy_config_with_state_serve_warns_and_succeeds
+      fails until changes/2026-05-16_legacy-config-serve-warning-regression is fixed.
+
+accepted_risks:
+  - risk: >
+      Manual security/privacy review was used because this Codex environment has
+      no dedicated platform security review tool.
+    accepted_by: "human"
+    expires: "2026-06-16"
+  - risk: >
+      Config-only failure classification still uses shared message heuristics
+      until executor-specific failure evidence adapters are implemented.
+    accepted_by: "human"
+    expires: "2026-06-16"
+  - risk: >
+      AnalysisOutput.error_details remains an untyped dict; schema-level
+      enforcement of recovery taxonomy is deferred.
+    accepted_by: "human"
+    expires: "2026-06-16"
+  - risk: >
+      Task 2 expanded file scope to add RouterCallResult/call_with_metadata,
+      which was necessary for honest SDK fallback success attribution.
+    accepted_by: "human"
+    expires: "2026-06-16"
+
+silent_failure_surface: medium
+
+monitoring_hooks:
+  - "Persisted analysis_outputs.error_details.reason"
+  - "Persisted analysis_outputs.error_details.failure_class"
+  - "Persisted analysis_outputs.error_details.retry_exhausted"
+  - "Persisted analysis_outputs.error_details.retry_mode"
+  - "SDK/CLI dispatch warnings for attempt failure and retry decisions"
+  - "CLI normalization INFO logs with strategy and character counts"
+
+kill_switch: >
+  Set analysis mode away from the affected executor path in config, or disable
+  analysis dispatch by not running `secondsight analyze` / post-analysis trigger
+  until recovery classification is rolled back or fixed. For SDK-specific
+  failures, switch `[general].mode` to `cli`; for CLI-specific failures, switch
+  to `sdk` only when provider keys are configured.
+
+reconciliation:
+  plan_drift:
+    - drift: >
+        Executor failure evidence adapters were identified as necessary but
+        intentionally promoted to a separate feature-level change rather than
+        implemented in phase2.
+      rationale: >
+        Adapter-owned evidence extraction changes executor architecture and
+        deserves its own plan/death cases.
+    - drift: >
+        Security review added redaction/length-capping to recovery error_details.
+      rationale: >
+        Expanded failure forensics increased persisted data risk; sanitizer was
+        required before shipping.
+    - drift: >
+        RouterTerminalError now carries attempt traces.
+      rationale: >
+        Required to keep SDK fallback_used attribution honest when fallback is
+        attempted and then terminally fails.
+  within_tolerance: true
