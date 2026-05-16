@@ -28,6 +28,7 @@ from secondsight.analysis.cli_adapters.claude_code import (
 )
 from secondsight.analysis.cli_adapters.codex import (
     build_command as codex_build_command,
+    extract_failure_evidence as codex_extract_failure_evidence,
     output_file_failure_evidence,
 )
 from secondsight.analysis.output_recovery import EvidenceConfidence, FailureClass
@@ -230,6 +231,19 @@ class TestCodexBuildCommand:
 
 
 class TestCodexFailureEvidence:
+    def test_nonzero_exit_failure_evidence_is_adapter_owned(self) -> None:
+        evidence = codex_extract_failure_evidence(
+            raw_stdout="",
+            stderr="Authentication failed for configured Codex account",
+            exit_code=1,
+        )
+
+        assert evidence.executor == "codex"
+        assert evidence.source == "cli_stderr"
+        assert evidence.failure_class is FailureClass.FATAL_AUTH_OR_CONFIG
+        assert evidence.reason == "fatal_auth_or_config"
+        assert evidence.confidence is EvidenceConfidence.HEURISTIC
+
     def test_output_file_failure_evidence_is_adapter_owned(self) -> None:
         evidence = output_file_failure_evidence(
             error=OSError("missing codex output"),

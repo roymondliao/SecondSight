@@ -402,6 +402,21 @@ class TestClassification:
         assert failure.reason == expected_failure_class
         assert failure.details["attempt_classes"] == [exception_class]
 
+    def test_shared_attempt_class_mapper_is_reused_by_router_and_sdk_paths(self) -> None:
+        from secondsight.analysis.output_recovery import (
+            FailureClass,
+            classify_attempt_failure_class,
+        )
+
+        assert (
+            classify_attempt_failure_class(["RateLimitError"], terminal=False)
+            is FailureClass.TRANSPORT_RATE_LIMIT
+        )
+        assert (
+            classify_attempt_failure_class(["UnexpectedModelBehavior"], terminal=True)
+            is FailureClass.FATAL_EXECUTION_ERROR
+        )
+
     def test_classifier_walks_exception_cause_for_auth_config_failures(self) -> None:
         from secondsight.analysis.output_recovery import FailureClass, classify_output_failure
 

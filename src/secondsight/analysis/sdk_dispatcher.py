@@ -56,6 +56,7 @@ from secondsight.analysis.output_recovery import (
     RetryDecision,
     RetryMode,
     build_recovery_error_details,
+    classify_attempt_failure_class,
     classify_output_failure,
     decide_retry,
 )
@@ -521,7 +522,7 @@ class SDKAnalysisDispatcher:
 
         if isinstance(exc, (RouterChainExhaustedError, RouterTerminalError)) and exc.attempts:
             attempt_classes = [str(attempt.exception_class) for attempt in exc.attempts]
-            failure_class = _classify_sdk_attempt_classes(
+            failure_class = classify_attempt_failure_class(
                 attempt_classes,
                 terminal=isinstance(exc, RouterTerminalError),
             )
@@ -578,39 +579,6 @@ class SDKAnalysisDispatcher:
             + retry_feedback
             + "\n\nReturn ONLY the requested structured output.\n"
         )
-
-
-def _classify_sdk_attempt_classes(
-    attempt_classes: list[str],
-    *,
-    terminal: bool,
-) -> FailureClass:
-    last_class = attempt_classes[-1]
-    classes = set(attempt_classes)
-
-    if _is_sdk_auth_exception_class(last_class):
-        return FailureClass.FATAL_AUTH_OR_CONFIG
-    if _is_sdk_timeout_exception_class(last_class):
-        return FailureClass.TRANSPORT_TIMEOUT
-    if _is_sdk_rate_limit_exception_class(last_class):
-        return FailureClass.TRANSPORT_RATE_LIMIT
-    if classes and all(_is_sdk_auth_exception_class(name) for name in classes):
-        return FailureClass.FATAL_AUTH_OR_CONFIG
-    if terminal:
-        return FailureClass.FATAL_EXECUTION_ERROR
-    return FailureClass.TRANSPORT_API_ERROR
-
-
-def _is_sdk_timeout_exception_class(name: str) -> bool:
-    return name in {"RouterChainTimeoutError", "TimeoutError", "ReadTimeout", "ConnectTimeout"}
-
-
-def _is_sdk_rate_limit_exception_class(name: str) -> bool:
-    return "RateLimit" in name
-
-
-def _is_sdk_auth_exception_class(name: str) -> bool:
-    return name in {"AuthenticationError", "AuthError"} or "Authentication" in name
 
 
 __all__ = ["SDKAnalysisDispatcher"]

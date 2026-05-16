@@ -41,6 +41,23 @@ from secondsight.analysis.output_recovery import (
     FailureClass,
 )
 
+_AUTH_MARKERS = (
+    "api key",
+    "authentication",
+    "unauthorized",
+    "forbidden",
+    "credential",
+    "invalid key",
+)
+_RATE_LIMIT_MARKERS = (
+    "rate limit",
+    "rate_limit",
+    "too many requests",
+    "quota",
+    "usage limit",
+    "monthly usage limit",
+)
+
 
 def build_command(
     model: str | None,
@@ -77,6 +94,37 @@ def build_command(
     return cmd, output_path
 
 
+def extract_failure_evidence(
+    *,
+    raw_stdout: str,
+    stderr: str,
+    exit_code: int | None,
+) -> ExecutorFailureEvidence:
+    """Extract Codex-owned failure evidence from non-zero CLI output."""
+
+    raw: dict[str, object] = {"exit_code": exit_code}
+    message = stderr.strip() or raw_stdout.strip()
+    if stderr.strip():
+        source = "cli_stderr"
+        raw["stderr"] = stderr
+    elif raw_stdout.strip():
+        source = "cli_stdout"
+        raw["stdout_excerpt"] = raw_stdout.strip()[:500]
+    else:
+        source = "cli_exit"
+
+    failure_class, reason, confidence = _classify_codex_evidence(message=message)
+    return ExecutorFailureEvidence(
+        source=source,
+        executor="codex",
+        failure_class=failure_class,
+        reason=reason,
+        message=message[:500],
+        raw=raw,
+        confidence=confidence,
+    )
+
+
 def output_file_failure_evidence(
     *,
     error: OSError,
@@ -99,4 +147,25 @@ def output_file_failure_evidence(
     )
 
 
-__all__ = ["build_command", "output_file_failure_evidence"]
+def _classify_codex_evidence(message: str) -> tuple[FailureClass, str, EvidenceConfidence]:
+    lower_message = message.lower()
+    if any(marker in lower_message for marker in _AUTH_MARKERS):
+        return (
+            FailureClass.FATAL_AUTH_OR_CONFIG,
+            FailureClass.FATAL_AUTH_OR_CONFIG.value,
+            EvidenceConfidence.HEURISTIC,
+        )
+    if any(marker in lower_message for marker in _RATE_LIMIT_MARKERS):
+        return (
+            FailureClass.TRANSPORT_RATE_LIMIT,
+            FailureClass.TRANSPORT_RATE_LIMIT.value,
+            EvidenceConfidence.HEURISTIC,
+        )
+    return (
+        FailureClass.FATAL_EXECUTION_ERROR,
+        FailureClass.FATAL_EXECUTION_ERROR.value,
+        EvidenceConfidence.UNKNOWN,
+    )
+
+
+__all__ = ["build_command", "extract_failure_evidence", "output_file_failure_evidence"]

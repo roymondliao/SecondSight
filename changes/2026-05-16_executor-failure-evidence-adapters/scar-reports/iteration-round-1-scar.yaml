@@ -1,0 +1,38 @@
+task_id: iteration-round-1
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: "CLI adapter registry is still a dispatcher-local private registry rather than a standalone adapter package interface; this is sufficient for current dispatch scope but not a complete plugin architecture."
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: "Adapter-local auth/rate-limit marker heuristics still depend on CLI wording for untyped CLI failures; the improvement is that wording knowledge is now adapter-owned and confidence-labeled."
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: "Failing unsupported CLI agents before subprocess spawn is safer than falling through to any default adapter."
+    verified: true
+    note: "Verified by test_unknown_cli_agent_returns_failure_without_falling_back_to_claude."
+    deferred_to_feature_iteration: false
+  - assumption: "Codex non-zero stderr auth failures should be classified by Codex adapter evidence, not by dispatcher generic failure handling."
+    verified: true
+    note: "Verified by test_codex_nonzero_exit_uses_adapter_evidence."
+    deferred_to_feature_iteration: false
+  - assumption: "SDK and shared router-attempt classification should use one shared mapper."
+    verified: true
+    note: "Verified by test_shared_attempt_class_mapper_is_reused_by_router_and_sdk_paths and SDK regression tests."
+    deferred_to_feature_iteration: false
+
+debt_registered: true
+debt_location: "src/secondsight/analysis/cli_dispatcher.py — private registry; src/secondsight/analysis/cli_adapters/* — adapter-local heuristic markers"
+
+resolved_items:
+  - original_section: "known_shortcuts"
+    original_description: "CLI dispatcher still branches explicitly on agent_name instead of using a registry of failure-evidence adapters."
+    resolution: "Added dispatcher-local _CLI_ADAPTERS registry and routed command building, result extraction, non-zero evidence, and output-file evidence through adapter specs."
+  - original_section: "silent_failure_conditions"
+    original_description: "Codex non-zero subprocess exit lacked adapter-owned evidence metadata."
+    resolution: "Added codex.extract_failure_evidence() and dispatcher coverage for Codex non-zero auth stderr."
+  - original_section: "known_shortcuts"
+    original_description: "SDK attempt-class classification duplicated helper logic from shared recovery."
+    resolution: "Added shared classify_attempt_failure_class() and updated SDK dispatcher to use it."

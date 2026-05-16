@@ -53,6 +53,7 @@ Design choices:
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import json
 import os
 import tempfile
@@ -90,6 +91,36 @@ _UNKNOWN_AGENT: str = "unknown"
 # Internal guard passed to analysis CLI subprocesses so globally-installed
 # SecondSight hooks do not observe analysis sessions and recursively dispatch.
 _HOOK_DISABLE_ENV_VAR: str = "SECONDSIGHT_DISABLE_HOOKS"
+
+
+@dataclass(frozen=True)
+class _CLIAdapterSpec:
+    """Dispatcher-facing CLI adapter contract."""
+
+    model_config_field: str
+    output_mode: str
+    build_command: Any
+    extract_failure_evidence: Any
+    extract_result: Any | None = None
+    output_file_failure_evidence: Any | None = None
+
+
+_CLI_ADAPTERS: dict[str, _CLIAdapterSpec] = {
+    "claude_code": _CLIAdapterSpec(
+        model_config_field="claude_code",
+        output_mode="stdout",
+        build_command=_claude_code_adapter.build_command,
+        extract_failure_evidence=_claude_code_adapter.extract_failure_evidence,
+        extract_result=_claude_code_adapter.extract_result,
+    ),
+    "codex": _CLIAdapterSpec(
+        model_config_field="codex",
+        output_mode="file",
+        build_command=_codex_adapter.build_command,
+        extract_failure_evidence=_codex_adapter.extract_failure_evidence,
+        output_file_failure_evidence=_codex_adapter.output_file_failure_evidence,
+    ),
+}
 
 
 class OpencodeNotSupportedError(Exception):
@@ -168,14 +199,21 @@ class CLIAnalysisDispatcher:
                 "Task 6 pre-check should reject opencode before dispatch is attempted."
             )
 
+        adapter = _CLI_ADAPTERS.get(agent_name)
+        if adapter is None:
+            logger.error(f"CLI dispatch: unsupported CLI agent {agent_name!r}")
+            return _make_failure_output(
+                session_id=session_id,
+                reason=FailureClass.FATAL_EXECUTION_ERROR.value,
+                failure_class=FailureClass.FATAL_EXECUTION_ERROR.value,
+                agent_name=agent_name,
+                message=f"Unsupported CLI agent {agent_name!r}. Check analysis.cli.default_agent.",
+                extra_error_details={"executor_reason": "unsupported_agent"},
+            )
+
         # Step 3: Determine model override
         model_override: str | None = None
-        if agent_name == "claude_code":
-            raw_model = self._config.cli.models.claude_code
-        elif agent_name == "codex":
-            raw_model = self._config.cli.models.codex
-        else:
-            raw_model = ""
+        raw_model = getattr(self._config.cli.models, adapter.model_config_field, "")
         if raw_model:
             model_override = raw_model
 
@@ -349,26 +387,25 @@ class CLIAnalysisDispatcher:
         """Spawn subprocess once, parse output, return AnalysisOutput."""
         # Build command + env (env filtering centralized here -- adapters do not own env)
         env = _filter_env(os.environ.copy())
+        adapter = _CLI_ADAPTERS[agent_name]
 
         # For codex: need a temp dir for output file (NOT in project_root)
         output_path: str | None = None
         _tmpdir_ctx = None  # keep reference to prevent premature cleanup
 
-        if agent_name == "codex":
+        if adapter.output_mode == "file":
             # Use system temp directory to avoid polluting project_root with output files.
             # TemporaryDirectory context is opened here so cleanup is automatic on
             # any exit path (exception, return, crash). The context manager object is
             # kept alive by _tmpdir_ctx for the duration of this method.
             _tmpdir_ctx = tempfile.TemporaryDirectory(prefix="secondsight_codex_")
             tmpdir = Path(_tmpdir_ctx.name)
-            cmd, output_path = _codex_adapter.build_command(
+            cmd, output_path = adapter.build_command(
                 model=model, prompt=prompt, project_root=tmpdir
             )
             stdin_bytes = prompt.encode()
         else:
-            cmd = _claude_code_adapter.build_command(
-                model=model, prompt=prompt, project_root=project_root
-            )
+            cmd = adapter.build_command(model=model, prompt=prompt, project_root=project_root)
             stdin_bytes = None  # claude: prompt is positional arg, not stdin
 
         logger.debug(
@@ -454,31 +491,27 @@ class CLIAnalysisDispatcher:
 
         # Check exit code
         if proc.returncode != 0:
-            classified_failure = None
-            decision = None
-            failure_context: dict[str, Any] = {}
-            if agent_name == "claude_code":
-                evidence = _claude_code_adapter.extract_failure_evidence(
-                    raw_stdout=stdout_raw,
-                    stderr=stderr_raw,
-                    exit_code=proc.returncode,
-                )
-                classified_failure = classify_output_failure(
-                    RuntimeError(evidence.message or stderr_raw or stdout_raw),
-                    evidence=evidence,
-                )
-                decision = decide_retry(
-                    classified_failure,
-                    attempt_number=attempt + 1,
-                    max_attempts=max_attempts,
-                    feedback_max_chars=self._config.retry.feedback_max_chars,
-                )
-                failure_context = classified_failure.details
+            evidence = adapter.extract_failure_evidence(
+                raw_stdout=stdout_raw,
+                stderr=stderr_raw,
+                exit_code=proc.returncode,
+            )
+            classified_failure = classify_output_failure(
+                RuntimeError(evidence.message or stderr_raw or stdout_raw),
+                evidence=evidence,
+            )
+            decision = decide_retry(
+                classified_failure,
+                attempt_number=attempt + 1,
+                max_attempts=max_attempts,
+                feedback_max_chars=self._config.retry.feedback_max_chars,
+            )
+            failure_context: dict[str, Any] = classified_failure.details
 
             diagnostic_bits: list[str] = []
             if stderr_raw:
                 diagnostic_bits.append(f"stderr: {stderr_raw[:200]!r}")
-            if not stderr_raw and classified_failure is not None and classified_failure.error:
+            if not stderr_raw and classified_failure.error:
                 diagnostic_bits.append(f"stdout message: {classified_failure.error[:200]!r}")
             if "api_error_status" in failure_context:
                 diagnostic_bits.append(f"api_error_status={failure_context['api_error_status']!r}")
@@ -492,32 +525,19 @@ class CLIAnalysisDispatcher:
             if _tmpdir_ctx is not None:
                 _tmpdir_ctx.cleanup()
 
-            reason = (
-                decision.reason
-                if decision is not None
-                else FailureClass.FATAL_EXECUTION_ERROR.value
-            )
-            failure_class = (
-                decision.failure_class.value
-                if decision is not None
-                else FailureClass.FATAL_EXECUTION_ERROR.value
-            )
-            retry_mode = decision.retry_mode.value if decision is not None else RetryMode.NONE.value
-            error = classified_failure.error if classified_failure is not None else ""
-            message = classified_failure.error if classified_failure is not None else ""
             return _make_failure_output(
                 session_id=session_id,
-                reason=reason,
-                failure_class=failure_class,
+                reason=decision.reason,
+                failure_class=decision.failure_class.value,
                 agent_name=agent_name,
                 exit_code=proc.returncode,
                 stderr=stderr_raw,
-                error=error,
+                error=classified_failure.error,
                 retry_count=attempt,
                 attempts=attempt + 1,
                 retry_exhausted=False,
-                retry_mode=retry_mode,
-                message=message,
+                retry_mode=decision.retry_mode.value,
+                message=classified_failure.error,
                 extra_error_details=failure_context,
             )
 
@@ -531,10 +551,9 @@ class CLIAnalysisDispatcher:
                 )
                 if _tmpdir_ctx is not None:
                     _tmpdir_ctx.cleanup()
-                evidence = _codex_adapter.output_file_failure_evidence(
-                    error=exc,
-                    stderr=stderr_raw,
-                )
+                if adapter.output_file_failure_evidence is None:
+                    raise
+                evidence = adapter.output_file_failure_evidence(error=exc, stderr=stderr_raw)
                 classified_failure = classify_output_failure(exc, evidence=evidence)
                 decision = decide_retry(
                     classified_failure,
@@ -562,9 +581,8 @@ class CLIAnalysisDispatcher:
         elif _tmpdir_ctx is not None:
             _tmpdir_ctx.cleanup()
 
-        # For claude: unwrap JSON envelope
-        if agent_name == "claude_code":
-            stdout_raw = _claude_code_adapter.extract_result(stdout_raw)
+        if adapter.extract_result is not None:
+            stdout_raw = adapter.extract_result(stdout_raw)
 
         # Normalize wrapper noise before validation.
         normalization = normalize_llm_json_text(stdout_raw)

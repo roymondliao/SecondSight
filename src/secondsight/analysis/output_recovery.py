@@ -613,43 +613,40 @@ def _classify_transport_attempt_trace(exc: Exception) -> ClassifiedFailure | Non
         return None
 
     ordered_classes = [str(attempt.exception_class) for attempt in attempts]
-    classes = set(ordered_classes)
-    last_class = ordered_classes[-1]
+    failure_class = classify_attempt_failure_class(ordered_classes, terminal=False)
 
-    if _is_auth_exception_class(last_class):
-        return ClassifiedFailure(
-            failure_class=FailureClass.FATAL_AUTH_OR_CONFIG,
-            reason="fatal_auth_or_config",
-            error=str(exc),
-            details={"attempt_classes": ordered_classes},
-        )
-    if _is_timeout_exception_class(last_class):
-        return ClassifiedFailure(
-            failure_class=FailureClass.TRANSPORT_TIMEOUT,
-            reason="transport_timeout",
-            error=str(exc),
-            details={"attempt_classes": ordered_classes},
-        )
-    if _is_rate_limit_exception_class(last_class):
-        return ClassifiedFailure(
-            failure_class=FailureClass.TRANSPORT_RATE_LIMIT,
-            reason="transport_rate_limit",
-            error=str(exc),
-            details={"attempt_classes": ordered_classes},
-        )
-    if classes and all(_is_auth_exception_class(name) for name in classes):
-        return ClassifiedFailure(
-            failure_class=FailureClass.FATAL_AUTH_OR_CONFIG,
-            reason="fatal_auth_or_config",
-            error=str(exc),
-            details={"attempt_classes": ordered_classes},
-        )
     return ClassifiedFailure(
-        failure_class=FailureClass.TRANSPORT_API_ERROR,
-        reason="transport_api_error",
+        failure_class=failure_class,
+        reason=failure_class.value,
         error=str(exc),
         details={"attempt_classes": ordered_classes},
     )
+
+
+def classify_attempt_failure_class(
+    attempt_classes: list[str],
+    *,
+    terminal: bool,
+) -> FailureClass:
+    """Classify router attempt exception class names into shared taxonomy."""
+
+    if not attempt_classes:
+        return FailureClass.FATAL_EXECUTION_ERROR if terminal else FailureClass.TRANSPORT_API_ERROR
+
+    classes = set(attempt_classes)
+    last_class = attempt_classes[-1]
+
+    if _is_auth_exception_class(last_class):
+        return FailureClass.FATAL_AUTH_OR_CONFIG
+    if _is_timeout_exception_class(last_class):
+        return FailureClass.TRANSPORT_TIMEOUT
+    if _is_rate_limit_exception_class(last_class):
+        return FailureClass.TRANSPORT_RATE_LIMIT
+    if classes and all(_is_auth_exception_class(name) for name in classes):
+        return FailureClass.FATAL_AUTH_OR_CONFIG
+    if terminal:
+        return FailureClass.FATAL_EXECUTION_ERROR
+    return FailureClass.TRANSPORT_API_ERROR
 
 
 def _is_transport_timeout_error(exc: Exception) -> bool:
@@ -800,6 +797,7 @@ __all__ = [
     "RetryMode",
     "build_retry_feedback",
     "build_recovery_error_details",
+    "classify_attempt_failure_class",
     "classify_empty_output",
     "classify_output_failure",
     "decide_retry",

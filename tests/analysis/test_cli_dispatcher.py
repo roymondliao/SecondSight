@@ -859,6 +859,40 @@ class TestDC6_SubprocessNonZeroExit:
         assert result.error_details["evidence_confidence"] == "unknown"
         assert result.error_details["retry_mode"] == "none"
 
+    @pytest.mark.asyncio
+    async def test_codex_nonzero_exit_uses_adapter_evidence(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        config = _make_config(default_agent="codex")
+        state = _make_state(agent="codex")
+        dispatcher = CLIAnalysisDispatcher(config=config, state=state)
+
+        async def create_proc(*args, **kwargs):
+            return _make_proc_mock(
+                stdout="",
+                stderr="Authentication failed for configured Codex account",
+                returncode=1,
+            )
+
+        with patch(
+            "secondsight.analysis.cli_dispatcher.asyncio.create_subprocess_exec",
+            side_effect=create_proc,
+        ):
+            result = await dispatcher.dispatch(
+                session_id="sess-001",
+                project_root=tmp_path,
+                session_payload={"events": []},
+            )
+
+        assert result.status == "failure"
+        assert result.error_details is not None
+        assert result.error_details["reason"] == "fatal_auth_or_config"
+        assert result.error_details["failure_class"] == "fatal_auth_or_config"
+        assert result.error_details["evidence_source"] == "cli_stderr"
+        assert result.error_details["evidence_confidence"] == "heuristic"
+        assert result.error_details["evidence_executor"] == "codex"
+
 
 class TestDC_CodexTempfile:
     """DC-CODEX-TEMPFILE: codex output file must NOT be placed in project_root."""
@@ -1068,6 +1102,31 @@ class TestOpencodeRejection:
 
             # subprocess must NOT have been spawned
             mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unknown_cli_agent_returns_failure_without_falling_back_to_claude(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        config = _make_config(default_agent="gemini_cli")
+        dispatcher = CLIAnalysisDispatcher(config=config, state=None)
+
+        with patch(
+            "secondsight.analysis.cli_dispatcher.asyncio.create_subprocess_exec"
+        ) as mock_create:
+            result = await dispatcher.dispatch(
+                session_id="sess-001",
+                project_root=tmp_path,
+                session_payload={"events": []},
+            )
+
+        assert result.status == "failure"
+        assert result.cli_agent == "gemini_cli"
+        assert result.error_details is not None
+        assert result.error_details["reason"] == "fatal_execution_error"
+        assert result.error_details["failure_class"] == "fatal_execution_error"
+        assert result.error_details["executor_reason"] == "unsupported_agent"
+        mock_create.assert_not_called()
 
 
 class TestEnvIsolation:
