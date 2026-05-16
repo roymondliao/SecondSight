@@ -123,6 +123,15 @@ class RecoveryTrace:
 
 
 _FENCED_JSON_PATTERN = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
+_MAX_ERROR_DETAIL_STRING_LENGTH = 2_000
+_SECRET_VALUE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(sk-[A-Za-z0-9_-]{8,})\b"),
+    re.compile(
+        r"\b((?:api[_-]?key|token|credential|password|secret)\s*[:=]\s*)([^\s,;]+)",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(Bearer\s+)([A-Za-z0-9._~+/=-]{8,})\b", re.IGNORECASE),
+)
 
 
 def normalize_llm_json_text(raw: str) -> NormalizationResult:
@@ -373,7 +382,19 @@ def merge_recovery_error_details(
         raw_error_details.update(raw_collisions)
         merged["raw_error_details"] = raw_error_details
 
-    return merged
+    return sanitize_error_details(merged)
+
+
+def sanitize_error_details(value: Any) -> Any:
+    """Return JSON-safe error details with secrets redacted and strings bounded."""
+
+    if isinstance(value, Mapping):
+        return {str(key): sanitize_error_details(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [sanitize_error_details(item) for item in value]
+    if isinstance(value, str):
+        return _sanitize_error_detail_string(value)
+    return _json_safe(value)
 
 
 def build_recovery_error_details(
@@ -656,6 +677,24 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
+def _sanitize_error_detail_string(value: str) -> str:
+    sanitized = value
+    for pattern in _SECRET_VALUE_PATTERNS:
+        sanitized = pattern.sub(_redact_secret_match, sanitized)
+
+    if len(sanitized) > _MAX_ERROR_DETAIL_STRING_LENGTH:
+        sanitized = sanitized[: _MAX_ERROR_DETAIL_STRING_LENGTH - 3] + "..."
+    return sanitized
+
+
+def _redact_secret_match(match: re.Match[str]) -> str:
+    if match.re.pattern.startswith("\\b(sk-"):
+        return "sk-[REDACTED]"
+    if len(match.groups()) >= 2:
+        return f"{match.group(1)}[REDACTED]"
+    return "[REDACTED]"
+
+
 __all__ = [
     "ClassifiedFailure",
     "FailureClass",
@@ -671,4 +710,5 @@ __all__ = [
     "decide_retry",
     "merge_recovery_error_details",
     "normalize_llm_json_text",
+    "sanitize_error_details",
 ]

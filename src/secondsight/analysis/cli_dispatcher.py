@@ -73,6 +73,7 @@ from secondsight.analysis.output_recovery import (
     classify_output_failure,
     decide_retry,
     normalize_llm_json_text,
+    sanitize_error_details,
 )
 from secondsight.config.constants import BUILTIN_ANALYSIS_MAX_RETRY_COUNT_CAP
 from secondsight.config.schema import AnalysisConfig
@@ -576,7 +577,10 @@ class CLIAnalysisDispatcher:
             # produces a clean None error_details.
             if stderr_raw:
                 return AnalysisOutput.model_validate(
-                    {**output.model_dump(), "error_details": {"stderr": stderr_raw}}
+                    {
+                        **output.model_dump(),
+                        "error_details": sanitize_error_details({"stderr": stderr_raw}),
+                    }
                 )
             return output
         except json.JSONDecodeError as exc:
@@ -812,7 +816,7 @@ def _make_unknown_output(
                 "attempts": attempts,
                 "retry_exhausted": False,
                 "retry_mode": RetryMode.NONE.value,
-                "stderr": stderr,
+                "stderr": sanitize_error_details(stderr),
             },
         }
     )

@@ -420,6 +420,37 @@ class TestRetryDecisions:
             "reason": "raw reason",
         }
 
+    def test_recovery_error_details_redacts_secret_values_and_bounds_strings(self) -> None:
+        from secondsight.analysis.output_recovery import (
+            FailureClass,
+            RetryMode,
+            build_recovery_error_details,
+        )
+
+        details = build_recovery_error_details(
+            reason="fatal_auth_or_config",
+            failure_class=FailureClass.FATAL_AUTH_OR_CONFIG,
+            attempts=1,
+            retry_exhausted=False,
+            retry_mode=RetryMode.NONE,
+            error=(
+                "provider rejected api_key=sk-ant-test-secret-1234567890 "
+                "Authorization: Bearer very-secret-token-value"
+            ),
+            extra_error_details={
+                "stderr": "token=abc1234567890 " + ("x" * 3_000),
+                "nested": {"credential": "credential=super-secret-value"},
+            },
+        )
+
+        rendered = str(details)
+        assert "sk-ant-test-secret-1234567890" not in rendered
+        assert "very-secret-token-value" not in rendered
+        assert "abc1234567890" not in rendered
+        assert "super-secret-value" not in rendered
+        assert "[REDACTED]" in details["error"]
+        assert len(details["stderr"]) <= 2_000
+
     def test_recovery_trace_is_serializable_and_preserves_forensics(self) -> None:
         from secondsight.analysis.output_recovery import (
             FailureClass,
