@@ -20,6 +20,114 @@ from pydantic import ValidationError
 
 
 class TestDeathClassification:
+    def test_executor_evidence_classification_preserves_source_confidence_and_executor(
+        self,
+    ) -> None:
+        from secondsight.analysis.output_recovery import (
+            EvidenceConfidence,
+            ExecutorFailureEvidence,
+            FailureClass,
+            classify_output_failure,
+        )
+
+        failure = classify_output_failure(
+            RuntimeError("raw CLI failed"),
+            evidence=ExecutorFailureEvidence(
+                source="cli_stdout_envelope",
+                executor="claude_code",
+                failure_class=FailureClass.FATAL_AUTH_OR_CONFIG,
+                reason="fatal_auth_or_config",
+                message="Claude reported invalid credentials",
+                confidence=EvidenceConfidence.DERIVED,
+                raw={"subtype": "error_during_execution", "api_error_status": 401},
+            ),
+        )
+
+        assert failure.failure_class is FailureClass.FATAL_AUTH_OR_CONFIG
+        assert failure.reason == "fatal_auth_or_config"
+        assert failure.error == "Claude reported invalid credentials"
+        assert failure.details["evidence_source"] == "cli_stdout_envelope"
+        assert failure.details["evidence_confidence"] == "derived"
+        assert failure.details["evidence_executor"] == "claude_code"
+        assert failure.details["api_error_status"] == 401
+
+    def test_unusable_executor_evidence_fails_loud_with_low_confidence_metadata(self) -> None:
+        from secondsight.analysis.output_recovery import (
+            EvidenceConfidence,
+            ExecutorFailureEvidence,
+            FailureClass,
+            classify_output_failure,
+        )
+
+        failure = classify_output_failure(
+            RuntimeError("ambiguous CLI failure"),
+            evidence=ExecutorFailureEvidence(
+                source="cli_exit",
+                executor="codex",
+                message="ambiguous failure text",
+                confidence=EvidenceConfidence.UNKNOWN,
+                raw={"stdout_excerpt": "something failed"},
+            ),
+        )
+
+        assert failure.failure_class is FailureClass.FATAL_EXECUTION_ERROR
+        assert failure.reason == "fatal_execution_error"
+        assert failure.details["evidence_confidence"] == "unknown"
+        assert failure.details["evidence_source"] == "cli_exit"
+        assert failure.details["evidence_executor"] == "codex"
+
+    def test_executor_evidence_raw_collisions_do_not_overwrite_recovery_envelope(
+        self,
+    ) -> None:
+        from secondsight.analysis.output_recovery import (
+            EvidenceConfidence,
+            ExecutorFailureEvidence,
+            FailureClass,
+            RetryMode,
+            build_recovery_error_details,
+            classify_output_failure,
+        )
+
+        failure = classify_output_failure(
+            RuntimeError("raw CLI failed"),
+            evidence=ExecutorFailureEvidence(
+                source="cli_exit",
+                executor="claude_code",
+                failure_class=FailureClass.FATAL_AUTH_OR_CONFIG,
+                reason="fatal_auth_or_config",
+                confidence=EvidenceConfidence.HEURISTIC,
+                raw={
+                    "reason": "raw reason",
+                    "failure_class": "raw failure class",
+                    "retry_mode": "raw retry mode",
+                    "attempts": 99,
+                },
+            ),
+        )
+
+        details = build_recovery_error_details(
+            reason=failure.reason,
+            failure_class=failure.failure_class,
+            attempts=1,
+            retry_exhausted=False,
+            retry_mode=RetryMode.NONE,
+            error=failure.error,
+            extra_error_details=failure.details,
+        )
+
+        assert details["reason"] == "fatal_auth_or_config"
+        assert details["failure_class"] == "fatal_auth_or_config"
+        assert details["retry_mode"] == "none"
+        assert details["attempts"] == 1
+        assert details["evidence_source"] == "cli_exit"
+        assert details["evidence_confidence"] == "heuristic"
+        assert details["raw_error_details"] == {
+            "reason": "raw reason",
+            "failure_class": "raw failure class",
+            "retry_mode": "raw retry mode",
+            "attempts": 99,
+        }
+
     def test_transport_timeout_is_classified_separately_from_json_and_schema_failures(self) -> None:
         from secondsight.analysis.output import AnalysisOutput
         from secondsight.analysis.output_recovery import FailureClass, classify_output_failure

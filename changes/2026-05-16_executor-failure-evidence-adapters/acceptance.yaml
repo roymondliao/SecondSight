@@ -1,0 +1,56 @@
+feature: executor-failure-evidence-adapters
+coverage_type: planned
+
+scenarios:
+  - name: "DC1 — shared classifier does not own CLI message markers"
+    type: death_path
+    given: "a CLI/provider-specific auth message appears only in raw stdout or stderr"
+    when: "failure classification runs"
+    then:
+      - "the CLI adapter emits ExecutorFailureEvidence with failure_class=fatal_auth_or_config"
+      - "shared classification consumes evidence fields instead of raw CLI text markers"
+      - "error_details includes evidence_source, evidence_confidence, and evidence_executor"
+
+  - name: "DC2 — ambiguous CLI failure stays low confidence"
+    type: death_path
+    given: "a CLI exits non-zero with ambiguous stdout/stderr and no stable status code"
+    when: "adapter evidence is converted to a ClassifiedFailure"
+    then:
+      - "failure_class is fatal_execution_error"
+      - "evidence_confidence is heuristic or unknown"
+      - "retry_mode is none"
+
+  - name: "DC3 — SDK typed attempt evidence beats misleading message text"
+    type: death_path
+    given: "router attempt records contain typed AuthenticationError or RateLimitError while the outer message is misleading"
+    when: "SDK dispatch classifies the failure"
+    then:
+      - "classification follows attempt record exception classes or status metadata"
+      - "classification does not depend on the misleading outer message"
+      - "recovery_trace preserves evidence metadata"
+
+  - name: "DC4 — evidence metadata cannot overwrite shared recovery envelope"
+    type: death_path
+    given: "adapter raw details contain keys named reason, failure_class, retry_mode, or attempts"
+    when: "error_details is built"
+    then:
+      - "shared envelope keys remain authoritative"
+      - "colliding raw fields are moved under raw_error_details"
+      - "all persisted strings are redacted and bounded"
+
+  - name: "Degradation — legacy typed exception classification still works without explicit evidence"
+    type: degradation
+    given: "JSONDecodeError, Pydantic ValidationError, TimeoutError, or typed provider exceptions are raised directly"
+    when: "shared classifier is called without adapter evidence"
+    then:
+      - "existing FailureClass semantics remain unchanged"
+      - "retry policy decisions remain unchanged"
+
+  - name: "Happy path — adapter-derived Claude auth failure is classified consistently"
+    type: happy_path
+    given: "Claude CLI exits non-zero with a structured error envelope containing auth/config evidence"
+    when: "CLI dispatcher builds failure output"
+    then:
+      - "status is failure"
+      - "failure_class is fatal_auth_or_config"
+      - "error_details records evidence_source=cli_stdout_envelope and evidence_executor=claude_code"

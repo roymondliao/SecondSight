@@ -1,0 +1,31 @@
+task_id: task-1
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: "Task 1 adds the shared evidence contract and classifier entry point, but current CLI/SDK dispatch paths do not emit ExecutorFailureEvidence yet."
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: "Shared recovery still retains legacy message-marker fallback for direct exception classification; task-2/task-3 must move executor-owned marker interpretation to adapters before the architectural boundary is fully true."
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: "Evidence metadata can remain an internal typed contract serialized into existing AnalysisOutput.error_details without changing the public output schema."
+    verified: true
+    note: "Verified by tests that pass evidence details through build_recovery_error_details() and preserve shared envelope keys with existing sanitizer/merge behavior."
+    deferred_to_feature_iteration: false
+  - assumption: "Low-confidence or incomplete evidence should fail loud as fatal_execution_error rather than guessing a retryable transport/auth class."
+    verified: true
+    note: "Verified by test_unusable_executor_evidence_fails_loud_with_low_confidence_metadata."
+    deferred_to_feature_iteration: false
+
+debt_registered: true
+debt_location: "src/secondsight/analysis/output_recovery.py — legacy direct-exception message marker fallback remains until adapter tasks consume evidence"
+
+resolved_items:
+  - original_section: "known_shortcuts"
+    original_description: "No explicit ExecutorFailureEvidence model existed, so adapters had no stable evidence shape to emit."
+    resolution: "Added EvidenceConfidence and ExecutorFailureEvidence, plus evidence-aware classify_output_failure(exc, evidence=...) support."
+  - original_section: "silent_failure_conditions"
+    original_description: "Adapter raw evidence could collide with canonical error_details envelope keys."
+    resolution: "Added tests covering reason/failure_class/retry_mode/attempts collisions and verified build_recovery_error_details() preserves canonical fields while moving raw collisions under raw_error_details."

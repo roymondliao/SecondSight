@@ -1,5 +1,5 @@
 feature: executor-failure-evidence-adapters
-status: kickoff
+status: implementation_complete
 origin:
   source_feature: changes/2026-05-15_analysis-output-recovery-phase2
   source_iteration: "Level 2 scar triage"
@@ -9,6 +9,30 @@ origin:
 
 docs:
   kickoff: changes/2026-05-16_executor-failure-evidence-adapters/1-kickoff.md
+  pre_thinking: changes/2026-05-16_executor-failure-evidence-adapters/2-pre-thinking.md
   problem_autopsy: changes/2026-05-16_executor-failure-evidence-adapters/problem-autopsy.md
+  plan: changes/2026-05-16_executor-failure-evidence-adapters/2-plan.md
+  acceptance: changes/2026-05-16_executor-failure-evidence-adapters/acceptance.yaml
+  overview: changes/2026-05-16_executor-failure-evidence-adapters/overview.md
 
-tasks: []
+tasks:
+  - id: task-1
+    title: "Add executor failure evidence contract to shared recovery"
+    status: done
+    scar_count: 2
+    unresolved_assumptions: 0
+    depends_on: []
+  - id: task-2
+    title: "Move CLI raw failure interpretation into CLI adapters"
+    status: done
+    scar_count: 2
+    unresolved_assumptions: 0
+    depends_on:
+      - task-1
+  - id: task-3
+    title: "Add SDK/router evidence extraction and parity validation"
+    status: done
+    scar_count: 2
+    unresolved_assumptions: 0
+    depends_on:
+      - task-1

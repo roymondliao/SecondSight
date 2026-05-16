@@ -1,0 +1,34 @@
+task_id: task-2
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: "CLI dispatcher still branches explicitly on agent_name instead of using a registry of failure-evidence adapters; this is acceptable for current claude_code/codex scope but will not scale cleanly to future CLI executors."
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: "Non-Claude generic non-zero CLI exits still use the legacy fatal_execution_error path without adapter evidence metadata unless they are Codex output-file failures."
+    deferred_to_feature_iteration: true
+
+assumptions_made:
+  - assumption: "Claude api_error_status=429 is better represented as transport_rate_limit than fatal_execution_error, while still not consuming output-repair retry budget."
+    verified: true
+    note: "Verified by updated CLI dispatcher test asserting failure_class=transport_rate_limit and retry path remains non-output-repair."
+    deferred_to_feature_iteration: false
+  - assumption: "Codex missing/unreadable output file is an executor/file contract failure, not model output JSON/schema failure."
+    verified: true
+    note: "Verified by test_codex_output_file_failure_uses_adapter_evidence."
+    deferred_to_feature_iteration: false
+
+debt_registered: true
+debt_location: "src/secondsight/analysis/cli_dispatcher.py — explicit agent_name branches for adapter-specific failure evidence"
+
+resolved_items:
+  - original_section: "known_shortcuts"
+    original_description: "Claude non-zero stdout parsing lived inside CLIAnalysisDispatcher, making the dispatcher the adapter."
+    resolution: "Moved Claude non-zero stdout/stderr interpretation into cli_adapters/claude_code.extract_failure_evidence()."
+  - original_section: "silent_failure_conditions"
+    original_description: "Claude auth/rate-limit messages were persisted as raw context but still classified as fatal_execution_error."
+    resolution: "Claude adapter now emits ExecutorFailureEvidence with fatal_auth_or_config or transport_rate_limit when structured status or adapter-local heuristics support it."
+  - original_section: "known_shortcuts"
+    original_description: "Codex output-file read failure used raw executor_reason only."
+    resolution: "Added cli_adapters/codex.output_file_failure_evidence() and routed the dispatcher file-read failure through shared evidence-aware classification."

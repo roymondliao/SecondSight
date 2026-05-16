@@ -48,6 +48,8 @@ from pydantic import ValidationError
 from secondsight.analysis.output import AnalysisOutput
 from secondsight.analysis.output_recovery import (
     ClassifiedFailure,
+    EvidenceConfidence,
+    ExecutorFailureEvidence,
     FailureClass,
     RecoveryAttempt,
     RecoveryTrace,
@@ -455,7 +457,8 @@ class SDKAnalysisDispatcher:
             }
 
         attempt_classes = [attempt.exception_class for attempt in exc.attempts]
-        extra_error_details: dict[str, Any] = {"attempt_classes": attempt_classes}
+        extra_error_details: dict[str, Any] = {}
+        trace_details: dict[str, Any] = {"attempt_classes": attempt_classes}
         fallback_used = len(exc.attempts) > 1
 
         if fallback_used:
@@ -467,11 +470,13 @@ class SDKAnalysisDispatcher:
             )
             extra_error_details["primary_error"] = str(exc.attempts[0])
             extra_error_details["fallback_error"] = str(exc.attempts[1])
+            trace_details["primary_error"] = str(exc.attempts[0])
+            trace_details["fallback_error"] = str(exc.attempts[1])
 
         return {
             "fallback_used": fallback_used,
             "error_details": extra_error_details,
-            "trace_details": extra_error_details,
+            "trace_details": trace_details,
         }
 
     def _classify_dispatch_failure(self, exc: Exception) -> ClassifiedFailure:
@@ -479,7 +484,12 @@ class SDKAnalysisDispatcher:
 
         validation_error = self._find_validation_error(exc)
         if validation_error is None:
-            failure = classify_output_failure(exc)
+            evidence = self._extract_sdk_failure_evidence(exc)
+            failure = (
+                classify_output_failure(exc, evidence=evidence)
+                if evidence is not None
+                else classify_output_failure(exc)
+            )
             if (
                 failure.failure_class is FailureClass.FATAL_EXECUTION_ERROR
                 and type(exc).__name__ not in failure.error
@@ -505,6 +515,27 @@ class SDKAnalysisDispatcher:
                 "outer_error": str(exc),
             },
         )
+
+    def _extract_sdk_failure_evidence(self, exc: Exception) -> ExecutorFailureEvidence | None:
+        """Extract SDK/router-owned evidence before shared classification."""
+
+        if isinstance(exc, (RouterChainExhaustedError, RouterTerminalError)) and exc.attempts:
+            attempt_classes = [str(attempt.exception_class) for attempt in exc.attempts]
+            failure_class = _classify_sdk_attempt_classes(
+                attempt_classes,
+                terminal=isinstance(exc, RouterTerminalError),
+            )
+            return ExecutorFailureEvidence(
+                source="sdk_router_attempt_trace",
+                executor="sdk",
+                failure_class=failure_class,
+                reason=failure_class.value,
+                message=str(exc),
+                raw={"attempt_classes": attempt_classes},
+                confidence=EvidenceConfidence.TYPED,
+            )
+
+        return None
 
     def _find_validation_error(self, exc: Exception) -> ValidationError | None:
         """Find the first ValidationError in __cause__/__context__ chains."""
@@ -547,6 +578,39 @@ class SDKAnalysisDispatcher:
             + retry_feedback
             + "\n\nReturn ONLY the requested structured output.\n"
         )
+
+
+def _classify_sdk_attempt_classes(
+    attempt_classes: list[str],
+    *,
+    terminal: bool,
+) -> FailureClass:
+    last_class = attempt_classes[-1]
+    classes = set(attempt_classes)
+
+    if _is_sdk_auth_exception_class(last_class):
+        return FailureClass.FATAL_AUTH_OR_CONFIG
+    if _is_sdk_timeout_exception_class(last_class):
+        return FailureClass.TRANSPORT_TIMEOUT
+    if _is_sdk_rate_limit_exception_class(last_class):
+        return FailureClass.TRANSPORT_RATE_LIMIT
+    if classes and all(_is_sdk_auth_exception_class(name) for name in classes):
+        return FailureClass.FATAL_AUTH_OR_CONFIG
+    if terminal:
+        return FailureClass.FATAL_EXECUTION_ERROR
+    return FailureClass.TRANSPORT_API_ERROR
+
+
+def _is_sdk_timeout_exception_class(name: str) -> bool:
+    return name in {"RouterChainTimeoutError", "TimeoutError", "ReadTimeout", "ConnectTimeout"}
+
+
+def _is_sdk_rate_limit_exception_class(name: str) -> bool:
+    return "RateLimit" in name
+
+
+def _is_sdk_auth_exception_class(name: str) -> bool:
+    return name in {"AuthenticationError", "AuthError"} or "Authentication" in name
 
 
 __all__ = ["SDKAnalysisDispatcher"]

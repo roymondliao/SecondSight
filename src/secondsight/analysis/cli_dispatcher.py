@@ -454,21 +454,34 @@ class CLIAnalysisDispatcher:
 
         # Check exit code
         if proc.returncode != 0:
-            claude_failure_context: dict[str, Any] = {}
+            classified_failure = None
+            decision = None
+            failure_context: dict[str, Any] = {}
             if agent_name == "claude_code":
-                claude_failure_context = _extract_claude_failure_context(stdout_raw)
+                evidence = _claude_code_adapter.extract_failure_evidence(
+                    raw_stdout=stdout_raw,
+                    stderr=stderr_raw,
+                    exit_code=proc.returncode,
+                )
+                classified_failure = classify_output_failure(
+                    RuntimeError(evidence.message or stderr_raw or stdout_raw),
+                    evidence=evidence,
+                )
+                decision = decide_retry(
+                    classified_failure,
+                    attempt_number=attempt + 1,
+                    max_attempts=max_attempts,
+                    feedback_max_chars=self._config.retry.feedback_max_chars,
+                )
+                failure_context = classified_failure.details
 
             diagnostic_bits: list[str] = []
             if stderr_raw:
                 diagnostic_bits.append(f"stderr: {stderr_raw[:200]!r}")
-            if not stderr_raw and "message" in claude_failure_context:
-                diagnostic_bits.append(
-                    f"stdout message: {claude_failure_context['message'][:200]!r}"
-                )
-            if "api_error_status" in claude_failure_context:
-                diagnostic_bits.append(
-                    f"api_error_status={claude_failure_context['api_error_status']!r}"
-                )
+            if not stderr_raw and classified_failure is not None and classified_failure.error:
+                diagnostic_bits.append(f"stdout message: {classified_failure.error[:200]!r}")
+            if "api_error_status" in failure_context:
+                diagnostic_bits.append(f"api_error_status={failure_context['api_error_status']!r}")
             if not diagnostic_bits:
                 diagnostic_bits.append(f"stdout: {stdout_raw[:200]!r}")
 
@@ -478,18 +491,34 @@ class CLIAnalysisDispatcher:
             )
             if _tmpdir_ctx is not None:
                 _tmpdir_ctx.cleanup()
+
+            reason = (
+                decision.reason
+                if decision is not None
+                else FailureClass.FATAL_EXECUTION_ERROR.value
+            )
+            failure_class = (
+                decision.failure_class.value
+                if decision is not None
+                else FailureClass.FATAL_EXECUTION_ERROR.value
+            )
+            retry_mode = decision.retry_mode.value if decision is not None else RetryMode.NONE.value
+            error = classified_failure.error if classified_failure is not None else ""
+            message = classified_failure.error if classified_failure is not None else ""
             return _make_failure_output(
                 session_id=session_id,
-                reason=FailureClass.FATAL_EXECUTION_ERROR.value,
-                failure_class=FailureClass.FATAL_EXECUTION_ERROR.value,
+                reason=reason,
+                failure_class=failure_class,
                 agent_name=agent_name,
                 exit_code=proc.returncode,
                 stderr=stderr_raw,
+                error=error,
                 retry_count=attempt,
                 attempts=attempt + 1,
                 retry_exhausted=False,
-                retry_mode=RetryMode.NONE.value,
-                extra_error_details=claude_failure_context,
+                retry_mode=retry_mode,
+                message=message,
+                extra_error_details=failure_context,
             )
 
         # For codex: read output from file
@@ -502,18 +531,29 @@ class CLIAnalysisDispatcher:
                 )
                 if _tmpdir_ctx is not None:
                     _tmpdir_ctx.cleanup()
+                evidence = _codex_adapter.output_file_failure_evidence(
+                    error=exc,
+                    stderr=stderr_raw,
+                )
+                classified_failure = classify_output_failure(exc, evidence=evidence)
+                decision = decide_retry(
+                    classified_failure,
+                    attempt_number=attempt + 1,
+                    max_attempts=max_attempts,
+                    feedback_max_chars=self._config.retry.feedback_max_chars,
+                )
                 return _make_failure_output(
                     session_id=session_id,
-                    reason=FailureClass.FATAL_EXECUTION_ERROR.value,
-                    failure_class=FailureClass.FATAL_EXECUTION_ERROR.value,
+                    reason=decision.reason,
+                    failure_class=decision.failure_class.value,
                     agent_name=agent_name,
                     stderr=stderr_raw,
                     retry_count=attempt,
-                    error=str(exc),
+                    error=classified_failure.error,
                     attempts=attempt + 1,
-                    retry_exhausted=False,
-                    retry_mode=RetryMode.NONE.value,
-                    extra_error_details={"executor_reason": "output_file_missing"},
+                    retry_exhausted=decision.reason == "retry_exhausted",
+                    retry_mode=decision.retry_mode.value,
+                    extra_error_details=classified_failure.details,
                 )
             finally:
                 # Cleanup temp directory (also cleans up the output file)
@@ -686,35 +726,6 @@ def _filter_env(env: dict[str, str]) -> dict[str, str]:
     filtered = {k: v for k, v in env.items() if not k.startswith("SECONDSIGHT_")}
     filtered[_HOOK_DISABLE_ENV_VAR] = "1"
     return filtered
-
-
-def _extract_claude_failure_context(raw_stdout: str) -> dict[str, Any]:
-    """Best-effort recovery of Claude CLI error details from stdout JSON.
-
-    Claude may exit non-zero while still emitting a structured JSON envelope
-    on stdout. When stderr is empty, this is the only place operator-grade
-    diagnostics like 429 quota errors survive.
-    """
-    try:
-        payload = json.loads(raw_stdout)
-    except json.JSONDecodeError, ValueError, TypeError:
-        payload = None
-
-    if not isinstance(payload, dict):
-        excerpt = raw_stdout.strip()
-        return {"stdout_excerpt": excerpt[:200]} if excerpt else {}
-
-    details: dict[str, Any] = {}
-    if payload.get("is_error") is True:
-        details["cli_reported_error"] = True
-    if "api_error_status" in payload:
-        details["api_error_status"] = payload["api_error_status"]
-    if "subtype" in payload:
-        details["subtype"] = payload["subtype"]
-    result_text = str(payload.get("result", "")).strip()
-    if result_text:
-        details["message"] = result_text[:500]
-    return details
 
 
 def _augment_prompt_with_error(original_prompt: str, error_message: str) -> str:

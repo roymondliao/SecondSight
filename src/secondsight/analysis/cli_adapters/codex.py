@@ -35,6 +35,12 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
+from secondsight.analysis.output_recovery import (
+    EvidenceConfidence,
+    ExecutorFailureEvidence,
+    FailureClass,
+)
+
 
 def build_command(
     model: str | None,
@@ -71,4 +77,26 @@ def build_command(
     return cmd, output_path
 
 
-__all__ = ["build_command"]
+def output_file_failure_evidence(
+    *,
+    error: OSError,
+    stderr: str,
+) -> ExecutorFailureEvidence:
+    """Build Codex-owned evidence for output-file read failures."""
+
+    raw: dict[str, object] = {"executor_reason": "output_file_missing"}
+    if stderr:
+        raw["stderr"] = stderr
+
+    return ExecutorFailureEvidence(
+        source="cli_output_file",
+        executor="codex",
+        failure_class=FailureClass.FATAL_EXECUTION_ERROR,
+        reason=FailureClass.FATAL_EXECUTION_ERROR.value,
+        message=str(error),
+        raw=raw,
+        confidence=EvidenceConfidence.TYPED,
+    )
+
+
+__all__ = ["build_command", "output_file_failure_evidence"]

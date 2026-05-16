@@ -398,7 +398,37 @@ async def test_transport_failure_preserves_sdk_attempt_trace_details():
     assert output.error_details["reason"] == "transport_timeout"
     assert output.error_details["attempts"] == 1
     assert output.error_details["attempt_classes"] == ["TimeoutError", "TimeoutError"]
+    assert output.error_details["evidence_source"] == "sdk_router_attempt_trace"
+    assert output.error_details["evidence_confidence"] == "typed"
+    assert output.error_details["evidence_executor"] == "sdk"
     assert output.error_details["retry_exhausted"] is False
+
+
+def test_sdk_attempt_evidence_beats_misleading_outer_message() -> None:
+    """Router attempt records must drive SDK classification before message text."""
+    from secondsight.analysis.output_recovery import FailureClass
+    from secondsight.analysis.sdk_dispatcher import SDKAnalysisDispatcher
+
+    dispatcher = SDKAnalysisDispatcher.__new__(SDKAnalysisDispatcher)
+    exc = RouterChainExhaustedError(
+        "outer message says authentication failed, but attempt class is RateLimitError",
+        attempts=[
+            AttemptRecord(
+                model_name=_TEST_PRIMARY_MODEL,
+                exception_class="RateLimitError",
+                duration_ms=125.0,
+            )
+        ],
+    )
+
+    failure = dispatcher._classify_dispatch_failure(exc)
+
+    assert failure.failure_class is FailureClass.TRANSPORT_RATE_LIMIT
+    assert failure.reason == "transport_rate_limit"
+    assert failure.details["evidence_source"] == "sdk_router_attempt_trace"
+    assert failure.details["evidence_confidence"] == "typed"
+    assert failure.details["evidence_executor"] == "sdk"
+    assert failure.details["attempt_classes"] == ["RateLimitError"]
 
 
 @pytest.mark.asyncio
@@ -442,6 +472,9 @@ async def test_fallback_terminal_failure_marks_fallback_used_and_preserves_both_
         "RateLimitError",
         "UnexpectedModelBehavior",
     ]
+    assert output.error_details["evidence_source"] == "sdk_router_attempt_trace"
+    assert output.error_details["evidence_confidence"] == "typed"
+    assert output.error_details["evidence_executor"] == "sdk"
     assert "primary_error" in output.error_details
     assert "fallback_error" in output.error_details
 

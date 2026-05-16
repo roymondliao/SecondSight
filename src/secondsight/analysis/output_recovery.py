@@ -41,6 +41,15 @@ class RetryMode(str, Enum):
     TRANSPORT = "transport"
 
 
+class EvidenceConfidence(str, Enum):
+    """How strongly executor evidence supports a classification."""
+
+    TYPED = "typed"
+    DERIVED = "derived"
+    HEURISTIC = "heuristic"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True)
 class NormalizationResult:
     """Result of normalizing a raw model response prior to JSON validation."""
@@ -63,6 +72,49 @@ class ClassifiedFailure:
         """Return a JSON-safe representation for logs / error_details."""
 
         return _json_safe(asdict(self))
+
+
+@dataclass(frozen=True)
+class ExecutorFailureEvidence:
+    """Executor-owned failure evidence before shared recovery classification.
+
+    The shared layer may trust stable fields here, but raw executor/provider
+    wording belongs to the adapter that creates this evidence.
+    """
+
+    source: str
+    executor: str
+    failure_class: FailureClass | str | None = None
+    reason: str | None = None
+    message: str = ""
+    raw: Mapping[str, Any] = field(default_factory=dict)
+    confidence: EvidenceConfidence | str = EvidenceConfidence.UNKNOWN
+
+    def to_failure_details(self) -> dict[str, Any]:
+        """Return evidence metadata plus raw adapter details for error_details."""
+
+        confidence = (
+            self.confidence.value
+            if isinstance(self.confidence, EvidenceConfidence)
+            else str(self.confidence)
+        )
+        details: dict[str, Any] = {
+            "evidence_source": self.source,
+            "evidence_confidence": confidence,
+            "evidence_executor": self.executor,
+        }
+        if self.reason:
+            details["evidence_reason"] = self.reason
+
+        for key, value in self.raw.items():
+            if key in details:
+                raw_error_details = details.setdefault("raw_error_details", {})
+                if isinstance(raw_error_details, dict):
+                    raw_error_details[key] = value
+                continue
+            details[str(key)] = value
+
+        return sanitize_error_details(details)
 
 
 @dataclass(frozen=True)
@@ -165,8 +217,15 @@ def normalize_llm_json_text(raw: str) -> NormalizationResult:
     return NormalizationResult(normalized_text=stripped, changed=False)
 
 
-def classify_output_failure(exc: Exception) -> ClassifiedFailure:
+def classify_output_failure(
+    exc: Exception,
+    *,
+    evidence: ExecutorFailureEvidence | None = None,
+) -> ClassifiedFailure:
     """Classify output/validation failures into shared recovery categories."""
+
+    if evidence is not None:
+        return _classify_executor_evidence(exc, evidence)
 
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         return ClassifiedFailure(
@@ -509,6 +568,40 @@ def _retry_mode_for_failure_class(failure_class: FailureClass) -> RetryMode:
     return RetryMode.NONE
 
 
+def _classify_executor_evidence(
+    exc: Exception,
+    evidence: ExecutorFailureEvidence,
+) -> ClassifiedFailure:
+    details = evidence.to_failure_details()
+    failure_class = _coerce_failure_class(evidence.failure_class)
+
+    if failure_class is None:
+        return ClassifiedFailure(
+            failure_class=FailureClass.FATAL_EXECUTION_ERROR,
+            reason="fatal_execution_error",
+            error=evidence.message or str(exc),
+            details=details,
+        )
+
+    return ClassifiedFailure(
+        failure_class=failure_class,
+        reason=evidence.reason or failure_class.value,
+        error=evidence.message or str(exc),
+        details=details,
+    )
+
+
+def _coerce_failure_class(value: FailureClass | str | None) -> FailureClass | None:
+    if value is None:
+        return None
+    if isinstance(value, FailureClass):
+        return value
+    try:
+        return FailureClass(str(value))
+    except ValueError:
+        return None
+
+
 def _classify_transport_attempt_trace(exc: Exception) -> ClassifiedFailure | None:
     from secondsight.sdk.router import AttemptRecord, RouterChainExhaustedError
 
@@ -697,6 +790,8 @@ def _redact_secret_match(match: re.Match[str]) -> str:
 
 __all__ = [
     "ClassifiedFailure",
+    "EvidenceConfidence",
+    "ExecutorFailureEvidence",
     "FailureClass",
     "NormalizationResult",
     "RecoveryAttempt",

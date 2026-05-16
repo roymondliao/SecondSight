@@ -772,14 +772,92 @@ class TestDC6_SubprocessNonZeroExit:
 
         assert result.status == "failure"
         assert result.error_details is not None
-        assert result.error_details["reason"] == "fatal_execution_error"
-        assert result.error_details["failure_class"] == "fatal_execution_error"
+        assert result.error_details["reason"] == "transport_rate_limit"
+        assert result.error_details["failure_class"] == "transport_rate_limit"
+        assert result.error_details["evidence_source"] == "cli_stdout_envelope"
+        assert result.error_details["evidence_confidence"] == "derived"
+        assert result.error_details["evidence_executor"] == "claude_code"
         assert result.error_details["api_error_status"] == 429
         assert result.error_details["message"] == "You've hit your org's monthly usage limit"
         assert any("api_error_status=429" in record.message for record in caplog.records)
         assert any("monthly usage limit" in record.message for record in caplog.records), (
             caplog.text
         )
+
+    @pytest.mark.asyncio
+    async def test_claude_nonzero_exit_classifies_auth_through_adapter_evidence(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        claude_error_stdout = json.dumps(
+            {
+                "type": "result",
+                "subtype": "error_during_execution",
+                "is_error": True,
+                "api_error_status": 401,
+                "result": "Invalid API key",
+            }
+        )
+
+        async def create_proc(*args, **kwargs):
+            return _make_proc_mock(stdout=claude_error_stdout, stderr="", returncode=1)
+
+        dispatcher = _make_dispatcher()
+
+        with patch(
+            "secondsight.analysis.cli_dispatcher.asyncio.create_subprocess_exec",
+            side_effect=create_proc,
+        ):
+            result = await dispatcher.dispatch(
+                session_id="sess-001",
+                project_root=tmp_path,
+                session_payload={"events": []},
+            )
+
+        assert result.status == "failure"
+        assert result.error_details is not None
+        assert result.error_details["reason"] == "fatal_auth_or_config"
+        assert result.error_details["failure_class"] == "fatal_auth_or_config"
+        assert result.error_details["evidence_source"] == "cli_stdout_envelope"
+        assert result.error_details["evidence_confidence"] == "derived"
+        assert result.error_details["evidence_executor"] == "claude_code"
+
+    @pytest.mark.asyncio
+    async def test_claude_ambiguous_nonzero_exit_stays_low_confidence_fatal_execution(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        claude_error_stdout = json.dumps(
+            {
+                "type": "result",
+                "subtype": "error_during_execution",
+                "is_error": True,
+                "result": "model stopped unexpectedly",
+            }
+        )
+
+        async def create_proc(*args, **kwargs):
+            return _make_proc_mock(stdout=claude_error_stdout, stderr="", returncode=1)
+
+        dispatcher = _make_dispatcher()
+
+        with patch(
+            "secondsight.analysis.cli_dispatcher.asyncio.create_subprocess_exec",
+            side_effect=create_proc,
+        ):
+            result = await dispatcher.dispatch(
+                session_id="sess-001",
+                project_root=tmp_path,
+                session_payload={"events": []},
+            )
+
+        assert result.status == "failure"
+        assert result.error_details is not None
+        assert result.error_details["reason"] == "fatal_execution_error"
+        assert result.error_details["failure_class"] == "fatal_execution_error"
+        assert result.error_details["evidence_source"] == "cli_stdout_envelope"
+        assert result.error_details["evidence_confidence"] == "unknown"
+        assert result.error_details["retry_mode"] == "none"
 
 
 class TestDC_CodexTempfile:
@@ -825,6 +903,36 @@ class TestDC_CodexTempfile:
             f"Output file {output_file_path!r} must NOT be inside project_root={str(tmp_path)!r}. "
             "Codex output files must go in a system temp directory."
         )
+
+    @pytest.mark.asyncio
+    async def test_codex_output_file_failure_uses_adapter_evidence(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        config = _make_config(default_agent="codex")
+        state = _make_state(agent="codex")
+        dispatcher = CLIAnalysisDispatcher(config=config, state=state)
+
+        async def create_proc(*args, **kwargs):
+            return _make_proc_mock(stdout="", stderr="", returncode=0)
+
+        with patch(
+            "secondsight.analysis.cli_dispatcher.asyncio.create_subprocess_exec",
+            side_effect=create_proc,
+        ):
+            result = await dispatcher.dispatch(
+                session_id="sess-001",
+                project_root=tmp_path,
+                session_payload={"events": []},
+            )
+
+        assert result.status == "failure"
+        assert result.error_details is not None
+        assert result.error_details["reason"] == "fatal_execution_error"
+        assert result.error_details["failure_class"] == "fatal_execution_error"
+        assert result.error_details["evidence_source"] == "cli_output_file"
+        assert result.error_details["evidence_confidence"] == "typed"
+        assert result.error_details["evidence_executor"] == "codex"
 
 
 class TestDC_UnknownAgent:

@@ -1,0 +1,34 @@
+task_id: task-3
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: "SDK attempt-class classification duplicates a small amount of private helper logic from shared recovery instead of exposing a single shared attempt-class mapper."
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: "SDK provider exceptions without router attempt records still fall back to legacy direct exception classification, including shared message-marker fallback for config-only failures."
+    deferred_to_feature_iteration: true
+
+assumptions_made:
+  - assumption: "Router attempt records are a stronger source of truth than outer RouterChainExhaustedError/RouterTerminalError messages."
+    verified: true
+    note: "Verified by test_sdk_attempt_evidence_beats_misleading_outer_message."
+    deferred_to_feature_iteration: false
+  - assumption: "RouterTerminalError with fallback attempts should preserve fallback attribution while classifying an untyped terminal fallback failure as fatal_execution_error."
+    verified: true
+    note: "Verified by test_fallback_terminal_failure_marks_fallback_used_and_preserves_both_errors."
+    deferred_to_feature_iteration: false
+
+debt_registered: true
+debt_location: "src/secondsight/analysis/sdk_dispatcher.py — local SDK attempt-class mapping and legacy no-attempt exception fallback"
+
+resolved_items:
+  - original_section: "silent_failure_conditions"
+    original_description: "SDK failure outputs could preserve attempt_classes while omitting whether classification came from typed evidence or message fallback."
+    resolution: "Added SDK ExecutorFailureEvidence extraction with evidence_source=sdk_router_attempt_trace, evidence_confidence=typed, and evidence_executor=sdk."
+  - original_section: "silent_failure_conditions"
+    original_description: "Misleading RouterChainExhaustedError outer messages could obscure whether tests were relying on message text or attempt records."
+    resolution: "Added a death test with auth wording in the outer message and RateLimitError in attempt records, asserting attempt evidence wins."
+  - original_section: "known_shortcuts"
+    original_description: "Router context mixed attempt_classes with attribution details in extra_error_details."
+    resolution: "Separated trace_details from persisted extra_error_details so evidence metadata owns top-level attempt_classes while router context owns primary_error/fallback_error."

@@ -24,10 +24,13 @@ from pathlib import Path
 from secondsight.analysis.cli_adapters.claude_code import (
     build_command as claude_build_command,
     extract_result,
+    extract_failure_evidence,
 )
 from secondsight.analysis.cli_adapters.codex import (
     build_command as codex_build_command,
+    output_file_failure_evidence,
 )
+from secondsight.analysis.output_recovery import EvidenceConfidence, FailureClass
 
 
 # ===========================================================================
@@ -110,6 +113,45 @@ class TestClaudeCodeExtractResult:
         assert extracted == envelope
 
 
+class TestClaudeCodeFailureEvidence:
+    def test_structured_auth_error_emits_derived_failure_evidence(self) -> None:
+        envelope = json.dumps(
+            {
+                "type": "result",
+                "subtype": "error_during_execution",
+                "is_error": True,
+                "api_error_status": 401,
+                "result": "Invalid API key",
+            }
+        )
+
+        evidence = extract_failure_evidence(raw_stdout=envelope, stderr="", exit_code=1)
+
+        assert evidence.executor == "claude_code"
+        assert evidence.source == "cli_stdout_envelope"
+        assert evidence.failure_class is FailureClass.FATAL_AUTH_OR_CONFIG
+        assert evidence.reason == "fatal_auth_or_config"
+        assert evidence.confidence is EvidenceConfidence.DERIVED
+        assert evidence.message == "Invalid API key"
+        assert evidence.raw["api_error_status"] == 401
+
+    def test_ambiguous_error_emits_low_confidence_execution_evidence(self) -> None:
+        envelope = json.dumps(
+            {
+                "type": "result",
+                "subtype": "error_during_execution",
+                "is_error": True,
+                "result": "model stopped unexpectedly",
+            }
+        )
+
+        evidence = extract_failure_evidence(raw_stdout=envelope, stderr="", exit_code=1)
+
+        assert evidence.failure_class is FailureClass.FATAL_EXECUTION_ERROR
+        assert evidence.confidence is EvidenceConfidence.UNKNOWN
+        assert evidence.source == "cli_stdout_envelope"
+
+
 # ===========================================================================
 # Codex adapter
 # ===========================================================================
@@ -185,3 +227,18 @@ class TestCodexBuildCommand:
         cmd, output_path = result
         assert isinstance(cmd, list)
         assert isinstance(output_path, str)
+
+
+class TestCodexFailureEvidence:
+    def test_output_file_failure_evidence_is_adapter_owned(self) -> None:
+        evidence = output_file_failure_evidence(
+            error=OSError("missing codex output"),
+            stderr="",
+        )
+
+        assert evidence.executor == "codex"
+        assert evidence.source == "cli_output_file"
+        assert evidence.failure_class is FailureClass.FATAL_EXECUTION_ERROR
+        assert evidence.reason == "fatal_execution_error"
+        assert evidence.confidence is EvidenceConfidence.TYPED
+        assert "missing codex output" in evidence.message
