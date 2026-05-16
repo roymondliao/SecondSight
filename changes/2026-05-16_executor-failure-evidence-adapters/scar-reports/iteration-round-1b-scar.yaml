@@ -1,0 +1,28 @@
+task_id: iteration-round-1b
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: "SDK controlled config wording is still recognized by literal framework phrases, but that knowledge now lives in SDK dispatcher evidence extraction instead of shared recovery."
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: "A new SDK framework config message without typed exception/status/attempts will classify as fatal_execution_error until SDK evidence extraction is updated."
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: "Shared recovery should not classify raw auth/config wording without adapter evidence."
+    verified: true
+    note: "Verified by test_raw_auth_message_without_evidence_does_not_trigger_shared_auth_marker."
+    deferred_to_feature_iteration: false
+  - assumption: "SDK-controlled no-provider-key RouterTerminalError can be classified through SDK evidence without shared message markers."
+    verified: true
+    note: "Verified by test_sdk_controlled_config_error_without_attempts_uses_sdk_evidence."
+    deferred_to_feature_iteration: false
+
+debt_registered: true
+debt_location: "src/secondsight/analysis/sdk_dispatcher.py — SDK-controlled config phrase extraction"
+
+resolved_items:
+  - original_section: "silent_failure_conditions"
+    original_description: "SDK provider failures without router attempts still rely on direct exception classification; typed/status evidence is fine, but final message-marker fallback remains in shared recovery."
+    resolution: "Removed shared auth/config raw message marker fallback and added SDK-controlled config evidence extraction for RouterTerminalError without attempts."

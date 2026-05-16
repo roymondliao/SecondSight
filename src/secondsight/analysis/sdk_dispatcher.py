@@ -536,6 +536,23 @@ class SDKAnalysisDispatcher:
                 confidence=EvidenceConfidence.TYPED,
             )
 
+        if isinstance(exc, RouterTerminalError):
+            message = str(exc)
+            lower_message = message.lower()
+            if (
+                "no provider keys resolvable" in lower_message
+                or "configuration error" in lower_message
+            ):
+                return ExecutorFailureEvidence(
+                    source="sdk_controlled_config",
+                    executor="sdk",
+                    failure_class=FailureClass.FATAL_AUTH_OR_CONFIG,
+                    reason=FailureClass.FATAL_AUTH_OR_CONFIG.value,
+                    message=message,
+                    raw={"exception_class": type(exc).__name__},
+                    confidence=EvidenceConfidence.DERIVED,
+                )
+
         return None
 
     def _find_validation_error(self, exc: Exception) -> ValidationError | None:

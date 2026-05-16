@@ -157,17 +157,24 @@ class TestDeathClassification:
 
     def test_fatal_auth_or_config_is_no_retry(self) -> None:
         from secondsight.analysis.output_recovery import (
+            EvidenceConfidence,
+            ExecutorFailureEvidence,
+            FailureClass,
             RetryMode,
             classify_output_failure,
             decide_retry,
         )
-        from secondsight.sdk.router import RouterTerminalError
 
         failure = classify_output_failure(
-            RouterTerminalError(
-                "no provider keys resolvable: primary provider 'openai' has empty key in "
-                "resolved_keys"
-            )
+            RuntimeError("no provider keys resolvable"),
+            evidence=ExecutorFailureEvidence(
+                source="sdk_controlled_config",
+                executor="sdk",
+                failure_class=FailureClass.FATAL_AUTH_OR_CONFIG,
+                reason="fatal_auth_or_config",
+                message="no provider keys resolvable",
+                confidence=EvidenceConfidence.DERIVED,
+            ),
         )
         decision = decide_retry(failure, attempt_number=1, max_attempts=3, feedback_max_chars=200)
 
@@ -175,6 +182,16 @@ class TestDeathClassification:
         assert decision.should_retry is False
         assert decision.retry_mode is RetryMode.NONE
         assert decision.retry_feedback == ""
+
+    def test_raw_auth_message_without_evidence_does_not_trigger_shared_auth_marker(
+        self,
+    ) -> None:
+        from secondsight.analysis.output_recovery import FailureClass, classify_output_failure
+
+        failure = classify_output_failure(RuntimeError("api key is invalid"))
+
+        assert failure.failure_class is FailureClass.FATAL_EXECUTION_ERROR
+        assert failure.reason == "fatal_execution_error"
 
     def test_retry_decision_objects_are_serializable_for_logs(self) -> None:
         from secondsight.analysis.output_recovery import (

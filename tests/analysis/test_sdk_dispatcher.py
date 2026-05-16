@@ -431,6 +431,24 @@ def test_sdk_attempt_evidence_beats_misleading_outer_message() -> None:
     assert failure.details["attempt_classes"] == ["RateLimitError"]
 
 
+def test_sdk_controlled_config_error_without_attempts_uses_sdk_evidence() -> None:
+    from secondsight.analysis.output_recovery import FailureClass
+    from secondsight.analysis.sdk_dispatcher import SDKAnalysisDispatcher
+
+    dispatcher = SDKAnalysisDispatcher.__new__(SDKAnalysisDispatcher)
+    failure = dispatcher._classify_dispatch_failure(
+        RouterTerminalError(
+            "no provider keys resolvable: primary provider 'openai' has empty key in resolved_keys"
+        )
+    )
+
+    assert failure.failure_class is FailureClass.FATAL_AUTH_OR_CONFIG
+    assert failure.reason == "fatal_auth_or_config"
+    assert failure.details["evidence_source"] == "sdk_controlled_config"
+    assert failure.details["evidence_confidence"] == "derived"
+    assert failure.details["evidence_executor"] == "sdk"
+
+
 @pytest.mark.asyncio
 async def test_fallback_terminal_failure_marks_fallback_used_and_preserves_both_errors():
     """If fallback is attempted then terminally fails, failure output must say so."""

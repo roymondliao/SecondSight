@@ -694,22 +694,7 @@ def _is_fatal_auth_or_config_error(exc: Exception) -> bool:
             status_code = getattr(current, "status_code", None)
             if status_code in {401, 403}:
                 return True
-
-    message = str(exc).lower()
-    if not message:
-        return False
-
-    fatal_markers = (
-        "no provider keys resolvable",
-        "configuration error",
-        "api key",
-        "authentication",
-        "unauthorized",
-        "forbidden",
-        "credential",
-        "invalid key",
-    )
-    return any(marker in message for marker in fatal_markers)
+    return False
 
 
 def _exception_name(exc: Exception) -> str:
