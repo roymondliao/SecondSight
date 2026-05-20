@@ -74,22 +74,12 @@ _ss_inject_conventions() {
         return 0
     fi
 
-    # Mirror ingress.py project_id_from_cwd(): basename, then sanitize.
-    local project_id
-    project_id="$(basename "$cwd" \
-        | sed 's/[^A-Za-z0-9._-]\{1,\}/-/g' \
-        | sed 's/^[.-]*//;s/[.-]*$//')"
-    if [ -z "$project_id" ]; then
-        _ss_injection_log "unusable cwd: $cwd"
-        return 0
-    fi
-
     local port="${SECONDSIGHT_PORT:-8420}"
     local agent="${SECONDSIGHT_AGENT:-claude_code}"
     local body
     body="$(jq -cn \
-        --arg pid "$project_id" \
-        '{"project_id": $pid}' 2>/dev/null)"
+        --arg cwd "$cwd" \
+        '{"cwd": $cwd}' 2>/dev/null)"
     [ -n "$body" ] || return 0
 
     local ss_home

@@ -276,6 +276,46 @@ def test_user_prompt_route_passes_hook_cwd_to_evaluator(
     assert captured_project_root == cwd
 
 
+def test_dt_user_prompt_route_derives_project_id_from_cwd(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Hook injection must not require shell-side project_id derivation."""
+    from secondsight.api import injection
+
+    real_load_project_config = injection.load_project_config
+    captured_project_id: str | None = None
+
+    def capture_load_project_config(home: Path, project_id: str):
+        nonlocal captured_project_id
+        captured_project_id = project_id
+        return real_load_project_config(home, project_id)
+
+    async def fake_evaluate_user_prompt(**_kwargs):
+        return SimpleNamespace(decision="pass", primary_category=None, failure_reason=None)
+
+    monkeypatch.setattr(injection, "load_project_config", capture_load_project_config)
+    monkeypatch.setattr(injection, "evaluate_user_prompt", fake_evaluate_user_prompt, raising=False)
+
+    home = tmp_path / ".secondsight"
+    home.mkdir()
+    cwd = tmp_path / "Project With Spaces"
+    cwd.mkdir()
+
+    with _client(home) as client:
+        response = client.post(
+            "/hook/injection/user-prompt/claude_code",
+            json={
+                "prompt": "fix tests",
+                "session_id": "sess-1",
+                "cwd": str(cwd),
+            },
+        )
+
+    assert response.status_code == 204
+    assert captured_project_id == "Project-With-Spaces"
+
+
 def test_user_prompt_route_rejects_relative_cwd(
     tmp_path: Path,
     monkeypatch,

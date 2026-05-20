@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from secondsight.adapters.base import AgentAdapter, NoAdapterError
 from secondsight.api._id_safety import is_safe_id
+from secondsight.api.ingress import project_id_from_cwd
 from secondsight.api.server import AppState
 from secondsight.config.loader import load_project_config
 from secondsight.config.schema import FeedbackConfig, SecondSightConfigError
@@ -39,7 +40,8 @@ class SessionStartInjectionRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    project_id: str = Field(..., min_length=1, max_length=128)
+    project_id: str | None = Field(default=None, min_length=1, max_length=128)
+    cwd: str | None = Field(default=None, min_length=1, max_length=4096)
 
 
 class UserPromptInjectionRequest(BaseModel):
@@ -47,7 +49,7 @@ class UserPromptInjectionRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    project_id: str = Field(..., min_length=1, max_length=128)
+    project_id: str | None = Field(default=None, min_length=1, max_length=128)
     prompt: str = Field(..., min_length=1)
     session_id: str | None = None
     cwd: str | None = Field(default=None, min_length=1, max_length=4096)
@@ -90,16 +92,39 @@ def _validate_path_id(name: str, value: str) -> None:
         raise HTTPException(status_code=422, detail=f"{name} contains unsafe characters.")
 
 
-def _project_root_from_cwd(cwd: str | None, *, fallback: Path) -> Path:
-    """Validate hook-provided cwd and return evaluator project_root."""
-    if cwd is None:
-        return fallback
+def _validated_hook_cwd(cwd: str) -> Path:
+    """Validate hook-provided cwd and return it as an absolute Path."""
     if "\x00" in cwd:
         raise HTTPException(status_code=422, detail="cwd contains unsafe characters.")
     path = Path(cwd)
     if not path.is_absolute():
         raise HTTPException(status_code=422, detail="cwd must be an absolute path.")
     return path
+
+
+def _project_root_from_cwd(cwd: str | None, *, fallback: Path) -> Path:
+    """Validate hook-provided cwd and return evaluator project_root."""
+    if cwd is None:
+        return fallback
+    return _validated_hook_cwd(cwd)
+
+
+def _project_id_from_hook_context(project_id: str | None, cwd: str | None) -> str:
+    """Resolve injection project_id with cwd as the canonical hook source."""
+    if cwd is not None:
+        try:
+            resolved = project_id_from_cwd(str(_validated_hook_cwd(cwd)))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="Cannot derive project_id from cwd.",
+            ) from exc
+        _validate_path_id("project_id", resolved)
+        return resolved
+    if project_id is None:
+        raise HTTPException(status_code=422, detail="project_id or cwd is required.")
+    _validate_path_id("project_id", project_id)
+    return project_id
 
 
 @router.post("/hook/injection/session-start/{agent}")
@@ -110,7 +135,7 @@ async def session_start_injection(
 ) -> Response:
     """Return raw SessionStart hook payload or 204 when there is nothing to inject."""
     _validate_path_id("agent", agent)
-    _validate_path_id("project_id", body.project_id)
+    project_id = _project_id_from_hook_context(body.project_id, body.cwd)
 
     state: AppState = request.app.state.server_state
     try:
@@ -121,12 +146,12 @@ async def session_start_injection(
         )
 
     try:
-        cfg = load_project_config(state.secondsight_home, body.project_id)
-        resources = await state.registry.get(body.project_id)
+        cfg = load_project_config(state.secondsight_home, project_id)
+        resources = await state.registry.get(project_id)
         repo = DirectivesRepository(resources.db_engine)
         repo.create_schema()
         text = await _build_session_start_text(
-            project_id=body.project_id,
+            project_id=project_id,
             feedback_config=cfg.feedback,
             repo=repo,
             adapter=adapter,
@@ -134,14 +159,14 @@ async def session_start_injection(
     except SecondSightConfigError as exc:
         logger.error(
             "SessionStart injection config resolution failed: project_id={pid} error={err}",
-            pid=body.project_id,
+            pid=project_id,
             err=exc,
         )
         raise HTTPException(status_code=500, detail="Injection config resolution failed.") from exc
     except RuntimeError as exc:
         logger.error(
             "SessionStart injection resources unavailable: project_id={pid} error={err}",
-            pid=body.project_id,
+            pid=project_id,
             err=exc,
         )
         raise HTTPException(
@@ -165,7 +190,7 @@ async def session_start_injection(
         logger.error(
             "SessionStart injection render failed: agent={agent} project_id={pid} error={err}",
             agent=agent,
-            pid=body.project_id,
+            pid=project_id,
             err=exc,
         )
         raise HTTPException(status_code=500, detail="Injection render failed.") from exc
@@ -181,7 +206,7 @@ async def user_prompt_injection(
 ) -> Response:
     """Return raw UserPromptSubmit guidance payload or 204 on pass/bypass/fail-open."""
     _validate_path_id("agent", agent)
-    _validate_path_id("project_id", body.project_id)
+    project_id = _project_id_from_hook_context(body.project_id, body.cwd)
 
     state: AppState = request.app.state.server_state
     try:
@@ -195,11 +220,11 @@ async def user_prompt_injection(
         return Response(status_code=204)
 
     try:
-        cfg = load_project_config(state.secondsight_home, body.project_id)
+        cfg = load_project_config(state.secondsight_home, project_id)
     except SecondSightConfigError as exc:
         logger.warning(
             "UserPrompt injection config resolution failed open: project_id={pid} error={err}",
-            pid=body.project_id,
+            pid=project_id,
             err=exc,
         )
         return Response(status_code=204)
@@ -224,7 +249,7 @@ async def user_prompt_injection(
             "UserPrompt evaluator raised and failed open: agent={agent} project_id={pid} "
             "session_id={sid} error={err}",
             agent=agent,
-            pid=body.project_id,
+            pid=project_id,
             sid=body.session_id,
             err=exc,
         )
@@ -236,7 +261,7 @@ async def user_prompt_injection(
                 "UserPrompt evaluator failed open: agent={agent} project_id={pid} "
                 "session_id={sid} reason={reason}",
                 agent=agent,
-                pid=body.project_id,
+                pid=project_id,
                 sid=body.session_id,
                 reason=evaluation.failure_reason,
             )
@@ -246,7 +271,7 @@ async def user_prompt_injection(
             "UserPrompt evaluator returned intervene without category; failing open: "
             "agent={agent} project_id={pid} session_id={sid}",
             agent=agent,
-            pid=body.project_id,
+            pid=project_id,
             sid=body.session_id,
         )
         return Response(status_code=204)
@@ -260,7 +285,7 @@ async def user_prompt_injection(
         logger.error(
             "UserPrompt injection render failed: agent={agent} project_id={pid} error={err}",
             agent=agent,
-            pid=body.project_id,
+            pid=project_id,
             err=exc,
         )
         raise HTTPException(status_code=500, detail="Injection render failed.") from exc
@@ -286,6 +311,7 @@ __all__ = [
     "SessionStartInjectionRequest",
     "UserPromptInjectionRequest",
     "_build_session_start_text",
+    "_project_id_from_hook_context",
     "_project_root_from_cwd",
     "_render_session_start_convention_template",
     "_resolve_cli_agent_from_state",

@@ -120,6 +120,37 @@ def test_dt_session_start_injection_selects_conventions_and_renders_agent_payloa
     }
 
 
+def test_dt_session_start_injection_derives_project_id_from_cwd(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Hook injection must not rely on shell-side project_id slugging."""
+    from secondsight.api import injection
+
+    captured_project_id: str | None = None
+
+    async def fake_text(*, project_id: str, feedback_config, **_) -> str:
+        nonlocal captured_project_id
+        captured_project_id = project_id
+        assert feedback_config.convention_injection_budget > 0
+        return "Injected convention text"
+
+    home = tmp_path / ".secondsight"
+    home.mkdir()
+    cwd = tmp_path / "Project With Spaces"
+    cwd.mkdir()
+    monkeypatch.setattr(injection, "_build_session_start_text", fake_text)
+
+    with _client(home) as client:
+        response = client.post(
+            "/hook/injection/session-start/codex",
+            json={"cwd": str(cwd)},
+        )
+
+    assert response.status_code == 200
+    assert captured_project_id == "Project-With-Spaces"
+
+
 def test_dt_session_start_injection_no_conventions_returns_204(
     tmp_path: Path,
 ) -> None:

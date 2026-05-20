@@ -986,6 +986,31 @@ def _make_recording_convention_server(conventions_body: str) -> tuple[int, Any, 
     return port, server, paths
 
 
+def _make_recording_body_server(conventions_body: str) -> tuple[int, Any, list[str]]:
+    """Start a fake server and record request bodies for hook contract tests."""
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    bodies: list[str] = []
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length", 0))
+            bodies.append(self.rfile.read(length).decode())
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(conventions_body.encode())
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    port = server.server_address[1]
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    return port, server, bodies
+
+
 class TestSessionStartConventionInjection:
     """Layer 1 tests: session-start.sh prints raw injection payloads to stdout."""
 
@@ -1026,6 +1051,23 @@ class TestSessionStartConventionInjection:
         finally:
             server.shutdown()
 
+    def test_session_start_hook_sends_cwd_not_project_id(self, tmp_path: Path) -> None:
+        """DT-SS-5: project_id derivation belongs to the server, not shell."""
+        body = '{"systemMessage":"raw payload from server"}'
+        port, server, bodies = _make_recording_body_server(body)
+        try:
+            home = tmp_path / ".secondsight"
+            home.mkdir()
+            env = build_env(port=port, home=home, agent="codex")
+            result = run_hook(hook_script("session-start.sh"), minimal_payload(), env=env)
+
+            assert result.returncode == 0
+            request_body = json.loads(bodies[0])
+            assert request_body == {"cwd": "/tmp/proj-test"}
+            assert "project_id" not in request_body
+        finally:
+            server.shutdown()
+
     def test_empty_stdout_when_server_unreachable(self, tmp_path: Path) -> None:
         """UT-SS-2: When server is unreachable, hook exits 0 with empty stdout.
 
@@ -1047,36 +1089,18 @@ class TestSessionStartConventionInjection:
             "Injection transport failures must leave diagnostics for operators"
         )
 
-    @pytest.mark.parametrize(
-        ("payload_obj", "expected_fragment"),
-        [
-            (
-                {
-                    "session_id": "sess-missing-cwd",
-                    "hook_event_name": "SessionStart",
-                },
-                "missing cwd",
-            ),
-            (
-                {
-                    "session_id": "sess-invalid-cwd",
-                    "cwd": "/...",
-                    "hook_event_name": "SessionStart",
-                },
-                "unusable cwd",
-            ),
-        ],
-    )
-    def test_dt_missing_or_invalid_cwd_writes_diagnostic(
+    def test_dt_missing_cwd_writes_diagnostic(
         self,
         tmp_path: Path,
-        payload_obj: dict[str, object],
-        expected_fragment: str,
     ) -> None:
-        """DT-SS-4: malformed SessionStart cwd is diagnosable, not silent 204."""
+        """DT-SS-4: missing SessionStart cwd is diagnosable, not silent 204."""
         home = tmp_path / ".secondsight"
         home.mkdir()
         env = build_env(port=1, home=home)
+        payload_obj = {
+            "session_id": "sess-missing-cwd",
+            "hook_event_name": "SessionStart",
+        }
 
         result = run_hook(hook_script("session-start.sh"), json.dumps(payload_obj), env=env)
 
@@ -1084,7 +1108,7 @@ class TestSessionStartConventionInjection:
         assert result.stdout == ""
         diagnostic = home / "logs" / "curl-errors.log"
         assert diagnostic.exists(), "missing/invalid cwd must leave hook diagnostics"
-        assert expected_fragment in diagnostic.read_text(encoding="utf-8")
+        assert "missing cwd" in diagnostic.read_text(encoding="utf-8")
 
     def test_dt_empty_stdout_when_no_conventions_available(self, tmp_path: Path) -> None:
         """DT-SS-3: A 204 injection response is a no-op and hook exit remains 0.
@@ -1142,6 +1166,30 @@ class TestUserPromptGuidanceInjection:
 
             assert result.returncode == 0
             assert result.stdout == body
+        finally:
+            server.shutdown()
+
+    def test_user_prompt_hook_sends_cwd_not_project_id(self, tmp_path: Path) -> None:
+        """DT-UP-1: project_id derivation belongs to the server, not shell."""
+        body = (
+            '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit",'
+            '"additionalContext":"clarify scope"}}'
+        )
+        port, server, bodies = _make_recording_body_server(body)
+        try:
+            home = tmp_path / ".secondsight"
+            home.mkdir()
+            env = build_env(port=port, home=home, agent="codex")
+            result = run_hook(hook_script("user-prompt.sh"), _user_prompt_payload(), env=env)
+
+            assert result.returncode == 0
+            request_body = json.loads(bodies[0])
+            assert request_body == {
+                "prompt": "fix it",
+                "session_id": "sess-test",
+                "cwd": "/tmp/proj-test",
+            }
+            assert "project_id" not in request_body
         finally:
             server.shutdown()
 

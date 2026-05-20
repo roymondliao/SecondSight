@@ -82,30 +82,18 @@ _ss_inject_prompt_guidance() {
     local session_id
     session_id="$(printf '%s' "$payload_json" | jq -r '.session_id // empty' 2>/dev/null)"
 
-    # Mirror ingress.py project_id_from_cwd(): basename, then sanitize.
-    local project_id
-    project_id="$(basename "$cwd" \
-        | sed 's/[^A-Za-z0-9._-]\{1,\}/-/g' \
-        | sed 's/^[.-]*//;s/[.-]*$//')"
-    if [ -z "$project_id" ]; then
-        _ss_injection_log "unusable cwd: $cwd"
-        return 0
-    fi
-
     local body
     if [ -n "$session_id" ]; then
         body="$(jq -cn \
-            --arg pid "$project_id" \
             --arg prompt "$prompt" \
             --arg cwd "$cwd" \
             --arg sid "$session_id" \
-            '{"project_id": $pid, "prompt": $prompt, "session_id": $sid, "cwd": $cwd}' 2>/dev/null)"
+            '{"prompt": $prompt, "session_id": $sid, "cwd": $cwd}' 2>/dev/null)"
     else
         body="$(jq -cn \
-            --arg pid "$project_id" \
             --arg prompt "$prompt" \
             --arg cwd "$cwd" \
-            '{"project_id": $pid, "prompt": $prompt, "session_id": null, "cwd": $cwd}' 2>/dev/null)"
+            '{"prompt": $prompt, "session_id": null, "cwd": $cwd}' 2>/dev/null)"
     fi
     [ -n "$body" ] || return 0
 
