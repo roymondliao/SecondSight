@@ -360,8 +360,8 @@ def create_app(
     from secondsight.api.analysis import router as analysis_router
     from secondsight.api.directives import router as directives_router
     from secondsight.api.hooks import router as hooks_router
+    from secondsight.api.injection import router as injection_router
     from secondsight.api.observation import router as observation_router
-    from secondsight.api.session_start import router as session_start_router
 
     home = Path(secondsight_home)
     if not home.is_absolute():
@@ -494,11 +494,7 @@ def create_app(
         lifespan=lifespan,
     )
 
-    # Mount session-start BEFORE hooks — specific path "/hook/session-start"
-    # must precede the generic "/hook/{event_type}" pattern (FastAPI matches
-    # path operations in registration order; the parametric route would
-    # swallow the specific one if registered first).
-    app.include_router(session_start_router)
+    app.include_router(injection_router)
     # Mount the hooks router
     app.include_router(hooks_router)
     # Mount the observation router (GUR-147 task-A5)

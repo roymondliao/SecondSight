@@ -318,9 +318,52 @@ def test_dt9_data_builders_keys_match_hook_event_types() -> None:
     )
 
 
+def test_dt10_render_injection_outputs_use_claude_additional_context() -> None:
+    """DC1/DC5: Claude final hook payloads use the hookSpecificOutput envelope."""
+    adapter = ClaudeCodeAdapter()
+
+    session_payload = json.loads(adapter.render_session_start_output("Session convention"))
+    prompt_payload = json.loads(adapter.render_user_prompt_output("Prompt guidance"))
+
+    assert session_payload == {
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": "Session convention",
+        }
+    }
+    assert prompt_payload == {
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": "Prompt guidance",
+        }
+    }
+    assert "systemMessage" not in session_payload
+    assert "systemMessage" not in prompt_payload
+
+
 # ---------------------------------------------------------------------------
 # UNIT TESTS
 # ---------------------------------------------------------------------------
+
+
+def test_render_injection_outputs_escape_json_content() -> None:
+    adapter = ClaudeCodeAdapter()
+    payload = adapter.render_session_start_output('Line 1\n"quoted"')
+    parsed = json.loads(payload)
+
+    assert parsed["hookSpecificOutput"]["additionalContext"] == 'Line 1\n"quoted"'
+
+
+def test_render_user_prompt_output_uses_user_prompt_submit_event_name() -> None:
+    adapter = ClaudeCodeAdapter()
+    payload = json.loads(adapter.render_user_prompt_output("Prompt guidance"))
+
+    assert payload == {
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": "Prompt guidance",
+        }
+    }
 
 
 def test_supported_event_types_floor() -> None:

@@ -576,6 +576,19 @@ def test_death_vocab_constants_are_importable() -> None:
         )
 
 
+def test_feedback_template_defaults_match_schema_defaults() -> None:
+    """Feedback defaults must not drift between config template and schema."""
+    from secondsight.config.schema import FeedbackConfig
+    from secondsight.config.template import generate_config_template
+
+    parsed = tomllib.loads(generate_config_template())
+    feedback = parsed["feedback"]
+    defaults = FeedbackConfig()
+
+    assert feedback["convention_injection_budget"] == defaults.convention_injection_budget
+    assert feedback["convention_top_n"] == defaults.convention_top_n
+
+
 # ---------------------------------------------------------------------------
 # No-import-from-analysis guard
 # ---------------------------------------------------------------------------

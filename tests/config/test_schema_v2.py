@@ -485,6 +485,33 @@ class TestUTV2Schema8SecondSightConfigNewFields:
         f = SecondSightConfig.__dataclass_fields__["analysis"]
         assert "AnalysisConfig" in str(f.type) or f.type is AnalysisConfig
 
+    def test_has_feedback(self) -> None:
+        from dataclasses import fields
+
+        from secondsight.config.schema import SecondSightConfig
+
+        assert "feedback" in {f.name for f in fields(SecondSightConfig)}
+
+
+class TestUTV2Schema8FeedbackConfig:
+    """Feedback config defaults and validation."""
+
+    def test_feedback_config_defaults_match_template(self) -> None:
+        from secondsight.config.schema import FeedbackConfig
+
+        cfg = FeedbackConfig()
+        assert cfg.convention_injection_budget == 2000
+        assert cfg.convention_top_n == 15
+
+    def test_feedback_config_rejects_invalid_values(self) -> None:
+        from secondsight.config.schema import FeedbackConfig, SecondSightConfigError
+
+        with pytest.raises(SecondSightConfigError, match="convention_injection_budget"):
+            FeedbackConfig(convention_injection_budget=0)
+
+        with pytest.raises(SecondSightConfigError, match="convention_top_n"):
+            FeedbackConfig(convention_top_n=True)  # type: ignore[arg-type]
+
 
 class TestUTV2Schema9AllDataclassesFrozen:
     """UT-v2-schema-9: All new dataclasses are frozen (immutable after construction)."""

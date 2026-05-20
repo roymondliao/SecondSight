@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -49,6 +50,20 @@ def _hook_dir(tmp_path: Path) -> Path:
 
 def _settings(tmp_path: Path) -> Path:
     return tmp_path / "settings.json"
+
+
+def _secondsight_command(entries: list[dict[str, object]]) -> str:
+    for entry in entries:
+        hooks = entry.get("hooks")
+        if not isinstance(hooks, list) or not hooks:
+            continue
+        first = hooks[0]
+        if not isinstance(first, dict):
+            continue
+        command = cast(dict[str, object], first).get("command")
+        if isinstance(command, str) and SECONDSIGHT_MARKER in command:
+            return command
+    raise AssertionError(f"missing SecondSight command in {entries!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +267,23 @@ def test_pre_and_post_tool_use_get_matcher(tmp_path: Path) -> None:
     # SessionStart/End and UserPromptSubmit do NOT carry matcher (Claude Code
     # rejects matcher on non-tool events).
     assert "matcher" not in written["hooks"]["SessionStart"][0]
+
+
+def test_session_start_and_user_prompt_install_transport_scripts(tmp_path: Path) -> None:
+    settings_path = _settings(tmp_path)
+    hook_dir = _hook_dir(tmp_path)
+    patcher = ClaudeSettingsPatcher(settings_path)
+    patcher.apply(hook_dir)
+
+    written = json.loads(settings_path.read_text(encoding="utf-8"))
+    session_command = _secondsight_command(written["hooks"]["SessionStart"])
+    prompt_command = _secondsight_command(written["hooks"]["UserPromptSubmit"])
+
+    assert f"{hook_dir / 'session-start.sh'}" in session_command
+    assert f"{hook_dir / 'user-prompt.sh'}" in prompt_command
+    assert "event=session_start" in session_command
+    assert "event=user_prompt" in prompt_command
+    assert "matcher" not in written["hooks"]["UserPromptSubmit"][0]
 
 
 def test_find_existing_secondsight_paths_handles_missing_file(tmp_path: Path) -> None:

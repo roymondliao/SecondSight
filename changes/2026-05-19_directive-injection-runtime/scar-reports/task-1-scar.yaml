@@ -1,0 +1,33 @@
+task_id: task-1
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: "The legacy /hook/session-start envelope route remains mounted because Task 1 only establishes feedback config, adapter render seams, and the new injection router scaffold; Task 2 owns migrating SessionStart selection and removing/replacing the stale envelope route."
+    deferred_to_feature_iteration: true
+  - description: "SessionStart text assembly remains a no-op scaffold; active convention selection and template assembly are intentionally deferred to Task 2."
+    deferred_to_feature_iteration: true
+  - description: "UserPromptSubmit injection remains a 204 scaffold; bypass, evaluator, and guidance template runtime are intentionally deferred to Task 3."
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: "If Codex does not actually consume the selected event-scoped UserPromptSubmit hookSpecificOutput.additionalContext shape, Task 1 adapter tests will pass but real Codex prompt guidance will be ignored; fixing this requires Task 3/4 contract validation against the user-prompt runtime and hook evidence."
+    deferred_to_feature_iteration: true
+
+assumptions_made:
+  - assumption: "Resolved feedback belongs on SecondSightConfig as a first-class section rather than an ad hoc helper local to injection routes."
+    verified: true
+    note: "Verified by focused config loader/schema tests and route tests that resolve cfg.feedback from global/project TOML layers."
+  - assumption: "Config and adapter render failures should surface in Task 1 rather than fail open as 204 no-op responses."
+    verified: true
+    note: "Verified by tests/api/test_injection_session_start.py tests for invalid [feedback] config and adapter render exceptions returning 500 instead of 204."
+
+debt_registered: true
+debt_location: "src/secondsight/api/session_start.py legacy route; src/secondsight/api/injection.py Task 2/3 scaffolds; src/secondsight/adapters/codex.py UserPromptSubmit event-scoped contract evidence"
+
+resolved_items:
+  - original_section: "assumptions_made"
+    original_description: "Resolved feedback belongs on SecondSightConfig as a first-class section rather than an ad hoc helper local to injection routes."
+    resolution: "Added FeedbackConfig to SecondSightConfig and wired loader resolution through project/global/builtin precedence with focused tests."
+  - original_section: "silent_failure_conditions"
+    original_description: "Invalid [feedback] config and non-NotImplemented adapter render exceptions could silently return 204 and look like valid no-op injection."
+    resolution: "Changed SessionStart injection config/render failures to log as errors and return 500, with focused API tests asserting they do not return 204."

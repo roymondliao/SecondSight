@@ -526,25 +526,55 @@ class TestDeathTests:
         lines = [ln for ln in fallback.read_text().splitlines() if ln.strip()]
         assert len(lines) == 1, f"Expected 1 fallback line from symlinked hook, got {len(lines)}"
 
-    def test_dt10_disable_hooks_env_short_circuits_session_end(self, tmp_path: Path) -> None:
-        """DT-10: Internal hook-disable flag must suppress observation entirely.
+    @pytest.mark.parametrize(
+        "script_name",
+        ["session-end.sh", "session-start.sh", "user-prompt.sh"],
+    )
+    def test_dt10_disable_hooks_env_short_circuits_hook_scripts(
+        self,
+        tmp_path: Path,
+        script_name: str,
+    ) -> None:
+        """DT-10: Internal hook-disable flag must suppress hook work entirely.
 
         This is the regression guard for CLI analysis recursion: when the
         analysis subprocess runs under a globally-hooked agent, the hook must
-        exit 0 without posting or writing fallback records.
+        exit 0 without injecting, posting, or writing fallback records.
         """
         home = tmp_path / ".secondsight"
         home.mkdir()
+        calls_file = tmp_path / "curl-calls.txt"
+        fake_bin = tmp_path / "fake-bin"
+        fake_bin.mkdir()
+        for tool in ("bash", "dirname", "pwd", "readlink"):
+            path = subprocess.run(["which", tool], capture_output=True, text=True).stdout.strip()
+            assert path, f"test prerequisite missing: {tool}"
+            (fake_bin / tool).symlink_to(path)
+        fake_curl = fake_bin / "curl"
+        fake_curl.write_text(
+            "#!/usr/bin/env bash\n"
+            'printf \'%s\\n\' "${@: -1}" >> "$SECONDSIGHT_TEST_CURL_CALLS"\n'
+            "exit 99\n",
+            encoding="utf-8",
+        )
+        fake_curl.chmod(0o755)
+
         env = build_env(port=1, home=home)
         env["SECONDSIGHT_DISABLE_HOOKS"] = "1"
+        env["PATH"] = str(fake_bin)
+        env["SECONDSIGHT_TEST_CURL_CALLS"] = str(calls_file)
 
-        result = run_hook(hook_script("session-end.sh"), minimal_payload(), env=env)
+        result = run_hook(hook_script(script_name), minimal_payload(), env=env)
         assert result.returncode == 0, (
             f"Disabled hook must still exit 0; got {result.returncode}. stderr={result.stderr!r}"
         )
+        assert result.stdout == ""
         fallback = home / FALLBACK_FILENAME
         assert not fallback.exists(), (
             "Hook-disable flag must short-circuit before any fallback/event write occurs"
+        )
+        assert not calls_file.exists(), (
+            "Hook-disable flag must short-circuit before any injection or ingest curl call"
         )
 
 
@@ -903,14 +933,9 @@ class TestUnitTests:
 # SESSION-START CONVENTION INJECTION TESTS (Layer 1)
 # ===========================================================================
 
-FAKE_CONVENTIONS = (
-    "- Always read AGENTS.md before starting.\n"
-    "- Prefer editing existing files over creating new ones."
-)
 
-
-def _make_convention_server(conventions_body: str) -> tuple[int, Any]:
-    """Start a fake HTTP server that returns a session-start conventions response.
+def _make_convention_server(conventions_body: str, *, status: int = 200) -> tuple[int, Any]:
+    """Start a fake HTTP server that returns a session-start injection response.
 
     Returns (port, server) so the caller can shut it down.
     """
@@ -920,7 +945,7 @@ def _make_convention_server(conventions_body: str) -> tuple[int, Any]:
         def do_POST(self) -> None:  # noqa: N802
             length = int(self.headers.get("Content-Length", 0))
             self.rfile.read(length)
-            self.send_response(200)
+            self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(conventions_body.encode())
@@ -935,23 +960,42 @@ def _make_convention_server(conventions_body: str) -> tuple[int, Any]:
     return port, server
 
 
+def _make_recording_convention_server(conventions_body: str) -> tuple[int, Any, list[str]]:
+    """Start a fake server and record request paths for hook transport tests."""
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    paths: list[str] = []
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length", 0))
+            self.rfile.read(length)
+            paths.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(conventions_body.encode())
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    port = server.server_address[1]
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    return port, server, paths
+
+
 class TestSessionStartConventionInjection:
-    """Layer 1 tests: session-start.sh prints conventions to stdout for system prompt injection."""
+    """Layer 1 tests: session-start.sh prints raw injection payloads to stdout."""
 
-    def test_conventions_printed_to_stdout_when_server_responds(self, tmp_path: Path) -> None:
-        """UT-SS-1: When server returns active conventions, hook prints them to stdout.
+    def test_dt_raw_server_payload_printed_to_stdout_unchanged(self, tmp_path: Path) -> None:
+        """DT-SS-1: hook stdout must be the exact agent-ready response body.
 
-        Claude Code reads SessionStart hook stdout as system prompt content.
-        The conventions must appear verbatim in hook stdout.
+        The hook must not unwrap a legacy ``.conventions`` field. The server
+        already rendered the target agent's SessionStart envelope.
         """
-        body = json.dumps(
-            {
-                "conventions": FAKE_CONVENTIONS,
-                "count": 2,
-                "budget_used": 80,
-                "budget_total": 2000,
-            }
-        )
+        body = '{"systemMessage":"raw payload from server"}'
         port, server = _make_convention_server(body)
         try:
             home = tmp_path / ".secondsight"
@@ -962,9 +1006,23 @@ class TestSessionStartConventionInjection:
             assert result.returncode == 0, (
                 f"session-start.sh exited non-zero; stderr={result.stderr!r}"
             )
-            assert FAKE_CONVENTIONS in result.stdout, (
-                f"Conventions not found in stdout.\nstdout={result.stdout!r}\nstderr={result.stderr!r}"
-            )
+            assert result.stdout == body
+        finally:
+            server.shutdown()
+
+    def test_session_start_hook_calls_new_injection_namespace(self, tmp_path: Path) -> None:
+        """UT-SS-1: the hook calls /hook/injection/session-start/{agent} first."""
+        body = '{"systemMessage":"raw payload from server"}'
+        port, server, paths = _make_recording_convention_server(body)
+        try:
+            home = tmp_path / ".secondsight"
+            home.mkdir()
+            env = build_env(port=port, home=home, agent="codex")
+            result = run_hook(hook_script("session-start.sh"), minimal_payload(), env=env)
+
+            assert result.returncode == 0
+            assert paths[0] == "/hook/injection/session-start/codex"
+            assert "/hook/session-start" not in paths
         finally:
             server.shutdown()
 
@@ -972,7 +1030,7 @@ class TestSessionStartConventionInjection:
         """UT-SS-2: When server is unreachable, hook exits 0 with empty stdout.
 
         Pre-execution injection must degrade silently — no stdout means no
-        system prompt modification, which is the correct cold-start behavior.
+        system prompt modification, while curl diagnostics remain available.
         """
         home = tmp_path / ".secondsight"
         home.mkdir()
@@ -985,16 +1043,57 @@ class TestSessionStartConventionInjection:
         assert result.stdout.strip() == "", (
             f"Expected empty stdout on dead port; got: {result.stdout!r}"
         )
+        assert (home / "logs" / "curl-errors.log").exists(), (
+            "Injection transport failures must leave diagnostics for operators"
+        )
 
-    def test_empty_stdout_when_no_conventions_available(self, tmp_path: Path) -> None:
-        """UT-SS-3: When server returns empty conventions, hook stdout is empty.
+    @pytest.mark.parametrize(
+        ("payload_obj", "expected_fragment"),
+        [
+            (
+                {
+                    "session_id": "sess-missing-cwd",
+                    "hook_event_name": "SessionStart",
+                },
+                "missing cwd",
+            ),
+            (
+                {
+                    "session_id": "sess-invalid-cwd",
+                    "cwd": "/...",
+                    "hook_event_name": "SessionStart",
+                },
+                "unusable cwd",
+            ),
+        ],
+    )
+    def test_dt_missing_or_invalid_cwd_writes_diagnostic(
+        self,
+        tmp_path: Path,
+        payload_obj: dict[str, object],
+        expected_fragment: str,
+    ) -> None:
+        """DT-SS-4: malformed SessionStart cwd is diagnosable, not silent 204."""
+        home = tmp_path / ".secondsight"
+        home.mkdir()
+        env = build_env(port=1, home=home)
+
+        result = run_hook(hook_script("session-start.sh"), json.dumps(payload_obj), env=env)
+
+        assert result.returncode == 0
+        assert result.stdout == ""
+        diagnostic = home / "logs" / "curl-errors.log"
+        assert diagnostic.exists(), "missing/invalid cwd must leave hook diagnostics"
+        assert expected_fragment in diagnostic.read_text(encoding="utf-8")
+
+    def test_dt_empty_stdout_when_no_conventions_available(self, tmp_path: Path) -> None:
+        """DT-SS-3: A 204 injection response is a no-op and hook exit remains 0.
 
         This is the normal cold-start path: project exists, server is running,
         but analysis has not yet produced any conventions. Hook must not print
-        an empty string or whitespace — truly nothing.
+        an empty string or whitespace, and ingest still happens separately.
         """
-        body = json.dumps({"conventions": "", "count": 0, "budget_used": 0, "budget_total": 2000})
-        port, server = _make_convention_server(body)
+        port, server = _make_convention_server("", status=204)
         try:
             home = tmp_path / ".secondsight"
             home.mkdir()
@@ -1005,5 +1104,57 @@ class TestSessionStartConventionInjection:
             assert result.stdout.strip() == "", (
                 f"Expected empty stdout when conventions=''; got: {result.stdout!r}"
             )
+        finally:
+            server.shutdown()
+
+
+# ===========================================================================
+# USER-PROMPT GUIDANCE INJECTION TESTS (Layer 1)
+# ===========================================================================
+
+
+def _user_prompt_payload() -> str:
+    return json.dumps(
+        {
+            "session_id": "sess-test",
+            "cwd": "/tmp/proj-test",
+            "transcript_path": "/tmp/transcript.jsonl",
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "fix it",
+        }
+    )
+
+
+class TestUserPromptGuidanceInjection:
+    """Layer 1 tests: user-prompt.sh prints raw guidance payloads fail-open."""
+
+    def test_raw_server_payload_printed_to_stdout_unchanged(self, tmp_path: Path) -> None:
+        body = (
+            '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit",'
+            '"additionalContext":"clarify scope"}}'
+        )
+        port, server = _make_convention_server(body)
+        try:
+            home = tmp_path / ".secondsight"
+            home.mkdir()
+            env = build_env(port=port, home=home, agent="codex")
+            result = run_hook(hook_script("user-prompt.sh"), _user_prompt_payload(), env=env)
+
+            assert result.returncode == 0
+            assert result.stdout == body
+        finally:
+            server.shutdown()
+
+    def test_dt_empty_stdout_when_injection_server_errors(self, tmp_path: Path) -> None:
+        """DC3: hook-side UserPromptSubmit injection failure fails open."""
+        port, server = _make_convention_server("provider failed", status=500)
+        try:
+            home = tmp_path / ".secondsight"
+            home.mkdir()
+            env = build_env(port=port, home=home, agent="claude_code")
+            result = run_hook(hook_script("user-prompt.sh"), _user_prompt_payload(), env=env)
+
+            assert result.returncode == 0
+            assert result.stdout == ""
         finally:
             server.shutdown()

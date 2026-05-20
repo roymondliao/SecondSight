@@ -62,7 +62,10 @@ from secondsight.config.schema import (
     AnalysisCLIModelsConfig,
     AnalysisRetryConfig,
     AnalysisSDKConfig,
+    BUILTIN_FEEDBACK_CONVENTION_INJECTION_BUDGET,
+    BUILTIN_FEEDBACK_CONVENTION_TOP_N,
     FallbackModelsConfig,
+    FeedbackConfig,
     GeneralConfig,
     GlobalAnalysisConfig,
     ModelsConfig,
@@ -107,6 +110,7 @@ __all__ = [
     "_build_general_config",
     "_build_providers_config",
     "_build_analysis_config",
+    "_build_feedback_config",
     # Shared ignore-condition helper (single source of truth for DC12 detection)
     "_legacy_default_agent_should_be_ignored",
     # New in analysis-mode-toggle task-5: materialized resolved provider keys
@@ -572,6 +576,58 @@ def _build_analysis_config(doc: dict[str, Any]) -> AnalysisConfig:
     )
 
 
+def _resolve_feedback_field(
+    *,
+    field_name: str,
+    global_section: dict[str, Any],
+    project_section: dict[str, Any],
+    builtin_default: int,
+) -> int:
+    if field_name in project_section:
+        value = project_section[field_name]
+    elif field_name in global_section:
+        value = global_section[field_name]
+    else:
+        value = builtin_default
+    if type(value) is not int:
+        raise SecondSightConfigError(
+            f"[feedback].{field_name} must be an integer; got {type(value).__name__!r}"
+        )
+    if value <= 0:
+        raise SecondSightConfigError(f"[feedback].{field_name} must be > 0; got {value!r}")
+    return value
+
+
+def _build_feedback_config(
+    *,
+    global_doc: dict[str, Any],
+    project_doc: dict[str, Any],
+) -> FeedbackConfig:
+    """Build FeedbackConfig by resolving project → global → builtin per field."""
+    global_section = global_doc.get("feedback")
+    if not isinstance(global_section, dict):
+        global_section = {}
+
+    project_section = project_doc.get("feedback")
+    if not isinstance(project_section, dict):
+        project_section = {}
+
+    return FeedbackConfig(
+        convention_injection_budget=_resolve_feedback_field(
+            field_name="convention_injection_budget",
+            global_section=global_section,
+            project_section=project_section,
+            builtin_default=BUILTIN_FEEDBACK_CONVENTION_INJECTION_BUDGET,
+        ),
+        convention_top_n=_resolve_feedback_field(
+            field_name="convention_top_n",
+            global_section=global_section,
+            project_section=project_section,
+            builtin_default=BUILTIN_FEEDBACK_CONVENTION_TOP_N,
+        ),
+    )
+
+
 def _build_global_analysis_config(doc: dict[str, Any]) -> GlobalAnalysisConfig:
     """Build GlobalAnalysisConfig from the parsed global TOML doc.
 
@@ -785,6 +841,9 @@ def _build_config_from_docs(
     # analysis.cli.default_agent will not diverge for the same input config.
     analysis_global = _build_global_analysis_config(global_doc)
 
+    # [feedback] section — project → global → builtin per field.
+    feedback = _build_feedback_config(global_doc=global_doc, project_doc=project_doc)
+
     # Per-project model override
     project_analysis_section = project_doc.get("analysis")
     if not isinstance(project_analysis_section, dict):
@@ -805,6 +864,7 @@ def _build_config_from_docs(
         analysis=analysis,
         analysis_global=analysis_global,
         project_analysis=ProjectAnalysisConfig(model=project_model),
+        feedback=feedback,
     )
 
 

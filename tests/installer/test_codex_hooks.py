@@ -162,6 +162,32 @@ def test_apply_creates_fresh_hooks_json_when_missing(tmp_path: Path) -> None:
         assert "matcher" not in entry, f"{event} should not install matcher"
 
 
+def test_session_start_and_user_prompt_install_codex_agent_transport(
+    tmp_path: Path,
+) -> None:
+    hooks_path = _hooks_json(tmp_path)
+    hook_dir = _hook_dir(tmp_path)
+    patcher = CodexHooksPatcher(hooks_path)
+    patcher.apply(hook_dir)
+
+    written = json.loads(hooks_path.read_text(encoding="utf-8"))
+    session_entry = _secondsight_entry(written["hooks"]["SessionStart"])
+    prompt_entry = _secondsight_entry(written["hooks"]["UserPromptSubmit"])
+    session_hooks = cast(list[dict[str, object]], session_entry["hooks"])
+    prompt_hooks = cast(list[dict[str, object]], prompt_entry["hooks"])
+    session_command = session_hooks[0]["command"]
+    prompt_command = prompt_hooks[0]["command"]
+
+    assert isinstance(session_command, str)
+    assert isinstance(prompt_command, str)
+    assert session_command.startswith("SECONDSIGHT_AGENT=codex ")
+    assert prompt_command.startswith("SECONDSIGHT_AGENT=codex ")
+    assert f"{hook_dir / 'session-start.sh'}" in session_command
+    assert f"{hook_dir / 'user-prompt.sh'}" in prompt_command
+    assert "event=session_start" in session_command
+    assert "event=user_prompt" in prompt_command
+
+
 def test_death_tool_hook_without_matcher_is_conflict(tmp_path: Path) -> None:
     hook_dir = _hook_dir(tmp_path)
     hooks_path = _hooks_json(tmp_path)

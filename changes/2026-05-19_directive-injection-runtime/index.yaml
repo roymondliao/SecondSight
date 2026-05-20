@@ -1,0 +1,40 @@
+feature: directive-injection-runtime
+status: done_with_concerns
+plan_ref_doc: changes/2026-05-19_directive-injection-runtime/2-plan.md
+acceptance_ref_doc: changes/2026-05-19_directive-injection-runtime/acceptance.yaml
+overview_ref_doc: changes/2026-05-19_directive-injection-runtime/overview.md
+research_refs:
+  kickoff: changes/2026-05-19_directive-injection-runtime/1-kickoff.md
+  problem_autopsy: changes/2026-05-19_directive-injection-runtime/problem-autopsy.md
+  pre_thinking: changes/2026-05-19_directive-injection-runtime/2-pre-thinking.md
+  convention_contract: changes/2026-05-19_directive-injection-runtime/a-convention-injection-contract.md
+  hit_contract: changes/2026-05-19_directive-injection-runtime/b-hit-based-guidance-contract.md
+
+tasks:
+  - id: task-1
+    title: "Add feedback config and adapter render seams for injection payloads"
+    status: done_with_concerns
+    scar_count: 4
+    unresolved_assumptions: 0
+    depends_on: []
+
+  - id: task-2
+    title: "Migrate SessionStart convention injection to the new injection namespace"
+    status: done_with_concerns
+    scar_count: 2
+    unresolved_assumptions: 0
+    depends_on: [task-1]
+
+  - id: task-3
+    title: "Implement UserPromptSubmit hit guidance runtime with bypass and mode-aware evaluator"
+    status: done_with_concerns
+    scar_count: 3
+    unresolved_assumptions: 1
+    depends_on: [task-1]
+
+  - id: task-4
+    title: "Rewrite contract tests for raw hook payloads, fail-open, and recursion guard"
+    status: done_with_concerns
+    scar_count: 3
+    unresolved_assumptions: 0
+    depends_on: [task-2, task-3]

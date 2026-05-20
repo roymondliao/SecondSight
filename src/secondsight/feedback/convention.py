@@ -3,7 +3,8 @@
 Responsibilities:
 - Query active conventions from DirectivesRepository
 - Sort by frequency descending (highest-impact first)
-- Apply token budget truncation (default ≤ 2000 tokens)
+- Apply token budget truncation (default ≤ 2000 tokens, overridden at
+  SessionStart injection time by resolved [feedback] config)
 - Return a list of Convention DTOs ready for adapter formatting
 
 Token estimation:

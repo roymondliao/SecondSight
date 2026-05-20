@@ -1,0 +1,62 @@
+feature: directive-injection-runtime
+coverage_type: verified
+
+scenarios:
+  - name: "CLI-mode hit evaluator subprocess is hook-disabled"
+    type: death_path
+    given: "general.mode=cli and UserPromptSubmit hit evaluation runs through a CLI subprocess"
+    when: "the evaluator launches the configured coding-agent CLI"
+    then:
+      - "the subprocess environment contains SECONDSIGHT_DISABLE_HOOKS=1"
+      - "no recursive hook transport is triggered from the evaluator session"
+
+  - name: "Malformed or timed-out hit evaluator fails open"
+    type: death_path
+    given: "a valid UserPromptSubmit injection request"
+    when: "the ambiguity evaluator times out or returns malformed JSON"
+    then:
+      - "the endpoint returns 204 No Content"
+      - "the hook script exits 0"
+      - "the user_prompt observation ingest still executes"
+
+  - name: "Bypass patterns do not trigger ambiguity evaluation"
+    type: death_path
+    given: "an agent-specific bypass prompt such as a slash command or explicit escape"
+    when: "POST /hook/injection/user-prompt/{agent} is called"
+    then:
+      - "the bypass matcher short-circuits before the evaluator runs"
+      - "the endpoint returns 204 No Content"
+
+  - name: "Codex session-level and event-level injection shapes do not collapse into one payload"
+    type: death_path
+    given: "the same agent type (codex) across SessionStart and UserPromptSubmit"
+    when: "the adapter renders final payloads for both injection moments"
+    then:
+      - "SessionStart uses session-scoped systemMessage rendering"
+      - "UserPromptSubmit does not reuse session-scoped systemMessage rendering"
+
+  - name: "Configured convention budget is honored at runtime"
+    type: degradation
+    given: "feedback.convention_injection_budget is set below the default"
+    when: "SessionStart convention injection selects active conventions"
+    then:
+      - "selection respects the configured budget rather than a hard-coded 2000 token value"
+      - "the server still returns a valid rendered payload or 204"
+
+  - name: "SessionStart returns agent-ready raw payload"
+    type: happy_path
+    given: "active conventions exist for a project"
+    when: "POST /hook/injection/session-start/{agent} is called"
+    then:
+      - "the response body is the exact stdout payload the hook should print"
+      - "Claude Code receives hookSpecificOutput.additionalContext payload shape"
+      - "Codex receives top-level systemMessage payload shape"
+
+  - name: "UserPromptSubmit returns event-scoped guidance only on semantic hit"
+    type: happy_path
+    given: "a prompt that the evaluator classifies as intervene with a primary category"
+    when: "POST /hook/injection/user-prompt/{agent} is called"
+    then:
+      - "the category maps to a fixed short guidance template"
+      - "the response body is the exact stdout payload the hook should print"
+      - "the guidance is event-scoped rather than persisted session-level context"

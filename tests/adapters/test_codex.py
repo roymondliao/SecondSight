@@ -225,9 +225,49 @@ def test_dt11_lowercase_or_nested_hook_payload_regressions_fail_loudly() -> None
     assert "UserPromptSubmit" in str(exc_info.value)
 
 
+def test_dt12_render_session_start_and_user_prompt_do_not_collapse() -> None:
+    """DC5: Codex SessionStart stays session-scoped; UserPromptSubmit is not."""
+    adapter = CodexAdapter()
+
+    session_payload = json.loads(adapter.render_session_start_output("Session convention"))
+    prompt_payload = json.loads(adapter.render_user_prompt_output("Prompt guidance"))
+
+    assert session_payload == {"systemMessage": "Session convention"}
+    assert prompt_payload == {
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": "Prompt guidance",
+        }
+    }
+    assert "systemMessage" not in prompt_payload
+    assert session_payload != prompt_payload
+
+
 # ---------------------------------------------------------------------------
 # UNIT TESTS
 # ---------------------------------------------------------------------------
+
+
+def test_render_session_start_output_escapes_json_content() -> None:
+    adapter = CodexAdapter()
+    payload = adapter.render_session_start_output('Line 1\n"quoted"')
+    parsed = json.loads(payload)
+
+    assert parsed == {"systemMessage": 'Line 1\n"quoted"'}
+
+
+def test_render_user_prompt_output_escapes_json_content_without_system_message() -> None:
+    adapter = CodexAdapter()
+    payload = adapter.render_user_prompt_output('Line 1\n"quoted"')
+    parsed = json.loads(payload)
+
+    assert parsed == {
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": 'Line 1\n"quoted"',
+        }
+    }
+    assert "systemMessage" not in parsed
 
 
 @pytest.mark.parametrize("path", _fixture_paths(), ids=lambda p: p.name)

@@ -1,0 +1,51 @@
+task_id: task-2
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: "The legacy /hook/session-start envelope route remains mounted and still has its older API tests; Task 2 migrated the hook and new injection namespace but did not remove the stale route because that requires changing server mounting and legacy route tests outside the specified task files."
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: "If the injection endpoint is unavailable or returns an error, session-start.sh exits 0 and emits no injection payload; the agent transcript still cannot distinguish this from a valid 204 no-conventions response, but curl diagnostics are now written under SECONDSIGHT_HOME/logs."
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: "Resolved [feedback].convention_injection_budget is the correct runtime budget source for SessionStart convention selection."
+    verified: true
+    note: "Verified by tests/api/test_injection_session_start.py::test_dt_session_start_non_default_feedback_budget_changes_selection_runtime selecting only the convention that fits a non-default budget."
+    deferred_to_feature_iteration: false
+  - assumption: "Installer command strings remain stable because scripts, not settings payloads, own the transport URL and raw response passthrough."
+    verified: true
+    note: "Verified by focused installer tests: tests/installer/test_claude_settings.py and tests/installer/test_codex_hooks.py passed without production installer changes."
+    deferred_to_feature_iteration: false
+  - assumption: "Adapter render_session_start_output contracts from Task 1 are sufficient evidence for agent-ready SessionStart payload shape."
+    verified: true
+    note: "Verified by tests/api/test_injection_session_start.py asserting Claude Code hookSpecificOutput.additionalContext and Codex top-level systemMessage JSON responses from the new injection route."
+    deferred_to_feature_iteration: false
+
+debt_registered: true
+debt_location: "src/secondsight/api/server.py legacy session_start_router mount and tests/api/test_session_start.py legacy envelope coverage"
+
+narrative: |
+  Task 2 moved the active SessionStart hook path to POST /hook/injection/session-start/{agent}.
+  The server now selects stored active conventions at request time, applies the resolved feedback
+  convention budget, wraps formatted convention lines in the SessionStart convention template,
+  and returns the adapter-rendered raw hook payload. The shell hook now prints that response body
+  unchanged and then separately posts the session_start observation through the existing ingest path.
+
+resolved_items:
+  - original_section: "known_shortcuts"
+    original_description: "Potential shortcut: leaving session-start.sh to print unwrapped convention text"
+    resolution: "session-start.sh now calls /hook/injection/session-start/{agent} and prints the raw response body without jq-unwrapping .conventions; covered by hook stdout and request-path tests."
+  - original_section: "known_shortcuts"
+    original_description: "Potential shortcut: treating empty selection as \"conventions\": \"\" JSON instead of true no-op payload semantics"
+    resolution: "The new injection route returns 204 with an empty body when no conventions are selected, and the hook 204 path exits 0 with empty stdout."
+  - original_section: "assumptions_made"
+    original_description: "Assumption to verify: installer command strings remain stable because scripts, not settings payloads, own the transport"
+    resolution: "Ran tests/installer/test_claude_settings.py and tests/installer/test_codex_hooks.py; both passed without changing installer command generation."
+  - original_section: "silent_failure_conditions"
+    original_description: "If the injection endpoint is unavailable or returns an error, session-start.sh exits 0 and emits no injection payload; the agent transcript cannot distinguish this from a valid 204 no-conventions response."
+    resolution: "session-start.sh now logs injection curl failures to $SECONDSIGHT_HOME/logs/curl-errors.log while preserving empty stdout and exit 0; covered by tests/scripts/test_hook_fallback.py::TestSessionStartConventionInjection::test_empty_stdout_when_server_unreachable."
+  - original_section: "silent_failure_conditions"
+    original_description: "If a SessionStart hook payload lacks cwd, session-start.sh cannot derive project_id and will emit no injection payload while still ingesting the session_start observation."
+    resolution: "session-start.sh now logs missing cwd, unusable cwd, missing jq, and missing curl injection-skip reasons to $SECONDSIGHT_HOME/logs/curl-errors.log while preserving exit 0 and empty stdout; covered by tests/scripts/test_hook_fallback.py::TestSessionStartConventionInjection::test_dt_missing_or_invalid_cwd_writes_diagnostic."

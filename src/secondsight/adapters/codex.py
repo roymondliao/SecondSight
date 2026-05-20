@@ -21,6 +21,7 @@ Privacy contract:
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any, Callable
 
@@ -177,6 +178,25 @@ class CodexAdapter(AgentAdapter):
         if len(sanitized) > self._MAX_INSTRUCTION_CHARS:
             sanitized = sanitized[: self._MAX_INSTRUCTION_CHARS] + "…"
         return f"- {sanitized}"
+
+    def render_session_start_output(self, text: str) -> str:
+        return json.dumps(
+            {"systemMessage": text},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+    def render_user_prompt_output(self, text: str) -> str:
+        return json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": text,
+                }
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
 
     def normalize(self, envelope: IngressEnvelope, event_type: str) -> PartialEvent:
         if not envelope.event_id:

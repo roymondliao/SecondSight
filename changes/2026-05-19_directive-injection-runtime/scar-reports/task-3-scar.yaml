@@ -1,0 +1,58 @@
+task_id: task-3
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: "Bypass registry is hard-coded in prompt_guidance.py rather than backed by a configurable registry or persisted project/agent data model. Rationale for deferral: task 3 only defines v1 bypass behavior; changing storage/config schema would cross feature-level config/data-model ownership."
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: "Codex UserPromptSubmit event-scoped hookSpecificOutput.additionalContext is verified by adapter/API contract tests, but not by a real transcript-backed Codex capture in this task. Rationale for deferral: requires live client transcript/capture validation outside this task's server/hook unit scope."
+    deferred_to_feature_iteration: true
+  - description: "If evaluator provider credentials, binaries, or SDK routing are broken, the feature correctly fails open to 204; users may only notice by absence of guidance unless warning logs are inspected."
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: "SecondSight-owned classifier prompt plus fixed category template mapping is sufficient for v1; evaluator never generates user-facing guidance."
+    verified: true
+    note: "Verified by prompt_evaluator parse tests and API tests that map evaluator category to fixed guidance_for_category() output."
+    deferred_to_feature_iteration: false
+  - assumption: "CLI-mode evaluator subprocesses inherit the existing hook-disable recursion guard."
+    verified: true
+    note: "Verified by test_dt_cli_mode_evaluator_subprocess_forces_hook_disable_env asserting SECONDSIGHT_DISABLE_HOOKS=1 and no other SECONDSIGHT_* env leakage."
+    deferred_to_feature_iteration: false
+  - assumption: "Malformed and timed-out evaluator output must fail open and not block observation ingest."
+    verified: true
+    note: "Verified by prompt evaluator fail-open death tests, API fail-open test, and user-prompt.sh fake-curl test proving ingest still runs after injection failure."
+    deferred_to_feature_iteration: false
+  - assumption: "Accepted Codex event-scoped output contract is sufficient for v1 without transcript-backed capture."
+    verified: false
+    note: "Adapter and API tests assert event-scoped hookSpecificOutput.additionalContext, but no live Codex transcript/capture is produced by this task; if false, guidance can be returned by the server and still ignored by Codex."
+    deferred_to_feature_iteration: true
+
+debt_registered: true
+debt_location: "src/secondsight/feedback/prompt_guidance.py hard-coded bypass registry; Codex transcript validation deferred; prompt evaluator fail-open observability relies on warning logs."
+
+narrative: |
+  Task 3 implements the B-contract server path and hook behavior: bypass before evaluation, mode-aware classifier evaluation, fixed guidance template mapping, adapter-rendered UserPromptSubmit payloads, and shell-side injection fetch before separate user_prompt ingest.
+
+  The largest remaining concern is evidence, not current code shape: v1 tests prove the server and adapter return event-scoped JSON, but they do not prove the real Codex client displays that context. The runtime therefore meets the documented contract with a feature-level validation scar.
+
+resolved_items:
+  - original_section: "known_shortcuts"
+    original_description: "CLI default_agent='auto' could silently fall back to claude_code inside the prompt evaluator."
+    resolution: "Added resolved_cli_agent plumbing from API state.json resolution and a death test that auto without resolved state fails open before subprocess spawn."
+  - original_section: "silent_failure_conditions"
+    original_description: "Evaluator timeout or malformed output could block a UserPromptSubmit instead of failing open."
+    resolution: "Added PromptEvaluation.pass_open paths for timeout/malformed output and API 204 fail-open tests."
+  - original_section: "silent_failure_conditions"
+    original_description: "Injection endpoint failure could prevent observation ingest in user-prompt.sh."
+    resolution: "Updated user-prompt.sh to call injection first, swallow injection failure, then still call secondsight_post user_prompt; verified with a fake curl hook test."
+  - original_section: "known_shortcuts"
+    original_description: "UserPromptSubmit injection request body does not include cwd, so CLI evaluator subprocess cwd is secondsight_home rather than the user's project root."
+    resolution: "Added optional cwd to UserPromptInjectionRequest, included cwd in user-prompt.sh injection body, validated absolute cwd at the API boundary, and passed it as evaluator project_root with focused route and hook tests."
+  - original_section: "silent_failure_conditions"
+    original_description: "Malformed evaluator output silently collapsed into normal 204 pass with no degraded-state evidence."
+    resolution: "Added API warning log for evaluation.failure_reason before returning 204 and an API-level caplog test for malformed_output evidence."
+  - original_section: "silent_failure_conditions"
+    original_description: "Evaluator timeout cleanup only sent terminate and never waited or escalated to kill."
+    resolution: "Added bounded terminate/grace/kill cleanup mirroring CLIAnalysisDispatcher behavior and asserted terminate plus kill in the timeout death test."

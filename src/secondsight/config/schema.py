@@ -70,6 +70,7 @@ __all__ = [
     "AnalysisSDKConfig",
     "AnalysisRetryConfig",
     "AnalysisConfig",
+    "FeedbackConfig",
     # SDK model defaults — named constants (single source of truth for schema + loader)
     "BUILTIN_SDK_PRIMARY_MODEL",
     "BUILTIN_SDK_FALLBACK_MODEL",
@@ -77,6 +78,8 @@ __all__ = [
     "BUILTIN_ANALYSIS_OUTPUT_REPAIR_MAX_ATTEMPTS",
     "BUILTIN_ANALYSIS_RETRY_FEEDBACK_MAX_CHARS",
     "BUILTIN_ANALYSIS_MAX_RETRY_COUNT_CAP",
+    "BUILTIN_FEEDBACK_CONVENTION_INJECTION_BUDGET",
+    "BUILTIN_FEEDBACK_CONVENTION_TOP_N",
 ]
 
 
@@ -117,6 +120,8 @@ BUILTIN_FALLBACK_MODELS: list[str] = ["gpt-4o-mini", "gemini-2.0-flash"]
 BUILTIN_SDK_PRIMARY_MODEL: str = ""
 BUILTIN_SDK_FALLBACK_MODEL: str = ""
 BUILTIN_ANALYSIS_TIMEOUT_SECONDS: int = 300
+BUILTIN_FEEDBACK_CONVENTION_INJECTION_BUDGET: int = 2000
+BUILTIN_FEEDBACK_CONVENTION_TOP_N: int = 15
 
 
 @dataclass(frozen=True)
@@ -396,6 +401,40 @@ class AnalysisConfig:
     retry: AnalysisRetryConfig = field(default_factory=AnalysisRetryConfig)
 
 
+@dataclass(frozen=True)
+class FeedbackConfig:
+    """Config for [feedback] section.
+
+    Attributes:
+        convention_injection_budget: SessionStart convention token budget.
+        convention_top_n: Max active conventions considered by future aggregation paths.
+    """
+
+    convention_injection_budget: int = BUILTIN_FEEDBACK_CONVENTION_INJECTION_BUDGET
+    convention_top_n: int = BUILTIN_FEEDBACK_CONVENTION_TOP_N
+
+    def __post_init__(self) -> None:
+        if type(self.convention_injection_budget) is not int:
+            raise SecondSightConfigError(
+                "[feedback].convention_injection_budget must be an integer; "
+                f"got {type(self.convention_injection_budget).__name__!r}"
+            )
+        if self.convention_injection_budget <= 0:
+            raise SecondSightConfigError(
+                "[feedback].convention_injection_budget must be > 0; "
+                f"got {self.convention_injection_budget!r}"
+            )
+        if type(self.convention_top_n) is not int:
+            raise SecondSightConfigError(
+                "[feedback].convention_top_n must be an integer; "
+                f"got {type(self.convention_top_n).__name__!r}"
+            )
+        if self.convention_top_n <= 0:
+            raise SecondSightConfigError(
+                f"[feedback].convention_top_n must be > 0; got {self.convention_top_n!r}"
+            )
+
+
 # ---------------------------------------------------------------------------
 # SecondSightConfig root — aggregates all sections
 # ---------------------------------------------------------------------------
@@ -438,6 +477,7 @@ class SecondSightConfig:
             After warn-and-ignore detection runs in the loader, analysis_global.default_agent
             and analysis.cli.default_agent will not diverge for the same input config.
         project_analysis: Per-project analysis config (model override, empty = not set).
+        feedback: Feedback config for convention injection.
     """
 
     retention: RetentionConfig
@@ -446,3 +486,4 @@ class SecondSightConfig:
     analysis: AnalysisConfig
     analysis_global: GlobalAnalysisConfig
     project_analysis: ProjectAnalysisConfig
+    feedback: FeedbackConfig = field(default_factory=FeedbackConfig)

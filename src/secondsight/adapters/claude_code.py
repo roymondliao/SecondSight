@@ -41,6 +41,7 @@ to NoAdapterError instead of silently dispatching here.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any, Callable
 
@@ -254,9 +255,9 @@ class ClaudeCodeAdapter(AgentAdapter):
     event_type. DT-8 enforces the supports() ↔ supported_event_types()
     consistency that AdapterRegistry's runtime guard alone cannot.
 
-    The class deliberately does NOT override inject_convention / inject_hint
-    — the ABC's loud-failure NotImplementedError defaults are the contract
-    until Phase 2 (GUR-104) ships Convention injection runtime.
+    The class overrides convention and hook-output rendering for the injection
+    runtime. `inject_hint` remains a pass-through stub until the hint engine
+    ships.
     """
 
     def supports(self, agent: str, event_type: str) -> bool:
@@ -291,6 +292,30 @@ class ClaudeCodeAdapter(AgentAdapter):
         if len(sanitized) > self._MAX_INSTRUCTION_CHARS:
             sanitized = sanitized[: self._MAX_INSTRUCTION_CHARS] + "…"
         return f"- {sanitized}"
+
+    def render_session_start_output(self, text: str) -> str:
+        return json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": text,
+                }
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+    def render_user_prompt_output(self, text: str) -> str:
+        return json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": text,
+                }
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
 
     def normalize(self, envelope: IngressEnvelope, event_type: str) -> PartialEvent:
         # Envelope-level invariants. Pydantic enforces session_id/event_id

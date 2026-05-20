@@ -1,0 +1,46 @@
+task_id: task-4
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: "Hook script contract tests still use fake local HTTP servers instead of live Claude/Codex transcript capture. Rationale for deferral: task 4 hardens repo-level raw payload, fail-open, and adapter shape contracts; live client transcript capture requires an external agent/runtime harness outside this task's unit and script test scope."
+    deferred_to_feature_iteration: true
+  - description: "session-start.sh and user-prompt.sh still mirror Python project_id_from_cwd() slug derivation in shell. Rationale for deferral: eliminating the split source of truth requires a transport contract change, such as sending cwd to the server for both injection routes, which crosses hook/API boundary design beyond this test-hardening task."
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: "If a supported agent changes its hook output consumption semantics without changing the adapter tests, the repo can still pass while live transcript-visible guidance is ignored; this is bounded by exact adapter/API/script payload-shape tests but not eliminated without live capture."
+    deferred_to_feature_iteration: true
+
+assumptions_made:
+  - assumption: "Removing the legacy /hook/session-start envelope route is safe because observation ingest remains available at /hook/{agent}/session_start and injection now lives under /hook/injection/session-start/{agent}."
+    verified: true
+    note: "Verified by tests/api/test_session_start.py asserting the legacy injection route no longer returns the old envelope and SessionStart observation ingest still returns ok."
+    deferred_to_feature_iteration: false
+  - assumption: "Coverage remains meaningful once old plain-text conventions assertions are removed."
+    verified: true
+    note: "Verified by focused API, adapter, installer, and hook tests: new assertions check exact raw payload shapes, route namespaces, fail-open behavior, and hook-disable recursion guard coverage."
+    deferred_to_feature_iteration: false
+
+debt_registered: true
+debt_location: "scripts/hooks/session-start.sh and scripts/hooks/user-prompt.sh project_id derivation; live transcript capture outside repo-local contract tests."
+
+narrative: |
+  Task 4 removed the stale /hook/session-start plain-text convention envelope from the
+  runtime surface and rewrote the tests so injection success is no longer proven by
+  finding convention text in stdout. SessionStart and UserPromptSubmit now have exact
+  adapter payload-shape assertions, hook raw-body passthrough assertions, fail-open
+  script checks, and installer transport checks.
+
+resolved_items:
+  - original_section: "known_shortcuts"
+    original_description: "Potential shortcut: updating hook scripts without updating their capture/contract tests"
+    resolution: "Added/updated script tests for SessionStart and UserPromptSubmit raw response-body passthrough, route namespace, 204/failure fail-open behavior, and ingest-after-injection ordering."
+  - original_section: "known_shortcuts"
+    original_description: "Potential shortcut: leaving old route tests in place so obsolete behavior still passes CI"
+    resolution: "Deleted the legacy /hook/session-start implementation and replaced tests/api/test_session_start.py with guards that reject the old envelope while preserving observation ingest coverage."
+  - original_section: "assumptions_made"
+    original_description: "Assumption to verify: coverage is still \"verified\" once old plain-text assumptions are removed"
+    resolution: "Focused suites passed: API injection tests, adapter payload tests, installer transport tests, and hook script raw-payload/fail-open tests."
+  - original_section: "silent_failure_conditions"
+    original_description: "Hook-disable recursion guard coverage might only exercise older non-injection hooks while new injection hooks regress."
+    resolution: "Added a parameterized script-boundary death test for session-end.sh, session-start.sh, and user-prompt.sh asserting SECONDSIGHT_DISABLE_HOOKS=1 exits 0 with empty stdout, no fallback writes, and no curl calls."

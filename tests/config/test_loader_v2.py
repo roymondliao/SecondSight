@@ -737,3 +737,39 @@ class TestDTImportantFix3DC12WarnCondition:
             f"Nested [analysis.cli].default_agent must win over flat key. "
             f"Got {cfg.analysis.cli.default_agent!r}."
         )
+
+
+class TestUTV2LoaderFeedbackConfig:
+    """Loader resolves [feedback] into SecondSightConfig.feedback."""
+
+    def test_global_feedback_config_resolves(self, tmp_path: Path) -> None:
+        from secondsight.config.loader import load_global_config
+
+        home = tmp_path / ".secondsight"
+        _write_toml(
+            home / "config.toml",
+            "[feedback]\nconvention_injection_budget = 777\nconvention_top_n = 8\n",
+        )
+
+        cfg = load_global_config(home)
+
+        assert cfg.feedback.convention_injection_budget == 777
+        assert cfg.feedback.convention_top_n == 8
+
+    def test_project_feedback_overrides_global_per_field(self, tmp_path: Path) -> None:
+        from secondsight.config.loader import load_project_config
+
+        home = tmp_path / ".secondsight"
+        _write_toml(
+            home / "config.toml",
+            "[feedback]\nconvention_injection_budget = 777\nconvention_top_n = 8\n",
+        )
+        _write_toml(
+            home / "projects" / "proj-1" / "config.toml",
+            "[feedback]\nconvention_injection_budget = 111\n",
+        )
+
+        cfg = load_project_config(home, "proj-1")
+
+        assert cfg.feedback.convention_injection_budget == 111
+        assert cfg.feedback.convention_top_n == 8

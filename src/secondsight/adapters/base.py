@@ -126,6 +126,20 @@ class AgentAdapter(ABC):
             "Override in your adapter subclass (see ClaudeCodeAdapter for reference)."
         )
 
+    def render_session_start_output(self, text: str) -> str:
+        """Render final SessionStart hook stdout payload for this adapter."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement render_session_start_output. "
+            "Override in your adapter subclass."
+        )
+
+    def render_user_prompt_output(self, text: str) -> str:
+        """Render final UserPromptSubmit hook stdout payload for this adapter."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement render_user_prompt_output. "
+            "Override in your adapter subclass."
+        )
+
     def inject_hint(self, hint: "Hint") -> str:
         """Pass-through stub per SD §4.2 (GUR-108, P3B-5).
 
