@@ -5,22 +5,17 @@ only in the CLI path. The server uses the same builder so event-driven
 dispatch and timeout recovery share one canonical runtime shape.
 
 Task 6 additions:
-  - ModeAwareDispatch: wraps CLIAnalysisDispatcher or SDKAnalysisDispatcher
-    based on config.general.mode. This is the ONLY place mode branching occurs.
-    All callers (sweeper, manual analyze, session-end hook) go through
-    ProjectAnalysisRuntime.trigger for the legacy orchestrator path, or through
-    ProjectAnalysisRuntime.mode_aware_dispatch for the new mode-aware path.
+  - ModeAwareDispatch: the unified analysis entrypoint for both server and CLI
+    paths. It owns mode selection, output persistence, and the bridging from
+    trigger callers to the documented per-segment orchestrator pipeline.
 
   - ProjectAnalysisRuntime gains a mode_aware_dispatch field. The legacy
     trigger/orchestrator path is preserved for callers that already use it.
 
 Task 8 corrections (CRITICAL FIX 1):
-  - build_project_analysis_runtime() no longer calls _build_analysis_agent() or
-    references cfg.general.mode. The mode-conditional that existed in Task 7's
-    implementation violated the invariant below. It has been moved:
-    ModeAwareDispatch._get_sdk_dispatcher() now lazily constructs
-    SDKAnalysisDispatcher (which internally creates LLMRouter) on the first
-    SDK dispatch call. CLI mode never triggers this code path.
+  - build_project_analysis_runtime() remains mode-agnostic. It wires lazy
+    factories into ModeAwareDispatch; the actual mode branching still happens
+    only inside ModeAwareDispatch at dispatch time.
 
 Architecture invariant (NON-NEGOTIABLE):
   After Task 6, no module outside ModeAwareDispatch should reference
@@ -36,23 +31,29 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Callable, Literal, cast
 
 from loguru import logger
 
+from secondsight.analysis.agent import AnalysisAgent, AnalysisAgentError
 from secondsight.analysis.behavior import promote_draft, validate_draft_pre_insert
+from secondsight.analysis.cli_agent import CLIAnalysisAgent
 from secondsight.analysis.config import AnalysisConfig
 from secondsight.analysis.factory import build_orchestrator
-from secondsight.analysis.orchestrator import Orchestrator
+from secondsight.analysis.orchestrator import (
+    Orchestrator,
+    SessionAlreadyAnalyzedError,
+    SessionIncompleteError,
+)
 from secondsight.analysis.output import AnalysisOutput
-from secondsight.analysis.schemas import SessionReport
+from secondsight.analysis.schemas import BehaviorFlagDraft, SessionReport
 from secondsight.analysis.tools import AnalysisTools
 from secondsight.config import load_project_config
 from secondsight.config.loader import _resolve_provider_keys
 from secondsight.config.schema import SecondSightConfig
 from secondsight.sdk.agent import PydanticAIAnalysisAgent
-from secondsight.sdk.model_selection import select_model
+from secondsight.sdk._specs import ModelSpec
+from secondsight.sdk.model_selection import _infer_provider
 from secondsight.sdk.router import LLMRouter
 from secondsight.sdk.trigger import LockRegistry, Trigger
 from secondsight.state import SecondSightState
@@ -80,9 +81,8 @@ class ModeAwareDispatch:
     """Mode-aware dispatch wrapper.
 
     The single place in the codebase that reads config.general.mode and
-    routes to CLIAnalysisDispatcher or SDKAnalysisDispatcher. All callers
-    are mode-agnostic — they call dispatch() without knowing which dispatcher
-    is active.
+    selects the mode-specific analysis agent implementation. All callers are
+    mode-agnostic — they call dispatch() without knowing which mode is active.
 
     DC10 protection (two-layer):
       1. Per-session asyncio.Lock (fast path): prevents concurrent dispatches
@@ -90,8 +90,8 @@ class ModeAwareDispatch:
          guard — it prevents redundant LLM API calls before they happen.
       2. DB UNIQUE constraint on analysis_outputs.session_id (safety net): catches
          edge cases like crash-recovery races across multiple processes sharing the
-         same intelligence.db. INSERT OR IGNORE semantics: second write is silently
-         dropped. The lock prevents the attempt; the DB constraint catches escapes.
+         same intelligence.db. UPSERT semantics keep exactly one row per session_id.
+         The lock prevents duplicate work; the DB constraint preserves row uniqueness.
 
     Args:
         config: The resolved SecondSightConfig. config.general.mode determines
@@ -99,7 +99,7 @@ class ModeAwareDispatch:
         state: SecondSightState or None. Required for CLI mode when
             default_agent="auto". Ignored for SDK mode.
         project_id: The project this dispatch belongs to. Required for
-            AnalysisOutputsRepository.insert_or_ignore(output, project_id=...).
+            AnalysisOutputsRepository.upsert(output, project_id=...).
             One ModeAwareDispatch instance per project (matching ProjectRegistry's
             per-project materialization model).
         repository: Optional AnalysisOutputsRepository for persisting dispatch
@@ -118,7 +118,7 @@ class ModeAwareDispatch:
         - Per-session locks are in-process only. Across processes (e.g., two
           server instances with shared intelligence.db), DC10 is enforced only
           by the DB UNIQUE constraint in analysis_outputs table.
-        - If repository.insert_or_ignore() raises an unexpected exception, the
+        - If repository.upsert() raises an unexpected exception, the
           dispatch result is returned to the caller but the row is not persisted.
           The exception is logged at ERROR level; no retry.
     """
@@ -129,17 +129,21 @@ class ModeAwareDispatch:
         state: SecondSightState | None,
         *,
         project_id: str = "",
+        secondsight_home: Path | None = None,
         project_root: Path | None = None,
         repository: "AnalysisOutputsRepository | None" = None,
         flags_repository: BehaviorFlagsRepository | None = None,
         reports_repository: SessionReportsRepository | None = None,
         events_repository: EventsRepository | None = None,
+        analysis_agent_factory: Callable[[Literal["cli", "sdk"]], AnalysisAgent] | None = None,
+        orchestrator_factory: Callable[[AnalysisAgent], Orchestrator] | None = None,
         cli_dispatcher: "AnalysisDispatcher | None" = None,
         sdk_dispatcher: "AnalysisDispatcher | None" = None,
     ) -> None:
         self._config = config
         self._state = state
         self._project_id = project_id
+        self._secondsight_home = secondsight_home
         # project_root: absolute path to the project directory.
         # Required for CLI mode (subprocess cwd). Set at construction time since
         # ModeAwareDispatch is per-project (one instance per project_id).
@@ -150,8 +154,12 @@ class ModeAwareDispatch:
         self._flags_repository = flags_repository
         self._reports_repository = reports_repository
         self._events_repository = events_repository
+        self._analysis_agent_factory = analysis_agent_factory
+        self._orchestrator_factory = orchestrator_factory
         self._cli_dispatcher = cli_dispatcher
         self._sdk_dispatcher = sdk_dispatcher
+        self._analysis_agent: AnalysisAgent | None = None
+        self._orchestrator: Orchestrator | None = None
 
         # Per-session lock registry for DC10 (PRIMARY GUARD):
         # Prevents concurrent dispatch for the same session_id from both executing.
@@ -212,6 +220,132 @@ class ModeAwareDispatch:
             resolved_keys=resolved_keys,
         )
         return self._sdk_dispatcher
+
+    def _resolve_cli_agent_name(self) -> str:
+        """Resolve the effective CLI agent name for logging and output metadata."""
+        default_agent = self._config.analysis.cli.default_agent
+        if default_agent == "auto":
+            if self._state is None:
+                return "unknown"
+            return self._state.init_agent
+        return default_agent
+
+    def _get_or_create_analysis_agent(self, mode: Literal["cli", "sdk"]) -> AnalysisAgent:
+        if self._analysis_agent is not None:
+            return self._analysis_agent
+        if self._analysis_agent_factory is None:
+            raise RuntimeError("analysis_agent_factory is not configured for orchestrated dispatch")
+        self._analysis_agent = self._analysis_agent_factory(mode)
+        return self._analysis_agent
+
+    def _get_or_create_orchestrator(self, agent: AnalysisAgent) -> Orchestrator:
+        if self._orchestrator is not None:
+            return self._orchestrator
+        if self._orchestrator_factory is None:
+            raise RuntimeError("orchestrator_factory is not configured for orchestrated dispatch")
+        self._orchestrator = self._orchestrator_factory(agent)
+        return self._orchestrator
+
+    def _resolve_filesystem_backup_home(
+        self,
+        *,
+        project_id: str,
+        project_root: Path | None,
+    ) -> Path | None:
+        if self._secondsight_home is not None:
+            return self._secondsight_home
+        if project_root is None:
+            return None
+        if project_root.name == project_id and project_root.parent.name == "projects":
+            return project_root.parent.parent
+        return project_root
+
+    def _build_success_output_from_materialized(
+        self,
+        session_id: str,
+        *,
+        project_id: str,
+        mode: Literal["cli", "sdk"],
+    ) -> AnalysisOutput:
+        if self._reports_repository is None:
+            raise RuntimeError("reports_repository is required for orchestrated success output")
+
+        report = self._reports_repository.get_for_session(session_id)
+        if report is None or report.project_id != project_id:
+            raise RuntimeError(
+                f"Missing session report after successful orchestrated analysis for {session_id!r}."
+            )
+
+        drafts: list[BehaviorFlagDraft] = []
+        if self._flags_repository is not None:
+            for flag in self._flags_repository.get_session_flags(session_id):
+                if flag.project_id != project_id:
+                    continue
+                drafts.append(
+                    BehaviorFlagDraft(
+                        flag_type=flag.flag_type,
+                        event_ids=list(flag.event_ids),
+                        reason=flag.reason,
+                        confidence=flag.confidence,
+                    )
+                )
+
+        return AnalysisOutput.model_validate(
+            {
+                "schema_version": "1.0",
+                "session_id": session_id,
+                "status": "success",
+                "behavior_flags": [draft.model_dump() for draft in drafts],
+                "session_summary": {
+                    "headline": report.headline,
+                    "key_findings": list(report.key_findings),
+                    "body": report.body,
+                },
+                "dispatched_via": mode,
+                "cli_agent": self._resolve_cli_agent_name() if mode == "cli" else None,
+                "primary_model": (
+                    None if mode == "cli" else self._config.analysis.sdk.primary_model
+                ),
+                "fallback_used": False,
+                "retry_count": 0,
+                "error_details": None,
+            }
+        )
+
+    def _make_analysis_failure_output(
+        self,
+        session_id: str,
+        *,
+        mode: Literal["cli", "sdk"],
+        reason: str,
+        message: str,
+        error_details: dict[str, Any] | None = None,
+    ) -> AnalysisOutput:
+        details = {"reason": reason, "error": message}
+        if error_details:
+            details.update(error_details)
+
+        return AnalysisOutput.model_validate(
+            {
+                "schema_version": "1.0",
+                "session_id": session_id,
+                "status": "failure",
+                "behavior_flags": [],
+                "session_summary": {
+                    "headline": "Analysis failed",
+                    "key_findings": [],
+                    "body": message,
+                },
+                "dispatched_via": mode,
+                "cli_agent": self._resolve_cli_agent_name() if mode == "cli" else None,
+                "primary_model": (
+                    None if mode == "cli" else self._config.analysis.sdk.primary_model
+                ),
+                "fallback_used": False,
+                "retry_count": 0,
+                "error_details": details,
+            }
+        )
 
     def _materialize_dashboard_artifacts(
         self,
@@ -350,12 +484,12 @@ class ModeAwareDispatch:
           Layer 1 — asyncio.Lock (PRIMARY GUARD): prevents concurrent dispatches
             for the same session_id from both executing. Fast path: no LLM API
             call is attempted. Returns no-op AnalysisOutput immediately.
-          Layer 2 — DB UNIQUE constraint (SAFETY NET): if insert_or_ignore() is
-            called for an already-existing session_id (e.g., cross-process race),
-            the second insert is silently dropped by INSERT OR IGNORE semantics.
+          Layer 2 — DB UNIQUE constraint (SAFETY NET): if upsert() is called for
+            an already-existing session_id, the table still keeps exactly one row
+            for that session.
 
         After a successful dispatch, results are persisted via
-        self._repository.insert_or_ignore(). If repository is None (test mode),
+        self._repository.upsert(). If repository is None (test mode),
         persistence is skipped with a debug log.
 
         Args:
@@ -378,12 +512,6 @@ class ModeAwareDispatch:
         # Resolve the project_id for this dispatch: prefer the call-time override,
         # then fall back to the construction-time project_id.
         effective_project_id = project_id if project_id is not None else self._project_id
-
-        if session_payload is None:
-            session_payload = self._load_session_payload(
-                session_id,
-                project_id=effective_project_id,
-            )
 
         # Resolve project_root: prefer call-time argument, then fall back to
         # the construction-time project_root (set for the per-project instance).
@@ -430,6 +558,7 @@ class ModeAwareDispatch:
                 }
             )
 
+        materialized_by_orchestrator = False
         async with lock:
             mode = self._config.general.mode
             logger.debug(
@@ -437,20 +566,12 @@ class ModeAwareDispatch:
             )
 
             if mode == "cli":
-                dispatcher = self._get_cli_dispatcher()
-                # Resolve effective agent for the log: prefer explicit default_agent,
-                # fall back to state.init_agent when default_agent="auto".
-                _default_agent = self._config.analysis.cli.default_agent
-                if _default_agent == "auto" and self._state is not None:
-                    _effective_agent = self._state.init_agent
-                else:
-                    _effective_agent = _default_agent
+                _effective_agent = self._resolve_cli_agent_name()
                 logger.info(
                     f"dispatch start: session_id={session_id!r} mode={mode!r} "
                     f"agent={_effective_agent!r} primary_model=None"
                 )
             elif mode == "sdk":
-                dispatcher = self._get_sdk_dispatcher()
                 _primary_model = self._config.analysis.sdk.primary_model
                 logger.info(
                     f"dispatch start: session_id={session_id!r} mode={mode!r} "
@@ -482,11 +603,66 @@ class ModeAwareDispatch:
                     }
                 )
 
-            output = await dispatcher.dispatch(
-                session_id,
-                session_payload,
-                project_root=effective_project_root,
-            )
+            if self._analysis_agent_factory is not None and self._orchestrator_factory is not None:
+                materialized_by_orchestrator = True
+                try:
+                    agent = self._get_or_create_analysis_agent(cast(Literal["cli", "sdk"], mode))
+                    orchestrator = self._get_or_create_orchestrator(agent)
+                    backup_home = self._resolve_filesystem_backup_home(
+                        project_id=effective_project_id,
+                        project_root=effective_project_root,
+                    )
+                    if backup_home is not None:
+                        orchestrator.set_filesystem_backup_home(backup_home)
+                    await orchestrator.analyze_and_aggregate(session_id, force=True)
+                    output = self._build_success_output_from_materialized(
+                        session_id,
+                        project_id=effective_project_id,
+                        mode=cast(Literal["cli", "sdk"], mode),
+                    )
+                except SessionIncompleteError as exc:
+                    output = self._make_analysis_failure_output(
+                        session_id,
+                        mode=cast(Literal["cli", "sdk"], mode),
+                        reason="session_incomplete",
+                        message=str(exc),
+                    )
+                except SessionAlreadyAnalyzedError as exc:
+                    output = self._make_analysis_failure_output(
+                        session_id,
+                        mode=cast(Literal["cli", "sdk"], mode),
+                        reason="already_analyzed",
+                        message=str(exc),
+                    )
+                except AnalysisAgentError as exc:
+                    output = self._make_analysis_failure_output(
+                        session_id,
+                        mode=cast(Literal["cli", "sdk"], mode),
+                        reason="analysis_agent_error",
+                        message=str(exc),
+                    )
+                except Exception as exc:
+                    output = self._make_analysis_failure_output(
+                        session_id,
+                        mode=cast(Literal["cli", "sdk"], mode),
+                        reason="orchestrator_error",
+                        message=f"{type(exc).__name__}: {exc}",
+                    )
+            else:
+                if session_payload is None:
+                    session_payload = self._load_session_payload(
+                        session_id,
+                        project_id=effective_project_id,
+                    )
+
+                dispatcher = (
+                    self._get_cli_dispatcher() if mode == "cli" else self._get_sdk_dispatcher()
+                )
+                output = await dispatcher.dispatch(
+                    session_id,
+                    session_payload,
+                    project_root=effective_project_root,
+                )
 
         # Persist the output to analysis_outputs (DC10 Layer 2: SAFETY NET).
         # Called OUTSIDE the lock to minimize lock hold time. The DB UNIQUE
@@ -495,7 +671,7 @@ class ModeAwareDispatch:
         persisted_row_id: str | None = None
         if self._repository is not None:
             try:
-                persisted_row_id = self._repository.insert_or_ignore(
+                persisted_row_id = self._repository.upsert(
                     output,
                     project_id=effective_project_id,
                 )
@@ -517,7 +693,7 @@ class ModeAwareDispatch:
                 f"session_id={session_id!r} (test mode or unconfigured)"
             )
 
-        if output.status == "success":
+        if output.status == "success" and not materialized_by_orchestrator:
             try:
                 self._materialize_dashboard_artifacts(
                     output,
@@ -577,54 +753,29 @@ def _build_analysis_agent(
     flags_repository: BehaviorFlagsRepository,
     directives_repository: DirectivesRepository,
 ) -> PydanticAIAnalysisAgent:
-    """Build the analysis agent chain for one project.
-
-    NOTE (ship-manifest known debt, 2026-05-15): This function is intentionally
-    preserved as a patchable sentinel for architecture-guard death tests in
-    tests/analysis/test_runtime_wiring_death.py (test_dt_build_runtime_*_mode_
-    never_calls_build_analysis_agent). Those tests `patch(...runtime._build_analysis_agent)`
-    and assert the mock is NEVER called — proving the architecture invariant
-    that build_project_analysis_runtime() does not eagerly construct an SDK
-    agent (lazy construction lives in ModeAwareDispatch._get_sdk_dispatcher).
-
-    Production call graph: NO live caller. _get_sdk_dispatcher inlines its
-    own SDKAnalysisDispatcher construction directly (lines 197-204).
-
-    Removal blocked on: migrating the death tests to grep-based architectural
-    checks. Tracked in iteration-log.yaml round-1 residual_risk.
-    """
+    """Build the SDK-mode AnalysisAgent used by the per-segment orchestrator."""
     project_dir = Path(secondsight_home) / "projects" / project_id
     project_config_path = project_dir / "config.toml"
 
     analysis_config = AnalysisConfig.load(config_path=project_config_path)
     cfg = load_project_config(home=Path(secondsight_home), project_id=project_id)
 
-    # select_model() uses structural typing: expects project_config.analysis.model
-    # and global_config.analysis.{default_agent, models.*}. SecondSightConfig does NOT
-    # match this shape directly (cfg.project_analysis.model, not cfg.analysis.model).
-    # SimpleNamespace wrappers remap to the expected shape:
-    #   project_config = SimpleNamespace(analysis=cfg.project_analysis)
-    #   global_config  = SimpleNamespace(analysis=<GlobalAnalysisConfig-compatible>)
-    #
-    # analysis-mode-toggle task-1: cfg.analysis is now AnalysisConfig (new aggregate).
-    # select_model() still expects the GlobalAnalysisConfig shape (default_agent, models).
-    # Bridge: use cfg.analysis_global (GlobalAnalysisConfig preserved for this path).
-    # Task 6 will replace select_model() with mode-aware dispatch that reads
-    # cfg.analysis.cli.default_agent and cfg.analysis.sdk.primary_model directly.
-    # If SecondSightConfig field names change, these wrappers will silently break.
-    # The death tests in tests/config/test_runtime_wiring.py catch this regression.
-    primary, fallbacks = select_model(
-        project_id=project_id,
-        project_config=SimpleNamespace(analysis=cfg.project_analysis),
-        global_config=SimpleNamespace(analysis=cfg.analysis_global),
-        events_repo=events_repository,
-    )
-
     # Task 5: resolve provider keys from config (Decision E1 / DC8).
     # Loaded ONCE here — mid-flight env mutations have no effect (cache-once).
     resolved_keys = _resolve_provider_keys(cfg.providers)
-
-    router = LLMRouter(primary=primary, fallbacks=fallbacks, resolved_keys=resolved_keys)
+    primary_model = cfg.analysis.sdk.primary_model
+    primary_spec = ModelSpec(name=primary_model, provider=_infer_provider(primary_model))
+    fallback_specs: list[ModelSpec] = []
+    if cfg.analysis.sdk.fallback_model:
+        fallback_model = cfg.analysis.sdk.fallback_model
+        fallback_specs = [ModelSpec(name=fallback_model, provider=_infer_provider(fallback_model))]
+    router = LLMRouter(
+        primary=primary_spec,
+        fallbacks=fallback_specs,
+        resolved_keys=resolved_keys,
+        per_call_timeout_s=float(cfg.analysis.timeout_seconds),
+        chain_total_timeout_s=float(cfg.analysis.timeout_seconds) * 1.5,
+    )
     tools = AnalysisTools(
         events_repo=events_repository,
         flags_repo=flags_repository,
@@ -635,6 +786,20 @@ def _build_analysis_agent(
         read_project_file_enabled=analysis_config.read_project_file_enabled,
     )
     return PydanticAIAnalysisAgent(router=router, tools=tools)
+
+
+def _build_cli_analysis_agent(
+    *,
+    config: SecondSightConfig,
+    state: SecondSightState | None,
+    project_root: Path,
+) -> CLIAnalysisAgent:
+    """Build the CLI-mode AnalysisAgent used by the per-segment orchestrator."""
+    return CLIAnalysisAgent(
+        config=config.analysis,
+        state=state,
+        project_root=project_root,
+    )
 
 
 def build_project_analysis_runtime(
@@ -668,20 +833,10 @@ def build_project_analysis_runtime(
     # task-6-scar.yaml. Callers must not assume isolation.
     cfg = load_project_config(home=Path(secondsight_home), project_id=project_id)
 
-    # The legacy Orchestrator is constructed with agent=None for ALL modes.
-    # ModeAwareDispatch now owns all dispatcher construction (CRITICAL FIX 1 — Task 8):
-    #   - CLI mode: ModeAwareDispatch._get_cli_dispatcher() builds CLIAnalysisDispatcher
-    #     lazily on first CLI dispatch call. No LLMRouter, no API keys needed.
-    #   - SDK mode: ModeAwareDispatch._get_sdk_dispatcher() builds SDKAnalysisDispatcher
-    #     (including LLMRouter construction) lazily on first SDK dispatch call.
-    #
-    # This function NO LONGER references cfg.general.mode or calls _build_analysis_agent.
-    # All mode-conditional logic is centralized in ModeAwareDispatch per the
-    # Architecture invariant (runtime.py module docstring, lines 8-21).
-    #
-    # The agent=None here is safe: Trigger.dispatch() routes ONLY through
-    # ModeAwareDispatch when mode_aware_dispatch is wired, bypassing
-    # Orchestrator.analyze_and_aggregate() entirely.
+    # The runtime keeps the public `orchestrator` field for backward compat,
+    # but production dispatch now goes through ModeAwareDispatch with lazy
+    # mode-specific AnalysisAgent construction. This avoids eager SDK boot
+    # work while still restoring the documented per-segment pipeline.
     agent = cast("PydanticAIAnalysisAgent", None)  # type: ignore[arg-type]
 
     orchestrator = build_orchestrator(
@@ -709,6 +864,38 @@ def build_project_analysis_runtime(
             f"from {state_path!r}: {exc}. ModeAwareDispatch will use state=None."
         )
 
+    orchestrator_resources = cast(
+        "ProjectResources",
+        _OrchestratorResources(
+            db_engine=db_engine,
+            events_repository=events_repository,
+            raw_trace_store=raw_trace_store,
+        ),
+    )
+
+    def _analysis_agent_factory(mode: Literal["cli", "sdk"]) -> AnalysisAgent:
+        if mode == "cli":
+            return _build_cli_analysis_agent(
+                config=cfg,
+                state=state,
+                project_root=project_root_path,
+            )
+        return _build_analysis_agent(
+            secondsight_home=secondsight_home,
+            project_id=project_id,
+            events_repository=events_repository,
+            flags_repository=flags_repo,
+            directives_repository=directives_repo,
+        )
+
+    def _orchestrator_factory(agent: AnalysisAgent) -> Orchestrator:
+        return build_orchestrator(
+            home=secondsight_home,
+            project_id=project_id,
+            resources=orchestrator_resources,
+            agent=agent,
+        )
+
     # Build AnalysisOutputsRepository and create its schema.
     # This table is separate from analysis_runs (audit trail for orchestrator pipeline).
     # analysis_outputs stores ModeAwareDispatch results; analysis_runs stores
@@ -725,11 +912,14 @@ def build_project_analysis_runtime(
         config=cfg,
         state=state,
         project_id=project_id,
+        secondsight_home=secondsight_home,
         project_root=project_root_path,
         repository=outputs_repo,
         flags_repository=flags_repo,
         reports_repository=reports_repo,
         events_repository=events_repository,
+        analysis_agent_factory=_analysis_agent_factory,
+        orchestrator_factory=_orchestrator_factory,
     )
 
     trigger = Trigger(

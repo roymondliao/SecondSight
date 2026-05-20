@@ -107,7 +107,7 @@ async def test_dt_dispatch_persists_output_to_repository(tmp_path: Path) -> None
     """DEATH TEST: After ModeAwareDispatch.dispatch() succeeds, a row exists in analysis_outputs.
 
     This is the production contract: dispatch() must call
-    repo.insert_or_ignore(output, project_id=...) after the dispatcher returns.
+    repo.upsert(output, project_id=...) after the dispatcher returns.
 
     If this test fails with "row is None", it means ModeAwareDispatch.dispatch()
     does not call the repository — the wiring is missing.
@@ -145,7 +145,7 @@ async def test_dt_dispatch_persists_output_to_repository(tmp_path: Path) -> None
     row = repo.get_by_session_id(session_id)
     assert row is not None, (
         f"No row in analysis_outputs for session_id={session_id!r}. "
-        f"ModeAwareDispatch.dispatch() must call repo.insert_or_ignore() after dispatching. "
+        f"ModeAwareDispatch.dispatch() must call repo.upsert() after dispatching. "
         f"WIRING IS MISSING."
     )
     assert row["project_id"] == "proj-death-001"
@@ -250,9 +250,9 @@ async def test_dt_dc10_concurrent_dispatch_produces_exactly_one_db_row(
     The production contract is NOT just "in-memory dispatch counter == 1".
     The production contract is "analysis_outputs table has exactly ONE row for session_id".
 
-    If this test fails with row_count == 2, the DB UNIQUE constraint or INSERT OR IGNORE
+    If this test fails with row_count == 2, the DB UNIQUE constraint or UPSERT
     are not working. If it fails with row_count == 0, dispatch() is not calling
-    repo.insert_or_ignore() at all.
+    repo.upsert() at all.
     """
     from secondsight.analysis.runtime import ModeAwareDispatch
     from secondsight.storage.analysis_outputs_repository import AnalysisOutputsRepository
@@ -384,7 +384,7 @@ async def test_dt_trigger_dispatch_calls_mode_aware_dispatch(tmp_path: Path) -> 
 def test_dt_mode_aware_dispatch_accepts_project_id() -> None:
     """DEATH TEST: ModeAwareDispatch.__init__ must accept project_id parameter.
 
-    This is required so dispatch() can call repo.insert_or_ignore(output, project_id=...).
+    This is required so dispatch() can call repo.upsert(output, project_id=...).
     If ModeAwareDispatch does not accept project_id, it cannot persist the output.
     """
     from secondsight.analysis.runtime import ModeAwareDispatch

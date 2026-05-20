@@ -227,6 +227,7 @@ class Orchestrator:
         *,
         db_engine: DBEngine | None = None,
         segmenter: Segmenter | None = None,
+        filesystem_backup_home: Path | None = None,
         on_analysis_complete: Callable[[str], None] | None = None,
     ) -> None:
         """Construct an Orchestrator.
@@ -282,6 +283,7 @@ class Orchestrator:
         self._session_reports_repo = session_reports_repo
         self._agent = agent
         self._db_engine = db_engine
+        self._filesystem_backup_home = filesystem_backup_home
         # Allow DI of a fake segmenter for testing; default to real Segmenter.
         self._segmenter: Segmenter = segmenter or Segmenter(events_repo)
         self._on_analysis_complete = on_analysis_complete
@@ -550,6 +552,10 @@ class Orchestrator:
                 exc,
             )
 
+    def set_filesystem_backup_home(self, home: Path) -> None:
+        """Override the SECONDSIGHT_HOME used for session_report.json backups."""
+        self._filesystem_backup_home = home
+
     def _verify_session_complete_and_get_project_id(self, session_id: str) -> str:
         """Raise SessionIncompleteError if session has zero events (DC-7).
         Returns project_id extracted from the first event row.
@@ -707,11 +713,14 @@ class Orchestrator:
                 "safe path component. See secondsight.api._id_safety."
             )
 
-        secondsight_home_str = os.environ.get("SECONDSIGHT_HOME", "")
-        if secondsight_home_str:
-            home = Path(secondsight_home_str)
+        if self._filesystem_backup_home is not None:
+            home = self._filesystem_backup_home
         else:
-            home = Path.home() / ".secondsight"
+            secondsight_home_str = os.environ.get("SECONDSIGHT_HOME", "")
+            if secondsight_home_str:
+                home = Path(secondsight_home_str)
+            else:
+                home = Path.home() / ".secondsight"
 
         # Belt-and-braces containment check (mirrors RawTraceStore.event_path):
         # resolve the constructed path and assert it is rooted under

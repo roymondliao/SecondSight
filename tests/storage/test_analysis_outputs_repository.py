@@ -88,7 +88,7 @@ def test_db_schema_cli_output_has_required_fields_populated(
 ) -> None:
     """DB schema test: CLI output row has all required fields populated (not null for required)."""
     output = _make_cli_output()
-    repo.insert_or_ignore(output, project_id="proj-alpha")
+    repo.upsert(output, project_id="proj-alpha")
 
     row = repo.get_by_session_id("sess-001")
     assert row is not None, "Row not found after insert"
@@ -109,7 +109,7 @@ def test_db_schema_sdk_output_has_required_fields_populated(
 ) -> None:
     """DB schema test: SDK output row has all required fields populated."""
     output = _make_sdk_output()
-    repo.insert_or_ignore(output, project_id="proj-sdk")
+    repo.upsert(output, project_id="proj-sdk")
 
     row = repo.get_by_session_id("sess-002")
     assert row is not None
@@ -145,7 +145,7 @@ def test_db_schema_error_details_persisted_and_deserialized(
             "error_details": {"reason": "subprocess_exit", "exit_code": 1},
         }
     )
-    repo.insert_or_ignore(output, project_id="proj-err")
+    repo.upsert(output, project_id="proj-err")
 
     row = repo.get_by_session_id("sess-err")
     assert row is not None
@@ -162,29 +162,36 @@ def test_db_schema_create_schema_idempotent(db_engine: DBEngine) -> None:
 
 
 # ---------------------------------------------------------------------------
-# UNIT TESTS — insert_or_ignore semantics (DC10 defense-in-depth)
+# UNIT TESTS — upsert semantics
 # ---------------------------------------------------------------------------
 
 
-def test_insert_or_ignore_second_write_for_same_session_is_no_op(
+def test_upsert_second_write_for_same_session_updates_latest_result(
     repo: AnalysisOutputsRepository,
 ) -> None:
-    """DC10: second insert_or_ignore for the same session_id is silently ignored."""
+    """Sequential rerun for the same session_id updates the latest result row."""
     output1 = _make_cli_output("sess-dup")
     output2 = AnalysisOutput.model_validate(
         {
             **output1.model_dump(),
-            "cli_agent": "codex",  # different agent — but should be ignored
+            "cli_agent": "codex",
+            "status": "failure",
+            "retry_count": 2,
+            "error_details": {"reason": "rerun-overwrite"},
         }
     )
 
-    repo.insert_or_ignore(output1, project_id="proj-dup")
-    repo.insert_or_ignore(output2, project_id="proj-dup")
+    first_row_id = repo.upsert(output1, project_id="proj-dup")
+    second_row_id = repo.upsert(output2, project_id="proj-dup")
 
     row = repo.get_by_session_id("sess-dup")
     assert row is not None
-    # First insert wins — second is ignored
-    assert row["cli_agent"] == "claude_code"
+    assert row["id"] == second_row_id
+    assert row["id"] != first_row_id
+    assert row["cli_agent"] == "codex"
+    assert row["status"] == "failure"
+    assert row["retry_count"] == 2
+    assert row["error_details"] == {"reason": "rerun-overwrite"}
 
 
 def test_get_by_session_id_returns_none_for_unknown_session(
@@ -215,7 +222,7 @@ def test_fallback_used_true_persisted_correctly(repo: AnalysisOutputsRepository)
             },
         }
     )
-    repo.insert_or_ignore(output, project_id="proj-fallback")
+    repo.upsert(output, project_id="proj-fallback")
     row = repo.get_by_session_id("sess-fallback")
     assert row is not None
     assert row["fallback_used"] is True

@@ -2,7 +2,7 @@
 
 These test the positive paths after CRITICAL FIX 1 is applied:
 - ModeAwareDispatch accepts project_id and repository
-- dispatch() calls repo.insert_or_ignore() on success
+- dispatch() calls repo.upsert() on success
 - dispatch() skips repo call on no-op (concurrent duplicate)
 - Trigger.dispatch() routes through ModeAwareDispatch (not orchestrator directly)
 - Trigger still accepts mode_aware_dispatch=None for backward compat (legacy SDK path)
@@ -11,6 +11,7 @@ These test the positive paths after CRITICAL FIX 1 is applied:
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -145,7 +146,7 @@ def test_mode_aware_dispatch_accepts_project_id_and_repository() -> None:
 
 @pytest.mark.asyncio
 async def test_dispatch_calls_repository_insert_on_success(tmp_path: Path) -> None:
-    """On successful dispatch, repo.insert_or_ignore() is called with the output."""
+    """On successful dispatch, repo.upsert() is called with the output."""
     from secondsight.analysis.runtime import ModeAwareDispatch
 
     config = _make_cli_config()
@@ -156,7 +157,7 @@ async def test_dispatch_calls_repository_insert_on_success(tmp_path: Path) -> No
     mock_cli_dispatcher.dispatch = AsyncMock(return_value=mock_output)
 
     mock_repo = MagicMock()
-    mock_repo.insert_or_ignore = MagicMock(return_value="ao-some-uuid")
+    mock_repo.upsert = MagicMock(return_value="ao-some-uuid")
 
     mad = ModeAwareDispatch(
         config=config,
@@ -170,12 +171,12 @@ async def test_dispatch_calls_repository_insert_on_success(tmp_path: Path) -> No
     result = await mad.dispatch(session_id, {}, project_root=tmp_path)
 
     assert result.status == "success"
-    mock_repo.insert_or_ignore.assert_called_once_with(mock_output, project_id="proj-unit-001")
+    mock_repo.upsert.assert_called_once_with(mock_output, project_id="proj-unit-001")
 
 
 @pytest.mark.asyncio
 async def test_dispatch_skips_repository_insert_on_concurrent_no_op(tmp_path: Path) -> None:
-    """On concurrent duplicate (DC10 no-op), repo.insert_or_ignore() is NOT called.
+    """On concurrent duplicate (DC10 no-op), repo.upsert() is NOT called.
 
     The no-op result is a failure output (status='failure', reason='dispatch_in_progress').
     We should not write the no-op result to the DB — only the real dispatch writes.
@@ -194,7 +195,7 @@ async def test_dispatch_skips_repository_insert_on_concurrent_no_op(tmp_path: Pa
     mock_cli_dispatcher.dispatch = slow_dispatch
 
     mock_repo = MagicMock()
-    mock_repo.insert_or_ignore = MagicMock(return_value="ao-some-uuid")
+    mock_repo.upsert = MagicMock(return_value="ao-some-uuid")
 
     mad = ModeAwareDispatch(
         config=config,
@@ -211,9 +212,9 @@ async def test_dispatch_skips_repository_insert_on_concurrent_no_op(tmp_path: Pa
         mad.dispatch(session_id, {}, project_root=tmp_path),
     )
 
-    # Only the successful dispatch should have called insert_or_ignore
-    assert mock_repo.insert_or_ignore.call_count == 1, (
-        f"Expected insert_or_ignore called once. Got {mock_repo.insert_or_ignore.call_count}. "
+    # Only the successful dispatch should have called upsert
+    assert mock_repo.upsert.call_count == 1, (
+        f"Expected upsert called once. Got {mock_repo.upsert.call_count}. "
         f"The no-op DC10 result must NOT be persisted to analysis_outputs."
     )
 
@@ -320,6 +321,187 @@ async def test_dispatch_loads_session_payload_from_events_repo_when_missing(
             },
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_with_orchestrator_factory_runs_per_segment_pipeline(
+    tmp_path: Path,
+) -> None:
+    """Production wiring must use the documented segment-level orchestrator path."""
+    from datetime import timedelta
+
+    from secondsight.analysis.orchestrator import Orchestrator
+    from secondsight.analysis.prompts.aggregate import AggregateOutput
+    from secondsight.analysis.prompts.summary import SummaryOutput
+    from secondsight.analysis.agent import AnalysisAgent
+    from secondsight.analysis.runtime import ModeAwareDispatch
+    from secondsight.analysis.schemas import BehaviorFlagDraft, BehaviorFlagType, SegmentAnalysis
+    from secondsight.storage.analysis_outputs_repository import AnalysisOutputsRepository
+    from secondsight.storage.analysis_runs_repository import AnalysisRunsRepository
+    from secondsight.storage.behavior_flags_repository import BehaviorFlagsRepository
+    from secondsight.storage.directives_repository import DirectivesRepository
+    from secondsight.storage.session_reports_repository import SessionReportsRepository
+
+    class _FakeAgent(AnalysisAgent):
+        def __init__(self) -> None:
+            self.segment_calls: list[list[str]] = []
+            self._call_count = 0
+
+        async def analyze_segments(self, prompts: Sequence[str]) -> list[SegmentAnalysis]:
+            self.segment_calls.append(list(prompts))
+            out: list[SegmentAnalysis] = []
+            for _prompt in prompts:
+                self._call_count += 1
+                if self._call_count == 1:
+                    out.append(
+                        SegmentAnalysis(
+                            segment_summary="Pre-prompt session metadata only.",
+                            flags=[],
+                            total_events=1,
+                            flagged_events=0,
+                        )
+                    )
+                else:
+                    event_id = f"evt-flag-{self._call_count}"
+                    out.append(
+                        SegmentAnalysis(
+                            segment_summary=f"Segment {self._call_count - 1} analyzed.",
+                            flags=[
+                                BehaviorFlagDraft(
+                                    flag_type=BehaviorFlagType.UNNECESSARY_READ,
+                                    event_ids=[event_id],
+                                    reason=f"Flag for {event_id}",
+                                    confidence="high",
+                                )
+                            ],
+                            total_events=2,
+                            flagged_events=1,
+                        )
+                    )
+            return out
+
+        async def summarize_session(self, prompt: str) -> SummaryOutput:
+            assert "segment_count" in prompt
+            return SummaryOutput(
+                headline="Segment-level session summary",
+                key_findings=["Two prompt segments were analyzed separately."],
+                body="The orchestrator processed each segment independently before summarizing.",
+            )
+
+        async def aggregate_flag_type(self, prompt: str) -> AggregateOutput:
+            assert "unnecessary_read" in prompt
+            return AggregateOutput(patterns=[])
+
+    config = _make_cli_config()
+    db_engine = DBEngine(tmp_path / "intelligence.db")
+    events_repo = EventsRepository(db_engine)
+    runs_repo = AnalysisRunsRepository(db_engine)
+    flags_repo = BehaviorFlagsRepository(db_engine)
+    directives_repo = DirectivesRepository(db_engine)
+    reports_repo = SessionReportsRepository(db_engine)
+    outputs_repo = AnalysisOutputsRepository(db_engine)
+    for repo in (events_repo, runs_repo, flags_repo, directives_repo, reports_repo, outputs_repo):
+        repo.create_schema()
+
+    session_id = "sess-segment-pipeline-001"
+    project_id = "proj-segment-pipeline"
+    now = datetime.now(timezone.utc)
+    events_repo.insert(
+        Event(
+            id="evt-start",
+            session_id=session_id,
+            project_id=project_id,
+            event_type=EventType.SESSION_START,
+            timestamp=now,
+            sequence_number=0,
+            segment_index=0,
+        )
+    )
+    events_repo.insert(
+        Event(
+            id="evt-prompt-1",
+            session_id=session_id,
+            project_id=project_id,
+            event_type=EventType.USER_PROMPT,
+            timestamp=now + timedelta(seconds=1),
+            sequence_number=1,
+            segment_index=1,
+            data={"prompt_text": "Fix alpha"},
+        )
+    )
+    events_repo.insert(
+        Event(
+            id="evt-flag-2",
+            session_id=session_id,
+            project_id=project_id,
+            event_type=EventType.RESPONSE,
+            timestamp=now + timedelta(seconds=2),
+            sequence_number=2,
+            segment_index=1,
+        )
+    )
+    events_repo.insert(
+        Event(
+            id="evt-prompt-2",
+            session_id=session_id,
+            project_id=project_id,
+            event_type=EventType.USER_PROMPT,
+            timestamp=now + timedelta(seconds=3),
+            sequence_number=3,
+            segment_index=2,
+            data={"prompt_text": "Fix beta"},
+        )
+    )
+    events_repo.insert(
+        Event(
+            id="evt-flag-3",
+            session_id=session_id,
+            project_id=project_id,
+            event_type=EventType.RESPONSE,
+            timestamp=now + timedelta(seconds=4),
+            sequence_number=4,
+            segment_index=2,
+        )
+    )
+
+    fake_agent = _FakeAgent()
+
+    mad = ModeAwareDispatch(
+        config=config,
+        state=None,
+        project_id=project_id,
+        project_root=tmp_path,
+        repository=outputs_repo,
+        flags_repository=flags_repo,
+        reports_repository=reports_repo,
+        events_repository=events_repo,
+        analysis_agent_factory=lambda mode: fake_agent,
+        orchestrator_factory=lambda agent: Orchestrator(
+            events_repo=events_repo,
+            behavior_flags_repo=flags_repo,
+            directives_repo=directives_repo,
+            analysis_runs_repo=runs_repo,
+            session_reports_repo=reports_repo,
+            agent=agent,
+            db_engine=db_engine,
+        ),
+    )
+
+    result = await mad.dispatch(session_id, project_id=project_id)
+
+    assert result.status == "success"
+    assert len(fake_agent.segment_calls) == 3, fake_agent.segment_calls
+
+    flags = flags_repo.get_session_flags(session_id)
+    assert [flag.segment_index for flag in flags] == [1, 2]
+
+    report = reports_repo.get_for_session(session_id)
+    assert report is not None
+    assert report.headline == "Segment-level session summary"
+
+    output_row = outputs_repo.get_by_session_id(session_id)
+    assert output_row is not None
+    assert output_row["status"] == "success"
 
 
 # ---------------------------------------------------------------------------

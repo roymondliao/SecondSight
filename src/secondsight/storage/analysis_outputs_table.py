@@ -8,8 +8,9 @@ analysis_runs = audit trail for the SDK orchestrator pipeline (stage transitions
     This table still exists and is still written by the legacy SDK orchestrator path.
 
 analysis_outputs = results from ModeAwareDispatch.dispatch() (Task 6 new path).
-    Stores one row per completed dispatch. Written by ModeAwareDispatch.dispatch()
-    after the dispatcher (CLI or SDK) returns an AnalysisOutput.
+    Stores one latest-result row per session_id. Written by
+    ModeAwareDispatch.dispatch() after the dispatcher (CLI or SDK) returns an
+    AnalysisOutput; sequential reruns update the existing row.
     This is the NEW authoritative output table for mode-aware dispatch results.
 
 Justification for separate table (IMPORTANT FIX 4 from task-6 review):
@@ -27,10 +28,11 @@ Justification for separate table (IMPORTANT FIX 4 from task-6 review):
     Dashboard/reporting code that queries analysis_runs is not broken by this addition.
 
 Design decisions:
-- One row per dispatch attempt (not one per session — retries from Task 4/5
-  are reflected in retry_count and status, not by multiple rows here).
+- One latest-result row per session. Retries within one dispatch are reflected
+  in retry_count; a later sequential rerun overwrites the row with the newest
+  dispatch result instead of creating another row.
 - session_id has a UNIQUE constraint so concurrent dispatch (DC10) produces
-  at most one row per session. INSERT OR IGNORE on second attempt.
+  at most one row per session. Repository writes use UPSERT on session_id.
 - dispatched_via is TEXT with a CHECK constraint: "cli" or "sdk" only.
   Adding a third mode requires a schema migration AND updating the CHECK.
 - cli_agent is NULL when dispatched_via='sdk'. primary_model is NULL when

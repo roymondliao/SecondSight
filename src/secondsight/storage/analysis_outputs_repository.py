@@ -1,12 +1,9 @@
-"""AnalysisOutputsRepository — persists AnalysisOutput from ModeAwareDispatch (Task 6).
+"""AnalysisOutputsRepository — persists AnalysisOutput from ModeAwareDispatch.
 
-Stores one row per dispatch attempt keyed on session_id (UNIQUE).
-The UNIQUE constraint on session_id is the DB-level DC10 deduplication guard:
-if two concurrent dispatches both complete, only one row is kept.
-
-INSERT OR IGNORE semantics: the second concurrent write is silently dropped
-rather than raising IntegrityError. The application-level asyncio.Lock in
-ModeAwareDispatch is the primary DC10 guard; the DB constraint is defense-in-depth.
+Stores one latest-result row per session_id. The UNIQUE constraint on
+session_id remains the DB-level DC10 deduplication guard: concurrent writes
+still collapse to one row, while a later sequential re-run updates that row
+with the newest dispatch result.
 """
 
 from __future__ import annotations
@@ -17,6 +14,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from secondsight.storage.analysis_outputs_table import analysis_outputs, metadata
 from secondsight.storage.db_engine import DBEngine
@@ -35,20 +33,20 @@ class AnalysisOutputsRepository:
         """Create analysis_outputs table if absent. Idempotent (checkfirst=True)."""
         metadata.create_all(self._db.engine, checkfirst=True)
 
-    def insert_or_ignore(self, output: AnalysisOutput, *, project_id: str) -> str:
+    def upsert(self, output: AnalysisOutput, *, project_id: str) -> str:
         """Persist an AnalysisOutput row.
 
-        Uses INSERT OR IGNORE semantics: if a row already exists for this
-        session_id (due to a concurrent dispatch race that escaped the
-        asyncio.Lock), the insert is silently ignored and the existing
-        row_id is returned.
+        Uses UPSERT semantics on ``session_id``: the first dispatch inserts a
+        row; a later sequential re-run updates the existing row in place so the
+        table continues to represent the latest mode-aware dispatch result for
+        that session.
 
         Args:
             output: The AnalysisOutput to persist.
             project_id: The project this session belongs to.
 
         Returns:
-            The row ID (a new UUID if inserted, or the existing ID if ignored).
+            The row ID written for this dispatch.
         """
         row_id = f"ao-{uuid.uuid4()}"
         now = datetime.now(timezone.utc)
@@ -74,8 +72,25 @@ class AnalysisOutputsRepository:
             "created_at": now,
         }
 
-        # INSERT OR IGNORE: second concurrent write is dropped (DC10 defense-in-depth).
-        stmt = analysis_outputs.insert().prefix_with("OR IGNORE").values(**row)
+        stmt = (
+            sqlite_insert(analysis_outputs)
+            .values(**row)
+            .on_conflict_do_update(
+                index_elements=["session_id"],
+                set_={
+                    "id": row["id"],
+                    "project_id": row["project_id"],
+                    "dispatched_via": row["dispatched_via"],
+                    "cli_agent": row["cli_agent"],
+                    "primary_model": row["primary_model"],
+                    "fallback_used": row["fallback_used"],
+                    "retry_count": row["retry_count"],
+                    "status": row["status"],
+                    "error_details": row["error_details"],
+                    "created_at": row["created_at"],
+                },
+            )
+        )
         with self._db.engine.begin() as conn:
             conn.execute(stmt)
 

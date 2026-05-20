@@ -158,6 +158,7 @@ def build_orchestrator(
         analysis_runs_repo=AnalysisRunsRepository(resources.db_engine),
         session_reports_repo=SessionReportsRepository(resources.db_engine),
         agent=agent,
+        filesystem_backup_home=home,
         on_analysis_complete=on_analysis_complete,
     )
 

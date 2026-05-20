@@ -267,3 +267,74 @@ async def test_dc10_sequential_dispatches_for_same_session_both_execute(
         f"Expected 2 dispatcher calls for sequential same-session dispatch. "
         f"Got {dispatch_call_count} calls. Sequential dispatches should not be blocked."
     )
+
+
+@pytest.mark.asyncio
+async def test_sequential_rerun_updates_existing_analysis_output_row(tmp_path: Path) -> None:
+    """Sequential rerun keeps one DB row and updates it to the latest result."""
+    from secondsight.analysis.runtime import ModeAwareDispatch
+    from secondsight.storage.analysis_outputs_repository import AnalysisOutputsRepository
+    from secondsight.storage.analysis_outputs_table import analysis_outputs
+    from secondsight.storage.db_engine import DBEngine
+    import sqlalchemy as sa
+
+    db_engine = DBEngine(db_path=tmp_path / "intelligence.db")
+    repo = AnalysisOutputsRepository(db_engine)
+    repo.create_schema()
+
+    config = _make_cli_config()
+    state = _make_state(agent="claude_code")
+    session_id = "sess-rerun-update-001"
+    session_payload = {"events": []}
+    project_root = tmp_path
+
+    dispatch_count = 0
+
+    async def rerun_dispatch(session_id: str, session_payload: dict, project_root=None):
+        nonlocal dispatch_count
+        dispatch_count += 1
+        output = _make_cli_output(session_id)
+        if dispatch_count == 2:
+            return AnalysisOutput.model_validate(
+                {
+                    **output.model_dump(),
+                    "status": "failure",
+                    "retry_count": 2,
+                    "error_details": {"reason": "rerun-overwrite"},
+                }
+            )
+        return output
+
+    mock_cli_dispatcher = MagicMock()
+    mock_cli_dispatcher.dispatch = rerun_dispatch
+
+    mad = ModeAwareDispatch(
+        config=config,
+        state=state,
+        project_id="proj-rerun-update",
+        repository=repo,
+        cli_dispatcher=mock_cli_dispatcher,
+        sdk_dispatcher=None,
+    )
+
+    await mad.dispatch(session_id, session_payload, project_root=project_root)
+    first_row = repo.get_by_session_id(session_id)
+    assert first_row is not None
+
+    await mad.dispatch(session_id, session_payload, project_root=project_root)
+    second_row = repo.get_by_session_id(session_id)
+    assert second_row is not None
+
+    with db_engine.engine.connect() as conn:
+        row_count = conn.execute(
+            sa.select(sa.func.count())
+            .select_from(analysis_outputs)
+            .where(analysis_outputs.c.session_id == session_id)
+        ).scalar()
+
+    assert dispatch_count == 2
+    assert row_count == 1
+    assert second_row["id"] != first_row["id"]
+    assert second_row["status"] == "failure"
+    assert second_row["retry_count"] == 2
+    assert second_row["error_details"] == {"reason": "rerun-overwrite"}
