@@ -125,11 +125,21 @@ deferred_scars:
       module + Layer 3 test entirely. If B-SDK or B-TWO-STAGE: add
       fence-stripping (e.g., extract first JSON object via regex)
       and let Layer 3 test go GREEN.
-phase_b_decision_required: yes
+phase_b_decision_required: no
+phase_b_decision: B-META
+phase_b_decision_date: 2026-05-20
 phase_b_owner: operator (yuyu_liao)
+phase_b_chain_handoff: >
+  Phase B reclassified as new feature, not bugfix continuation.
+  Scope migrated to a new samsara:research chain that will design
+  hit injection as a self-evolving closed loop (hit injection
+  inner loop + analysis-and-convention outer loop, both adaptive,
+  no human-in-the-loop approval). See root-cause.yaml
+  carryover_invariants_for_research_chain for the inherited
+  design constraints.
 next_step: >
-  Operator chooses B-META / B-SDK / B-TWO-STAGE in root-cause.yaml.
-  Then invoke samsara:planning to design and scope the chosen path.
-  Do NOT extend Phase A further (e.g., do NOT bump max-time to 20s
-  without addressing Layer 3) — that adds UX pain without producing
-  a single successful injection.
+  This bugfix folder is closed. Open the new feature via
+  samsara:research with subject 'hit injection redesign as
+  agent-self-evaluation closed loop'. The Layer 3 death test
+  remains RED on main as a tripwire the new chain must clear
+  before landing.

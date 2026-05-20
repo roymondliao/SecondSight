@@ -168,5 +168,31 @@ fix_strategy:
       cons: guidance lag breaks the UX contract ("guide me before I
             type", not "guide me about what I typed last time");
             extra storage / state management
-  decision_required: yes — Phase B requires operator to pick B-META vs
-    B-SDK vs B-TWO-STAGE before further work
+  decision_recorded: B-META
+  decision_date: 2026-05-20
+  decision_rationale: >
+    Architecture invariant 'Agent as human, human as agent' (operator-
+    affirmed) rejects sidecar/external-judge designs because they imply
+    an asymmetric authority where the judge is privileged over the
+    executor. Only B-META has the judge BE the executor (main agent
+    with hot context self-evaluates). B-SDK still posits an external
+    judge with cold context; B-TWO-STAGE inverts the time order
+    (post-hoc) and breaks the 'guide before action' UX contract.
+    Additionally, B-META gives convention graduation for free because
+    the main agent already has the active conventions in its system
+    prompt at session start; B-SDK would require explicit propagation
+    of conventions into the classifier prompt.
+  phase_b_handoff: >
+    Phase B is no longer a bugfix continuation; it is a new feature
+    redesign of the hit-injection mechanism. Scope migrated to a new
+    samsara:research chain. Layer 3 death test in
+    tests/feedback/test_prompt_evaluator.py remains intentionally RED
+    on main as a tripwire that the new chain must clear before
+    landing.
+  carryover_invariants_for_research_chain:
+    - 'Agent as human, human as agent: no human-in-the-loop approval'
+    - 'Rating + TTL on conventions is the implicit graduation mechanism'
+    - 'Analysis is triggered on session_end'
+    - 'Distribution-shift contamination is mitigated only if hit-judge quality is high; analysis layer must include LLM double-check review to discriminate correct behaviour from drift'
+    - 'config.toml exposes a user-facing toggle to disable hit injection; default enabled'
+    - 'Hit-injection latency budget is the main-agent inference itself; no extra subprocess'
