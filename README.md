@@ -51,12 +51,63 @@ This README reflects that current behavior instead of the intended future one.
 ## Prerequisites
 
 - Python `>=3.14`
-- `uv`
-- Node.js + npm for frontend work
+- `uv >= 0.5.0`
+- Node.js `>= 20.19.0` + npm (needed by Vite 7 to build the dashboard)
 - Claude Code if you want to use the bundled hook installer
 - LLM provider credentials if you want to run analysis
 
-## Backend Setup
+## Install (Internal Staff)
+
+If you just want to **use** SecondSight (not develop it), the repository ships
+a one-command installer that detects toolchain prerequisites, builds the
+frontend, and installs the `secondsight` CLI globally via `uv tool install`.
+
+```bash
+git clone <enterprise-ghe>/SecondSight.git
+cd SecondSight
+./install.sh
+```
+
+What `install.sh` does — and does **not** — do:
+
+- Verifies `uv >= 0.5.0` and `node >= 20.19.0` are available. If either is
+  missing or too old, it aborts and prints install hints. It does **not**
+  auto-install Node or uv; that mutation belongs to you, not the script.
+- Builds `frontend/dist` via `npm ci && npm run build`.
+- Installs `secondsight` as a `uv tool` (binary lands in `~/.local/bin/`).
+- Does **not** touch `~/.claude/`, `~/.bashrc`, or any other dotfile. Hook
+  injection and Claude settings mutation are opt-in via `secondsight init`.
+- On any failure, exits non-zero without cleanup so you can see exactly which
+  step broke. Re-running `./install.sh` is idempotent.
+
+After install, opt in to Claude Code hook injection and start the daemon:
+
+```bash
+secondsight init                # writes ~/.claude/settings.json + ~/.claude/hooks/
+secondsight serve --daemon
+secondsight status
+```
+
+Open the dashboard at `http://127.0.0.1:8420/dashboard/`.
+
+To remove SecondSight:
+
+```bash
+./uninstall.sh
+```
+
+The uninstaller removes the `uv tool` install but does **not** clean
+`~/.claude/` or `~/.secondsight/` — those mutations belong to `secondsight
+init` and the running daemon, so they must be removed with explicit user
+action. The script prints manual cleanup hints.
+
+## Developer Setup
+
+The sections below describe the **manual / development** workflow used when
+working on the codebase itself. If you only want to run SecondSight as a tool,
+use the staff installer above instead.
+
+### Backend Setup
 
 Create the virtual environment and install Python dependencies:
 
@@ -79,7 +130,7 @@ By default SecondSight stores data in:
 
 You can override that with `SECONDSIGHT_HOME` or `--home`.
 
-## Frontend Setup
+### Frontend Setup
 
 Install frontend dependencies:
 

@@ -25,11 +25,48 @@ jobs:
           enable-cache: true
           python-version: "3.14"
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.19.0"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend dashboard
+        run: |
+          set -euo pipefail
+          cd frontend
+          npm ci
+          npm run build
+          test -f dist/index.html  # fail loud if vite produced nothing
+
       - name: Build wheel
         run: |
           set -euo pipefail
           uv build --wheel --out-dir dist
           ls -1 dist/*.whl
+
+      - name: Verify wheel ships dashboard bundle
+        # Guard against pyproject `force-include` silently skipping a missing
+        # frontend/dist — without this the wheel could install successfully
+        # but serve a 404 at /dashboard/.
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import glob, sys, zipfile
+          wheel = glob.glob('dist/*.whl')[0]
+          with zipfile.ZipFile(wheel) as z:
+              names = z.namelist()
+          required = [
+              'secondsight/_resources/dashboard/index.html',
+              'secondsight/_resources/hooks',
+          ]
+          missing = [r for r in required if not any(n.startswith(r) for n in names)]
+          if missing:
+              print(f'wheel missing bundled resources: {missing}', file=sys.stderr)
+              sys.exit(1)
+          print(f'wheel ok: {wheel}')
+          PY
 
       - name: Install wheel + smoke CLI lifecycle in clean python:3.14-slim
         run: |
