@@ -1,0 +1,44 @@
+feature: "directive-injection-runtime"
+signal_lost_initial: 9
+
+budget:
+  max_rounds: 3
+  reviewer_retry_limit: 2
+
+rounds:
+  - round: 1
+    signal_lost_before: 9
+    budget_context:
+      remaining_rounds_at_start: 2
+      stagnation_count_at_start: 0
+      net_rot_previous_round: 0
+      strategy_hint: explore
+    items_triaged: 4
+    triage_result:
+      fix:
+        - "session-start.sh and user-prompt.sh duplicated Python project_id_from_cwd() slug derivation instead of sending cwd for server-side derivation."
+        - "UserPrompt guidance and classifier prompt copy lived in feedback Python modules instead of the central prompts package."
+      accept: []
+      defer:
+        - "Live Codex/UserPromptSubmit event-scoped payload is covered by adapter/API/script contract tests but not by transcript-backed client capture."
+        - "Fail-open guidance paths are visible through warning logs and absence of guidance, but not through a user-facing degraded-state signal."
+    fixes_applied: 2
+    fixes_scar_count: 0
+    budget_spent:
+      implementer_dispatches: 0
+      reviewer_dispatches: 0
+      reviewer_retries: 0
+      validation_runs: 5
+    evidence_gained:
+      - "Added API death tests proving injection routes can derive project_id from hook cwd without shell-provided project_id."
+      - "Added hook script tests proving session-start.sh and user-prompt.sh send cwd and omit project_id in injection requests."
+      - "Added feedback tests proving guidance and classifier prompt text is loaded through secondsight.prompts._loader."
+      - "Targeted API/feedback/prompt-loader tests passed: 45 passed."
+      - "Targeted hook script tests passed with localhost bind permission: 9 passed, 23 deselected."
+      - "Targeted pre-commit passed for changed files."
+    residual_risk:
+      - "Live Codex transcript capture remains deferred."
+      - "Fail-open absence of guidance remains primarily log-visible."
+    signal_lost_after: 7
+    decision: stop
+    decision_reason: "User approved deferring items 1 and 2; items 3 and 4 were fixed in separate commits."
