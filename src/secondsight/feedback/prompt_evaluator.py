@@ -23,6 +23,7 @@ from secondsight.config.schema import (
     ProvidersConfig,
 )
 from secondsight.feedback.prompt_guidance import PromptHitCategory
+from secondsight.prompts._loader import render
 
 _SIGKILL_GRACE_SECONDS: float = 1.0
 
@@ -51,23 +52,8 @@ class PromptEvaluation:
         )
 
 
-_CLASSIFIER_PROMPT = """You are SecondSight's ambiguity classifier for a coding-agent user prompt.
-
-Trust user intent by default. Intervene only when the request is genuinely unclear enough that
-acting immediately is likely to waste work or do the wrong thing. If uncertain, choose pass.
-
-Return JSON only with this exact shape:
-{{"decision":"pass|intervene","primary_category":"missing_target|multiple_interpretations|missing_scope|missing_success_criteria|null"}}
-
-Do not rewrite the prompt. Do not generate user-facing guidance. Only classify.
-
-User prompt:
-{prompt}
-"""
-
-
 def _build_classifier_prompt(prompt: str) -> str:
-    return _CLASSIFIER_PROMPT.format(prompt=prompt)
+    return render("feedback/classifier", context={"prompt": prompt})
 
 
 def parse_evaluator_output(raw_output: str) -> PromptEvaluation:

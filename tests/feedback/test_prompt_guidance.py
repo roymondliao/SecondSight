@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from secondsight.feedback.prompt_guidance import (
-    HIT_GUIDANCE_TEMPLATES,
+    HIT_GUIDANCE_TEMPLATE_NAMES,
     PromptHitCategory,
     PromptGuidanceError,
     bypass_registry,
@@ -64,7 +64,23 @@ def test_guidance_for_category_returns_fixed_template(
     expected: str,
 ) -> None:
     assert guidance_for_category(category) == expected
-    assert HIT_GUIDANCE_TEMPLATES[category] == expected
+    assert HIT_GUIDANCE_TEMPLATE_NAMES[category].startswith("feedback/guidance/")
+
+
+def test_dt_guidance_text_is_loaded_from_prompts_folder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Guidance copy must live in prompts/, not as Python string literals."""
+    from secondsight.feedback import prompt_guidance
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_render(template_name: str, context: dict) -> str:
+        calls.append((template_name, context))
+        return " loaded guidance "
+
+    monkeypatch.setattr(prompt_guidance, "render", fake_render)
+
+    assert guidance_for_category(PromptHitCategory.MISSING_SCOPE) == "loaded guidance"
+    assert calls == [("feedback/guidance/missing_scope", {})]
 
 
 def test_guidance_for_category_rejects_unknown_category() -> None:

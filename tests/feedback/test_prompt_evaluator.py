@@ -213,3 +213,21 @@ def test_parse_evaluator_output_uncertain_or_invalid_category_fails_open() -> No
     assert parse_evaluator_output(
         '{"decision":"intervene","primary_category":"unknown"}'
     ) == PromptEvaluation.pass_open(reason="malformed_output")
+
+
+def test_dt_classifier_prompt_is_loaded_from_prompts_folder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Classifier instructions must live in prompts/, not in evaluator code."""
+    from secondsight.feedback import prompt_evaluator
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_render(template_name: str, context: dict) -> str:
+        calls.append((template_name, context))
+        return "classifier prompt"
+
+    monkeypatch.setattr(prompt_evaluator, "render", fake_render)
+
+    assert prompt_evaluator._build_classifier_prompt("fix it") == "classifier prompt"  # noqa: SLF001
+    assert calls == [("feedback/classifier", {"prompt": "fix it"})]
