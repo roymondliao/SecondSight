@@ -1,0 +1,172 @@
+title: user-prompt-injection-timeout
+date: 2026-05-20
+revised_on: 2026-05-20  # post-profiling rewrite — see findings below
+hypothesis: >
+  Original (pre-profiling): hook script's curl --max-time 0.5 is shorter
+  than evaluator latency in cli mode because _evaluate_via_cli spawns an
+  external coding-agent CLI subprocess.
+  Revised (post-profiling): the bug is not one short timeout — it is a
+  three-layer silent rot where each layer hides the next.
+root_cause:
+  layer_1:
+    name: hook latency budget mismatch
+    detail: >
+      scripts/hooks/user-prompt.sh:114 used --max-time 0.5, copy-pasted
+      from session-start.sh:97. SessionStart endpoint only does in-process
+      DirectivesRepository read (sub-50ms), so 0.5s is comfortable there.
+      UserPrompt endpoint dispatches evaluate_user_prompt which in cli
+      mode goes through asyncio.create_subprocess_exec on the agent CLI
+      — a seconds-level operation.
+    status: PARTIALLY FIXED (raised to 5.0 — see layer_2 for why still wrong)
+  layer_2:
+    name: evaluator architectural latency
+    detail: >
+      Profiling (3 runs of exact evaluator path, env-filtered, haiku-4-5,
+      classifier prompt + "fix this bug" user prompt):
+        Python wall-clock:  11.7s / 13.6s / 16.7s
+        claude duration_ms: 8.0s  / 12.1s / 12.8s
+        duration_api_ms:    7.5s  / 11.6s / 12.2s
+        ttft_ms:            6.3s  / 11.1s / 12.4s
+        cache_read tokens:  40,181 / 40,181 / 38,196
+        cache_creation:     16,320 / 16,320 / 16,317
+        cost_per_call:      $0.024
+      Root: `claude --print` is NOT a thin LLM client. It rebuilds the
+      full agentic system prompt (CLAUDE.md + MEMORY + all plugin/skill
+      descriptions + all MCP server schemas) on every invocation. The
+      LLM must process ~55K cached + 16K new tokens before producing the
+      classifier verdict. Even haiku-4-5 needs 6-12s TTFT under that
+      context weight. Raising hook --max-time to 5.0 still 100% times
+      out (curl-errors.log line 6: "5001 milliseconds"); raising to 20s
+      would work but yields user-visible 15s blocking delay per prompt
+      at $0.024 per call.
+    status: NOT FIXED — synchronous hook + 55K-token CLI subprocess is
+            architecturally incompatible
+  layer_3:
+    name: classifier output parser does not strip markdown fences
+    detail: >
+      parse_evaluator_output at prompt_evaluator.py:62 calls json.loads()
+      directly on the LLM's response text. Observed outputs from haiku
+      under the classifier prompt:
+        '```json\n{"decision":"intervene","primary_category":"missing_target"}\n```'
+        '```json\n{\n  "decision": "intervene",\n  "primary_category": "missing_scope"\n}\n```\n\n**Clar...'
+      LLM consistently wraps JSON in markdown fences and sometimes adds
+      trailing prose. json.loads() throws JSONDecodeError; the parser
+      degrades to pass_open(reason="malformed_output"). This means even
+      if layer_1 and layer_2 are perfectly resolved, every classifier
+      output is silently downgraded to PASS — zero injections fire.
+    status: NOT FIXED — fail-open hides the parser fragility
+hidden_by:
+  - hook fail-open contract (`|| return 0`, `exit 0`, `--silent`) — by
+    design, no signal reaches Claude Code on injection failure.
+  - observation channel succeeds independently (`secondsight_post` uses
+    a separate curl with --max-time 1 to /hook/{agent}/user_prompt), so
+    events table fills normally and looks healthy.
+  - curl-errors.log is the only fingerprint and is surfaced nowhere.
+  - test_user_prompt_hook_injection.py originally covered only the
+    fail-open branch (curl exit 22). No test exercised the success
+    branch end-to-end (real endpoint + real evaluator + parser).
+  - Layer 1 (timeout) and Layer 3 (parser) hide each other — Layer 1
+    means evaluator never returned, so Layer 3 was never observed
+    failing on real LLM output. They both went undetected since
+    feature launch.
+accomplice_layers:
+  - layer: scripts/hooks/user-prompt.sh:114
+    role: too-short --max-time silently drops every roundtrip
+  - layer: scripts/hooks/user-prompt.sh:119
+    role: "'|| return 0' masks curl exit 28"
+  - layer: scripts/hooks/user-prompt.sh:127
+    role: "trailing 'exit 0' ensures Claude Code never sees non-zero status"
+  - layer: src/secondsight/feedback/prompt_evaluator.py:62
+    role: json.loads() with no fence-strip; markdown output → malformed_output → pass
+  - layer: src/secondsight/feedback/prompt_evaluator.py:176
+    role: >
+      spawn 'claude --print' subprocess that rebuilds full agentic
+      system prompt — cost not visible to upstream caller
+  - layer: src/secondsight/api/injection.py:201
+    role: endpoint has no internal latency SLO or instrumentation tied
+          back to the hook budget
+timeline:
+  - 2026-05-20 13:52:05+0800 — commit ab934a83 introduces
+    scripts/hooks/user-prompt.sh with --max-time 0.5
+  - 2026-05-20 15:58:38 / 16:06:08 — first two user prompts; curl
+    timeout @ 506/505ms; no guidance (Layer 1 firing)
+  - 2026-05-20 ~16:10 — operator probe discovers Layer 1 by inspecting
+    curl-errors.log
+  - 2026-05-20 ~16:18 — Layer 1 patched (0.5 → 5.0) and death test
+    added; mock-based test passes
+  - 2026-05-20 ~16:24 — end-to-end probe against real endpoint reveals
+    Layer 2; 5.0s still insufficient (curl-errors.log line 6 records
+    5001ms); direct curl --max-time 60 against endpoint returns 204 in
+    15.3s
+  - 2026-05-20 ~16:30 — Python profiling of exact evaluator path
+    reveals Layer 2 details (duration_api_ms, cache token counts,
+    cost-per-call) AND Layer 3 (markdown-fenced LLM output)
+reference_architecture_comparison: >
+  reference_opensoure/claude-code-prompt-improver/scripts/improve-prompt.py
+  solves the same "is the prompt clear" problem WITHOUT this latency
+  class. Its hook is pure Python string ops (<50ms): it wraps the user's
+  prompt with a meta-instruction ("EVALUATE: Is this clear or vague? If
+  clear, proceed; if vague, invoke skill") and returns the wrapper as
+  hookSpecificOutput.additionalContext. The classification then rides on
+  the SAME LLM call that processes the user's request — the already-
+  loaded main context (with full conversation history) evaluates the
+  meta-question for free.
+  Architectural delta:
+    - SecondSight: sidecar classifier (independent subprocess, 55K-token
+      cold context, $0.024/call, 12s blocking, no conversation history)
+    - prompt-improver: meta-injection (zero subprocess, zero LLM call,
+      free, instant, full conversation history)
+  This is the strongest evidence that Phase A (raise budget) is not the
+  right strategic answer. Phase B should consider meta-injection as the
+  primary candidate path — not "make sidecar faster" but "remove sidecar
+  entirely".
+fix_strategy:
+  phase_a:
+    scope: this bugfix (already applied; PARTIAL)
+    actions:
+      - scripts/hooks/user-prompt.sh:114 max-time 0.5 → 5.0
+      - tests/scripts/test_user_prompt_hook_injection.py new death test
+        against simulated 1.5s evaluator
+    honest_assessment: >
+      Layer 1 is necessary but not sufficient. Layer 2 makes the
+      synchronous-hook design untenable regardless of budget. Layer 3
+      means zero injections succeed even if Layer 2 were magically fast.
+  phase_b_candidates:
+    - id: B-META
+      name: Meta-injection (reference-architecture pattern)
+      action: >
+        Rewrite the UserPromptSubmit hook to wrap the prompt with a
+        classification instruction and return immediately as
+        additionalContext. Drop _evaluate_via_cli, drop the injection
+        endpoint, drop the classifier prompt template.
+      pros: zero subprocess, zero extra LLM call, zero added latency,
+            zero added cost, gains conversation-history awareness for
+            free, eliminates Layers 1 / 2 / 3 entirely
+      cons: meta-instruction becomes visible to the user; relies on the
+            main agent to honor the instruction; abandons SecondSight's
+            "neutral observer" framing
+    - id: B-SDK
+      name: SDK-mode classifier (skip claude CLI entirely)
+      action: >
+        Switch mode = "sdk" and call Anthropic API directly with the
+        bare classifier prompt (~250 tokens, no system prompt). LLM
+        latency drops from 6-12s to sub-second.
+      pros: keeps sidecar architecture; preserves neutral-observer
+            framing; classifier-prompt + ~250 input tokens → sub-second
+            TTFT on haiku
+      cons: requires user-provided API key; per-call cost still
+            non-zero but ~10x cheaper; still synchronous on the hook
+            critical path (sub-second is acceptable, multi-second is not
+            — need P95 SLO)
+    - id: B-TWO-STAGE
+      name: Async pre-classify + cache (asynchronous sidecar)
+      action: >
+        Hook returns 204 immediately. Background task classifies the
+        prompt and stores verdict. Next prompt's hook returns guidance
+        for the PREVIOUS prompt (delayed by one turn).
+      pros: removes all latency from the critical path
+      cons: guidance lag breaks the UX contract ("guide me before I
+            type", not "guide me about what I typed last time");
+            extra storage / state management
+  decision_required: yes — Phase B requires operator to pick B-META vs
+    B-SDK vs B-TWO-STAGE before further work

@@ -1,0 +1,36 @@
+title: user-prompt-injection-timeout
+date: 2026-05-20
+failure_level: 4
+symptom: >
+  Every UserPromptSubmit hook invocation in CLI analysis mode returns no
+  guidance to Claude Code. The hook's POST to
+  /hook/injection/user-prompt/{agent} hits curl --max-time 0.5 and times out
+  before the evaluator (which spawns the configured CLI subprocess) can
+  produce a verdict. The hook itself exits 0, so Claude Code observes no
+  failure signal; user_prompt ingest (observation channel) still succeeds,
+  giving the operator a false-positive "hook is working" reading.
+impact_scope: >
+  All projects with mode = "cli" using bundled scripts/hooks/user-prompt.sh
+  (or an installer-copied derivative). For SecondSight itself this is 100%
+  of UserPromptSubmit events since commit ab934a83 (2026-05-20 13:52:05
+  +0800). Observed locally in project_id="SecondSight": injection success
+  rate = 0/2 for this session, with curl-errors.log showing matching
+  "Operation timed out after 506ms / 505ms" entries.
+detection_source: operator probe (not user report, not alert)
+expected_behavior: >
+  UserPromptSubmit hook should receive a guidance payload from the
+  /hook/injection/user-prompt/{agent} endpoint whenever the evaluator
+  decides INTERVENE, within a hook budget that accommodates the evaluator's
+  CLI subprocess startup + classifier roundtrip.
+actual_behavior: >
+  curl exits 28 (operation timeout) at 500ms; `|| return 0` swallows the
+  error; the hook prints zero bytes to stdout; Claude Code receives no
+  additionalContext for the prompt. The only externally visible artefact
+  is a one-line warning in ~/.secondsight/logs/curl-errors.log that nothing
+  in the product surfaces.
+duration_since_break: >
+  ~2.5 hours wall-clock at discovery time (2026-05-20 ~16:10). However,
+  this is the entire production lifetime of the user-prompt injection
+  feature — it has never produced a successful inject in CLI mode.
+detection_delay: same-day, by manual log inspection during an unrelated
+  audit. Without the probe, this would have continued indefinitely.

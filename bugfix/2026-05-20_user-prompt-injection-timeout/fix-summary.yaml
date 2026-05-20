@@ -1,0 +1,135 @@
+title: user-prompt-injection-timeout
+date: 2026-05-20
+status: PARTIAL — Phase A applied; Layers 2 and 3 unresolved
+change_summary:
+  - scripts/hooks/user-prompt.sh:114 raised curl --max-time on the
+    /hook/injection/user-prompt/{agent} call from 0.5 to 5.0 seconds.
+    Connect timeout (0.1s) and fail-open semantics unchanged.
+  - tests/scripts/test_user_prompt_hook_injection.py added death test
+    test_dt_user_prompt_injection_completes_within_budget_for_1500ms_endpoint
+    with a custom slow-injection HTTP server (1.5s delay) — pins Layer 1
+    against a sub-evaluator-class latency floor.
+  - tests/feedback/test_prompt_evaluator.py added death test
+    test_dt_parse_evaluator_output_handles_markdown_fenced_json — pins
+    Layer 3 against real haiku-4-5 markdown-fenced output. CURRENTLY
+    FAILS on main — kept failing so the next fix attempt cannot land
+    without addressing Layer 3.
+  - ~/.claude/hooks/user-prompt.sh manually synced to the new source
+    on the developer's machine (installer-copy contract, source edits
+    do not propagate until `secondsight init` re-runs).
+validated_by:
+  - rtk proxy pytest tests/scripts/test_user_prompt_hook_injection.py -q
+    (2 passed, including DT-1.5s mock budget death test)
+  - rtk proxy pytest tests/scripts/ tests/api/test_injection_user_prompt.py
+    tests/api/test_injection_session_start.py -q (55 passed, no regression)
+  - >
+    manual end-to-end probe against real running server — curl --max-time 60
+    against /hook/injection/user-prompt/claude_code returned 204 after 15.303s,
+    confirming Layer 2 (5.0 still insufficient) and Layer 3 (15s of evaluator
+    work degraded to pass_open due to malformed_output).
+  - >
+    Python profiling of exact evaluator path, env-filtered, classifier prompt,
+    haiku-4-5. 3 runs measured 11.7s / 13.6s / 16.7s wall-clock with claude
+    self-reported duration_api_ms 7.5-12.2s, cache_read 38-40K tokens, $0.024
+    per call — recorded in root-cause.yaml layer_2.
+unresolved_layers:
+  layer_2_status: NOT FIXED
+  layer_2_blocker: >
+    claude --print loads ~55K tokens of agentic system prompt on every
+    invocation regardless of model. haiku-4-5 TTFT under that context
+    weight is 6-12s. No hook-budget value can both (a) accommodate this
+    and (b) preserve acceptable UX. The synchronous sidecar architecture
+    is incompatible with claude CLI's `--print` behavior.
+  layer_3_status: NOT FIXED
+  layer_3_blocker: >
+    parse_evaluator_output (prompt_evaluator.py:62) does json.loads()
+    without stripping markdown fences. Haiku consistently fences its
+    JSON. Even if Layer 2 were resolved, every real verdict would
+    silently fail open. The Layer 3 death test stays RED until a fix
+    lands.
+silent_failure_conditions: >
+  Phase A alone re-enters silent rot (failure_level 4) under any of:
+    (1) evaluator CLI subprocess > 5.0s — currently 11-17s in production,
+        i.e. this condition is ALREADY MET on every real prompt;
+    (2) installer re-run with an older hook template that drops the
+        --max-time delta, or a user manually copies an old hook back;
+    (3) someone deletes the Layer 1 death test or weakens the 1.5s
+        injection-delay parameter — both assertions must stay honest;
+    (4) Layer 3 death test removed before parser fix lands, allowing
+        markdown-fenced JSON to be silently downgraded to PASS again.
+operator_action_required: >
+  Operators with previously-installed hooks must either (a) re-run
+  `secondsight init` to refresh ~/.claude/hooks/user-prompt.sh, or
+  (b) manually copy scripts/hooks/user-prompt.sh on top of the installed
+  file. The bundled hook ships as a copy, not a symlink — source edits
+  alone do not affect running Claude Code sessions.
+  IMPORTANT: even after refresh, Layer 2 means injections still fail
+  100% in CLI mode. Phase A is a fix for Layer 1 only.
+deferred_scars:
+  - id: SCAR-A
+    description: >
+      Layer 2 — sidecar classifier architecture is fundamentally
+      incompatible with claude CLI's `--print` cold-loading 55K-token
+      agentic context. Even raising hook budget to 30s yields user-
+      visible 15s blocking per prompt at $0.024/call.
+    long_term_fix: >
+      Choose one of three Phase B candidates documented in
+      root-cause.yaml.phase_b_candidates:
+        B-META: rewrite as meta-injection (reference-architecture
+                pattern, see claude-code-prompt-improver) — zero
+                subprocess, zero added LLM call, zero added cost.
+                Trade-off: gives up "neutral observer" framing.
+        B-SDK:  switch to mode="sdk", call Anthropic API directly
+                with bare classifier prompt (~250 tokens, no system
+                load). Sub-second latency. Trade-off: requires API
+                key + per-call cost.
+        B-TWO-STAGE: async pre-classify + cache; guidance lags one
+                turn. Trade-off: breaks "guide before action" UX
+                contract.
+      DECISION REQUIRED: operator selects one before further work.
+  - id: SCAR-B
+    description: >
+      No production signal exists for injection-path failures. curl
+      errors are logged to ~/.secondsight/logs/curl-errors.log which
+      is surfaced nowhere. This entire bug stack went undetected for
+      its whole production lifetime.
+    long_term_fix: >
+      Add an injection-failure counter to the events table or a
+      diagnostic surface in `secondsight diagnose` / dashboard so
+      Layer 1 + Layer 2 regressions are visible without manual log
+      probing. Track separately from Phase B.
+  - id: SCAR-C
+    description: >
+      Layer 1 death test uses a hardcoded 1.5s mock injection delay
+      and Layer 3 death test uses two hardcoded haiku-fenced strings.
+      Neither floor is bound to live evaluator P95 latency or live
+      classifier output format. If the evaluator P95 crosses the
+      mock floor, or the classifier format changes, tests pass
+      vacuously while production rots.
+    long_term_fix: >
+      Replace hardcoded floors with periodically-refreshed fixtures
+      that capture real P95 + real classifier sample. Out of scope
+      here; the hardcoded picks are defensible against current haiku-4-5
+      + current evaluator architecture.
+  - id: SCAR-D
+    description: >
+      Layer 3 death test is intentionally left FAILING (RED) on main
+      until Phase B lands. This is unusual — a red test in main is
+      normally a CI break. Justified here because (a) the parser bug
+      is real and currently active in production, (b) fixing the
+      parser before Phase B is decided risks investing in a code path
+      that B-META would delete entirely. The red test acts as a
+      tripwire forcing Phase B decision.
+    long_term_fix: >
+      Decide Phase B candidate. If B-META: delete prompt_evaluator
+      module + Layer 3 test entirely. If B-SDK or B-TWO-STAGE: add
+      fence-stripping (e.g., extract first JSON object via regex)
+      and let Layer 3 test go GREEN.
+phase_b_decision_required: yes
+phase_b_owner: operator (yuyu_liao)
+next_step: >
+  Operator chooses B-META / B-SDK / B-TWO-STAGE in root-cause.yaml.
+  Then invoke samsara:planning to design and scope the chosen path.
+  Do NOT extend Phase A further (e.g., do NOT bump max-time to 20s
+  without addressing Layer 3) — that adds UX pain without producing
+  a single successful injection.

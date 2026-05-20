@@ -111,7 +111,7 @@ _ss_inject_prompt_guidance() {
         --show-error \
         --fail \
         --connect-timeout 0.1 \
-        --max-time 0.5 \
+        --max-time 5.0 \
         --request POST \
         --header 'Content-Type: application/json' \
         --data-raw "$body" \
