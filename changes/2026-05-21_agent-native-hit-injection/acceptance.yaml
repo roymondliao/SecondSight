@@ -1,0 +1,138 @@
+feature: agent-native-hit-injection
+coverage_type: verified
+
+scenarios:
+  # ============================================================
+  # DEATH PATHS — silent failures that look like success
+  # ============================================================
+
+  - name: "wrapper produces malformed JSON; hook silently fails open"
+    type: death_path
+    given: "user prompt contains characters that need JSON escaping (quotes, newlines, backslashes, unicode)"
+    when: "scripts/hooks/user-prompt.sh runs with this payload on stdin"
+    then:
+      - "stdout is valid JSON parseable by json.loads"
+      - "the parsed JSON contains hookSpecificOutput.additionalContext"
+      - "additionalContext is a non-empty string"
+      - "additionalContext contains the original prompt text verbatim (post-escape)"
+
+  - name: "config toggle missing from config.toml; silent default to wrong value"
+    type: death_path
+    given: "config.toml has no [feedback].hit_injection_enabled key"
+    when: "config loader resolves the value"
+    then:
+      - "resolved value is exactly True (Python bool, not truthy string)"
+      - "loader does NOT log warning about missing key (intentional default)"
+      - "if the loader chain ever returns a string 'true' or 'false', the test FAILS"
+
+  - name: "wrapper template substitution leaks unescaped characters into JSON"
+    type: death_path
+    given: "user prompt contains raw double quote and backslash: 'fix the \"auth bug\\path\" issue'"
+    when: "render_wrapper(prompt) is called and result is wrapped in JSON envelope"
+    then:
+      - "JSON envelope parses successfully via json.loads"
+      - "additionalContext, when extracted, contains the literal characters from the original prompt"
+
+  - name: "atomic deletion leaves dangling import or route reference"
+    type: death_path
+    given: "task-4 has run; prompt_evaluator.py and /hook/injection/user-prompt/{agent} have been deleted"
+    when: "grep -rn 'prompt_evaluator' src/ tests/ is run"
+    then:
+      - "command returns empty (zero matches)"
+      - "if any match returns, task-4 is incomplete; CI fails"
+
+  - name: "hook script invokes deleted endpoint via legacy curl block"
+    type: death_path
+    given: "task-4 atomic switch is incomplete; hook still has the old curl-to-injection-endpoint block"
+    when: "scripts/hooks/user-prompt.sh runs with a sample prompt"
+    then:
+      - "stdout contains the meta-injection wrapper from the new Python helper"
+      - "stdout does NOT contain the legacy categorical guidance text from old guidance/*.jinja2"
+      - "~/.secondsight/logs/curl-errors.log does NOT show new injection-endpoint timeout entries"
+
+  - name: "BehaviorFlag.confidence remains undocumented as contamination tripwire"
+    type: death_path
+    given: "task-5 has run"
+    when: "reading src/secondsight/analysis/schemas.py around line 100"
+    then:
+      - "BehaviorFlag.confidence field has a docstring or inline comment naming its dual role"
+      - "comment references invariant #4 of changes/2026-05-21_agent-native-hit-injection/1-kickoff.md"
+
+  # ============================================================
+  # DEGRADATION PATHS — partial failures with explicit fallback
+  # ============================================================
+
+  - name: "Python interpreter unavailable on host"
+    type: degradation
+    given: "system has neither python3 nor python on PATH"
+    when: "scripts/hooks/user-prompt.sh runs"
+    then:
+      - "hook exits 0 with no stdout"
+      - "~/.secondsight/logs/curl-errors.log records 'python not found; cannot render wrapper'"
+      - "user-side experience: no wrapper is applied; original prompt proceeds without meta-injection"
+
+  - name: "jq unavailable but Python present"
+    type: degradation
+    given: "system has python3 but no jq"
+    when: "scripts/hooks/user-prompt.sh runs"
+    then:
+      - "if hook uses jq to parse input — exit 0 with no stdout, error logged"
+      - "if hook delegates JSON parsing to Python — proceed normally; jq absence does not block"
+      - "(planning decision per task-3: hook delegates JSON parsing to Python; jq is not required)"
+
+  - name: "config.toml hit_injection_enabled = false"
+    type: degradation
+    given: "operator has set hit_injection_enabled to false in config.toml"
+    when: "scripts/hooks/user-prompt.sh runs"
+    then:
+      - "hook exits 0 with no stdout"
+      - "no error logged (this is intentional opt-out, not failure)"
+      - "main agent receives prompt without meta-injection"
+
+  - name: "wrapper template file missing"
+    type: degradation
+    given: "src/secondsight/prompts/feedback/hit_injection_wrapper.jinja2 has been deleted or fails to load"
+    when: "render_wrapper is invoked"
+    then:
+      - "exception is raised inside Python helper"
+      - "hook catches the exception, exits 0 with no stdout"
+      - "error appended to ~/.secondsight/logs/curl-errors.log with template path"
+
+  # ============================================================
+  # HAPPY PATHS — with explicit evidence chain
+  # ============================================================
+
+  - name: "enabled, simple prompt, all components present"
+    type: happy_path
+    given: "hit_injection_enabled = true; user prompt 'fix the auth bug'; Python + jinja2 available"
+    when: "scripts/hooks/user-prompt.sh runs with stdin {\"prompt\":\"fix the auth bug\",\"cwd\":\"/tmp/x\",\"session_id\":\"s1\"}"
+    then:
+      - "exit code = 0"
+      - "stdout parses as JSON via json.loads"
+      - "parsed JSON has shape {hookSpecificOutput: {hookEventName: 'UserPromptSubmit', additionalContext: str}}"
+      - "additionalContext starts with 'EXECUTABILITY SELF-CHECK' (or whatever wrapper header is finalized)"
+      - "additionalContext contains the literal string 'fix the auth bug'"
+      - "Evidence: wrapper rendering takes < 100ms wall-clock (no LLM call, no subprocess)"
+
+  - name: "verify-only checks of existing analysis wiring"
+    type: happy_path
+    given: "tasks 1-5 complete"
+    when: "operator reads overview.md verify-only section"
+    then:
+      - "overview.md affirms orchestrator.py:488 lifecycle_automation runs per session_end (existing behavior preserved)"
+      - "overview.md affirms aggregator.py + lifecycle_automation.py have no human approval step (matches invariant #1)"
+      - "overview.md affirms Directive.source_flag_type + source_sessions exist on schema (provenance metadata available for dashboard consumption)"
+      - "No regression tests added per planning decision"
+
+  # ============================================================
+  # META — invariant preservation
+  # ============================================================
+
+  - name: "config toggle preserved with no death condition"
+    type: happy_path
+    given: "ship of all 5 tasks"
+    when: "config.toml schema is reviewed"
+    then:
+      - "[feedback].hit_injection_enabled exists as a documented config key"
+      - "default is true"
+      - "documentation comment explains the escape-hatch role per Q3 cost transfer"

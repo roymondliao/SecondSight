@@ -1,0 +1,38 @@
+feature: agent-native-hit-injection
+status: pending
+
+tasks:
+  - id: task-1
+    title: "Migration audit + scope lock (no implementation)"
+    status: pending
+    scar_count: null
+    unresolved_assumptions: null
+    depends_on: []
+
+  - id: task-2
+    title: "Hit injection wrapper template + Python helper"
+    status: pending
+    scar_count: null
+    unresolved_assumptions: null
+    depends_on: [task-1]
+
+  - id: task-3
+    title: "Hook script rewrite + config.toml toggle wiring"
+    status: pending
+    scar_count: null
+    unresolved_assumptions: null
+    depends_on: [task-1, task-2]
+
+  - id: task-4
+    title: "Atomic destructive change — delete sidecar + endpoint + obsolete tests"
+    status: pending
+    scar_count: null
+    unresolved_assumptions: null
+    depends_on: [task-2, task-3]
+
+  - id: task-5
+    title: "BehaviorFlag.confidence dual-role documentation"
+    status: pending
+    scar_count: null
+    unresolved_assumptions: null
+    depends_on: []
