@@ -229,10 +229,6 @@ def test_dc7_sdk_all_providers_empty_returns_fail_no_providers() -> None:
     """DC7: mode=sdk, all provider keys empty → fail(reason=no_providers)."""
     from secondsight.config.precheck import precheck
 
-    config = _make_sdk_config(
-        anthropic_key="",
-        openai_key="",
-    )
     # Also clear custom
     config_no_providers = SecondSightConfig(
         retention=_make_retention(),
@@ -496,9 +492,7 @@ def test_death_f2_uppercase_returns_unknown_agent() -> None:
 
     result = precheck(config=config, state=state)
 
-    assert not result.is_ok, (
-        "precheck() must fail for unknown agent 'CLAUDE_CODE' (case mismatch)."
-    )
+    assert not result.is_ok, "precheck() must fail for unknown agent 'CLAUDE_CODE' (case mismatch)."
     assert result.reason == "unknown_agent", (
         f"Expected reason='unknown_agent' for unrecognised agent name. "
         f"Got reason={result.reason!r}."
@@ -518,9 +512,7 @@ def test_death_f2_unknown_default_agent_in_config_returns_unknown_agent() -> Non
 
     result = precheck(config=config, state=None)
 
-    assert not result.is_ok, (
-        "precheck() must fail for unsupported agent 'gemini_cli'."
-    )
+    assert not result.is_ok, "precheck() must fail for unsupported agent 'gemini_cli'."
     assert result.reason == "unknown_agent", (
         f"Expected reason='unknown_agent' for completely unrecognised agent. "
         f"Got reason={result.reason!r}."
@@ -543,8 +535,7 @@ def test_death_f2_unknown_agent_message_names_valid_agents() -> None:
     assert result.reason == "unknown_agent"
     # Message must guide the operator — mention at least one valid agent
     assert "claude_code" in result.message or "codex" in result.message, (
-        f"Failure message for unknown_agent must list valid agent names. "
-        f"Got: {result.message!r}"
+        f"Failure message for unknown_agent must list valid agent names. Got: {result.message!r}"
     )
 
 

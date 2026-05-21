@@ -67,9 +67,7 @@ _UNSUPPORTED_CLI_AGENTS: frozenset[str] = frozenset({"opencode"})
 #   BEFORE the enum check runs. The only way effective_agent=='auto' can reach the enum
 #   check is if state.init_agent=='auto' (state corruption). That should fail cleanly with
 #   reason='unknown_agent', not cause a KeyError in _AGENT_BINARY_MAP.
-_KNOWN_CLI_AGENTS: frozenset[str] = (
-    frozenset(_AGENT_BINARY_MAP.keys()) | _UNSUPPORTED_CLI_AGENTS
-)
+_KNOWN_CLI_AGENTS: frozenset[str] = frozenset(_AGENT_BINARY_MAP.keys()) | _UNSUPPORTED_CLI_AGENTS
 
 
 @dataclass(frozen=True)

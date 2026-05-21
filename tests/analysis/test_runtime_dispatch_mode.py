@@ -407,9 +407,7 @@ async def test_death_f2_dispatch_cli_logs_effective_agent(
     assert "sess-log-cli" in all_messages, (
         f"dispatch() INFO log must contain session_id. Got: {all_messages!r}"
     )
-    assert "cli" in all_messages, (
-        f"dispatch() INFO log must contain mode. Got: {all_messages!r}"
-    )
+    assert "cli" in all_messages, f"dispatch() INFO log must contain mode. Got: {all_messages!r}"
     # The key assertion: the agent NAME must appear in the dispatch-start log line.
     # Searching for the word "agent" alone is vacuous — it appears in many messages.
     # We require the actual agent value "claude_code" verbatim in the dispatch-start line.
@@ -457,9 +455,7 @@ async def test_death_f2_dispatch_sdk_logs_primary_model(
     assert "sess-log-sdk" in all_messages, (
         f"dispatch() INFO log must contain session_id. Got: {all_messages!r}"
     )
-    assert "sdk" in all_messages, (
-        f"dispatch() INFO log must contain mode. Got: {all_messages!r}"
-    )
+    assert "sdk" in all_messages, f"dispatch() INFO log must contain mode. Got: {all_messages!r}"
     # The key assertion: the primary_model NAME must appear in the dispatch-start log line.
     # Searching for the word "primary_model" alone is vacuous — it could match a debug or
     # error log from another subsystem. We require the actual model value verbatim.

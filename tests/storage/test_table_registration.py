@@ -21,11 +21,6 @@ Silent failure mode this pins:
 
 from __future__ import annotations
 
-import importlib
-import sys
-
-import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -48,12 +43,14 @@ def _reload_storage_metadata():
     what is registered at the SQLAlchemy level.
     """
     from secondsight.storage.events_table import metadata  # always safe — it's the root
+
     return metadata
 
 
 # ---------------------------------------------------------------------------
 # DEATH TESTS — run before any import of secondsight.storage
 # ---------------------------------------------------------------------------
+
 
 class TestDeathPaths:
     """Verify the silent failure paths that motivated this fix.
@@ -87,12 +84,14 @@ class TestDeathPaths:
         # Import events_table alone (isolated metadata state in a subprocess is
         # not practical here; instead we verify the table module self-registers).
         from secondsight.storage import events_table  # noqa: F401
+
         metadata = events_table.metadata
 
         # analysis_outputs_table may or may not be registered depending on
         # whether it has been imported earlier in the test session.
         # The critical invariant is: AFTER importing analysis_outputs_table, it IS registered.
         import secondsight.storage.analysis_outputs_table as ao_table  # noqa: F401
+
         assert "analysis_outputs" in metadata.tables, (
             "analysis_outputs table was NOT registered after importing analysis_outputs_table. "
             "The table registration side-effect on import is broken."
@@ -107,6 +106,7 @@ class TestDeathPaths:
         """
         import secondsight.storage.analysis_outputs_table  # noqa: F401
         from secondsight.storage.events_table import metadata
+
         assert "analysis_outputs" in metadata.tables, (
             "analysis_outputs_table.py did not register 'analysis_outputs' with shared metadata. "
             "Check that it imports `from secondsight.storage.events_table import metadata`."
@@ -116,6 +116,7 @@ class TestDeathPaths:
         """Same mechanism verification for analysis_runs_table."""
         import secondsight.storage.analysis_runs_table  # noqa: F401
         from secondsight.storage.events_table import metadata
+
         assert "analysis_runs" in metadata.tables, (
             "analysis_runs_table.py did not register 'analysis_runs' with shared metadata."
         )
@@ -124,6 +125,7 @@ class TestDeathPaths:
 # ---------------------------------------------------------------------------
 # UNIT TESTS — the invariant we're enforcing with the __init__.py fix
 # ---------------------------------------------------------------------------
+
 
 class TestStoragePackageRegistrationInvariant:
     """After importing secondsight.storage, ALL tables must be registered.
@@ -144,6 +146,7 @@ class TestStoragePackageRegistrationInvariant:
         """
         import secondsight.storage  # noqa: F401
         from secondsight.storage.events_table import metadata
+
         assert "analysis_outputs" in metadata.tables, (
             "Importing secondsight.storage did NOT register 'analysis_outputs' table. "
             "This means metadata.create_all() after `import secondsight.storage` will "
@@ -160,6 +163,7 @@ class TestStoragePackageRegistrationInvariant:
         """
         import secondsight.storage  # noqa: F401
         from secondsight.storage.events_table import metadata
+
         assert "analysis_runs" in metadata.tables, (
             "Importing secondsight.storage did NOT register 'analysis_runs' table. "
             "This means metadata.create_all() after `import secondsight.storage` will "
@@ -209,30 +213,35 @@ class TestStoragePackageRegistrationInvariant:
         """Base case: events table (the metadata owner) is always registered."""
         import secondsight.storage  # noqa: F401
         from secondsight.storage.events_table import metadata
+
         assert "events" in metadata.tables
 
     def test_behavior_flags_table_registered(self):
         """behavior_flags is registered via BehaviorFlagsRepository import chain."""
         import secondsight.storage  # noqa: F401
         from secondsight.storage.events_table import metadata
+
         assert "behavior_flags" in metadata.tables
 
     def test_directives_table_registered(self):
         """directives is registered via DirectivesRepository import chain."""
         import secondsight.storage  # noqa: F401
         from secondsight.storage.events_table import metadata
+
         assert "directives" in metadata.tables
 
     def test_session_reports_table_registered(self):
         """session_reports is registered via BehaviorFlagsRepository import chain."""
         import secondsight.storage  # noqa: F401
         from secondsight.storage.events_table import metadata
+
         assert "session_reports" in metadata.tables
 
 
 # ---------------------------------------------------------------------------
 # INVARIANT COMPLETENESS — verify __init__.py exports match table registration
 # ---------------------------------------------------------------------------
+
 
 class TestInitExportsCompleteness:
     """Verify that __init__.py __all__ includes the newly added symbols.
@@ -245,6 +254,7 @@ class TestInitExportsCompleteness:
     def test_analysis_outputs_repository_in_all(self):
         """AnalysisOutputsRepository must appear in __all__ after the fix."""
         import secondsight.storage as storage
+
         if hasattr(storage, "__all__"):
             assert "AnalysisOutputsRepository" in storage.__all__, (
                 "AnalysisOutputsRepository was added to __init__.py imports but "
@@ -255,6 +265,7 @@ class TestInitExportsCompleteness:
     def test_analysis_runs_repository_in_all(self):
         """AnalysisRunsRepository must appear in __all__ after the fix."""
         import secondsight.storage as storage
+
         if hasattr(storage, "__all__"):
             assert "AnalysisRunsRepository" in storage.__all__, (
                 "AnalysisRunsRepository was added to __init__.py imports but "
