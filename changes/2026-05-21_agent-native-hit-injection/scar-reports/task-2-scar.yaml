@@ -1,0 +1,296 @@
+task_id: task-2
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: >
+      The wrapper template draft in 2-plan.md was used as a starting point and
+      refined (not copied verbatim). Refinements: (1) clarified "conversation
+      context" to "what has already been established in this conversation" to
+      reduce ambiguity about what constitutes valid context; (2) added explicit
+      instruction that the agent must not invoke tools to gather missing
+      information; (3) changed "tell the user" to "ask the user" to make the
+      conversational framing clear; (4) tightened "do the wrong thing" to
+      "produce the wrong result" to be more precise. Structural properties
+      (single template, trust-user-intent framing, natural language response,
+      bypass for empty prompts) are fully preserved.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      DT-3 uses monkeypatching of `_env.get_template` rather than filesystem
+      removal of the template file. The Jinja2 environment is a module-level
+      singleton with an LRU cache — removing the physical file would not cause
+      TemplateNotFound on a warm module because the template is cached. The
+      monkeypatch approach correctly tests the exception propagation contract
+      without being defeated by the cache. This is correct behavior, not a
+      shortcut.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Module-level `_TEMPLATE_NAME` constant rather than inline guard or
+      registry pattern. The module-vs-inline-guard structural choice is
+      acceptable for task-2 scope. Task-3 inheritor can re-evaluate during
+      integration if a more sophisticated lookup or registry is needed. This
+      is an intentionally accepted Suggestion-level item from the re-review;
+      see re_review_resolved_items S-1 below.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      If `additionalContext` set to an empty string causes Claude Code to emit
+      a warning, reject the hook payload, or treat the empty string as "no
+      additionalContext key at all", the bypass condition (empty/whitespace
+      prompts pass through) may either block the prompt or emit a warning.
+      This cannot be verified without a live Claude Code environment. The
+      shell hook in task-3 is expected to translate an empty return value into
+      "no stdout emission" — but if task-3 passes the empty string as
+      additionalContext directly, Claude Code's handling is unknown.
+      If Claude Code logs a warning for empty additionalContext, operators
+      would see noise but prompts would not be blocked. If it rejects the
+      payload entirely, the hook fails and the prompt may be blocked (violating
+      fail-open). No test can cover this without a live Claude Code integration
+      test environment (out of scope for task-2).
+    deferred_to_feature_iteration: true
+
+  - description: >
+      The Jinja2 PackageLoader singleton `_env` is module-level. If the Python
+      interpreter imports `secondsight.prompts._loader` before the template file
+      exists (e.g., the package is installed as a wheel whose build predates the
+      new template file), the template file will be absent from the package data
+      and `_env.get_template` will raise `TemplateNotFound` on every call.
+      This is the correct failure mode (DT-3), but the operator's experience is:
+      every user prompt triggers an exception in the hook Python helper,
+      the shell hook fails open, and hit injection is silently disabled.
+      Mitigation: the template file must be present in the wheel (it is co-located
+      in src/secondsight/prompts/feedback/ which is included by PackageLoader's
+      PackageLoader("secondsight", "prompts") configuration, verified by reading
+      pyproject.toml and _loader.py). However, this is only true for fresh wheels
+      built after this PR lands.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The template uses `{{ prompt }}` with `autoescape=False`. The rendered
+      output is plain text, not HTML or JSON. If the rendered wrapper is later
+      embedded into a JSON payload by the shell hook (task-3) using naive string
+      concatenation (rather than `json.dumps`), the characters that survive
+      Jinja2 rendering (quotes, backslashes, newlines) will break the JSON.
+      DT-1 verifies that `json.dumps` handles the output correctly, and DT-1
+      now also asserts the prompt appears verbatim in `rendered` before JSON
+      serialization (autoescape regression check). The shell hook must use a
+      JSON serializer (e.g. `jq`) rather than string interpolation.
+      This is a task-3 constraint, not a Python helper constraint — but the
+      risk exists and is explicitly flagged here so task-3 reads this before
+      writing the shell-side JSON construction. A docstring warning was added
+      at the call site in task-2's original iteration; the failure mode itself
+      is unresolved at task-2 scope (task-3 must implement the guard).
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - assumption: >
+      `secondsight.prompts._loader.render` accepts a slash-separated template
+      name without the `.jinja2` extension (e.g. "feedback/hit_injection_wrapper").
+    verified: true
+    note: >
+      Verified by reading _loader.py line 58: `_env.get_template(f"{template_name}.jinja2")`.
+      Verified by reading all call sites in src/: "feedback/classifier",
+      "analysis/behavior", etc. — all use slash-separated paths. The call
+      `render("feedback/hit_injection_wrapper", context={"prompt": prompt})`
+      is correct.
+
+  - assumption: >
+      The Jinja2 PackageLoader is configured with `autoescape=False`, so the
+      template output preserves literal characters (quotes, backslashes, etc.)
+      rather than HTML-encoding them.
+    verified: true
+    note: >
+      Verified by reading _loader.py lines 33-37: `autoescape=False` is
+      explicitly set and documented as intentional ("analysis prompts are NOT
+      HTML"). DT-1 further confirms this empirically: json.dumps round-trips
+      the literal characters correctly. DT-1 now also checks the verbatim
+      pre-serialization assertion (autoescape regression check) added in
+      re-review fix iteration.
+
+  - assumption: >
+      The `_env.get_template` method can be monkeypatched via pytest.MonkeyPatch
+      to make `render_wrapper` raise `TemplateNotFound` in DT-3, without being
+      defeated by the module-level singleton's internal caching.
+    verified: true
+    note: >
+      Verified empirically: DT-3 passes (i.e., TemplateNotFound is raised when
+      `_env.get_template` is patched). Jinja2's template cache is keyed by
+      template name within the `_env.get_template` call — patching the method
+      itself bypasses the cache entirely.
+
+  - assumption: >
+      An empty string return from `render_wrapper` will be treated by the shell
+      hook (task-3) as "no injection" — i.e., the hook will emit no stdout, and
+      Claude Code will see no additionalContext.
+    verified: false
+    note: >
+      This is a contract between task-2 (Python helper) and task-3 (shell hook).
+      The task-2 spec documents this contract: "The hook contract for 'no wrap'
+      is 'additionalContext is empty string', which the shell hook in task-3
+      translates to 'no stdout'." This is a design decision in task-3, not a
+      property task-2 can verify. Flagged as unverified; task-3 implementer
+      must honor this contract and verify Claude Code's behavior with no stdout.
+      Note added to render_wrapper docstring per re-review S-2 fix.
+
+  - assumption: >
+      Claude Code's UserPromptSubmit hook processes `additionalContext` as plain
+      text injected before the user's prompt, and that the executability
+      self-check framing in the template will cause the main agent to actually
+      perform the self-check as part of its inference.
+    verified: false
+    note: >
+      This is the core architectural assumption of the B-META design. It cannot
+      be verified without a live Claude Code integration test. The assumption
+      is validated by the design decisions in overview.md and accepted as a
+      project-level risk. The Python helper's job is to produce well-formed
+      wrapper text; whether the main agent acts on it is outside task-2's scope.
+
+debt_registered: false
+
+narrative: >
+  Task-2 implements the minimal Python surface for hit injection redesign:
+  one Jinja2 template and one public function. The implementation is small
+  (~35 lines including docstrings) and deliberately so — complexity belongs
+  in the template text (editable without code change) and in the shell hook
+  (task-3).
+
+  The key implementation decision was DT-3's monkeypatch strategy. Removing
+  the physical template file would not trigger TemplateNotFound because the
+  Jinja2 environment caches templates after first load. Patching `_env.get_template`
+  directly tests the exception propagation path correctly. This is not a
+  shortcut — it is the right test for the right failure mode.
+
+  The two unverified assumptions (empty-string contract with task-3, and
+  Claude Code's actual processing of additionalContext) are both out of scope
+  for task-2. They are flagged clearly for task-3 and the feature integration
+  tests to resolve.
+
+  Pre-existing test failures (14 failures) were present before this task and
+  are not caused by the task-2 changes. They are in test_runtime_wiring.py,
+  test_prompt_evaluator.py (markdown fence parsing bug, documented in that
+  test's own docstring as pre-existing), and test_phase1_e2e.py.
+
+  Re-review iteration (2026-05-21): Fixed Critical DT-1 gap, added I-2 empty-render
+  guard (RuntimeError + DT-4), corrected Raises docstring to TemplateError parent
+  class, added S-1 module constant, S-2 unverified-contract note, removed
+  redundant unit test. JSON serialization scar item restored to
+  silent_failure_conditions (was incorrectly moved to resolved_items).
+
+resolved_items:
+  - original_section: silent_failure_conditions
+    original_description: >
+      Shell hook must use JSON serializer rather than string interpolation
+      when embedding rendered wrapper text into the hook payload.
+    resolution: >
+      Added explicit warning to `render_wrapper` docstring in hit_injection.py:
+      "IMPORTANT for callers (shell hook, task-3): the rendered string may
+      contain double quotes, backslashes, and newlines. The caller MUST
+      serialise this string using a proper JSON encoder — never via naive
+      string interpolation or printf-based concatenation. DT-1 in
+      tests/feedback/test_hit_injection.py pins this contract."
+      Task-3 implementer will see this warning at the call site.
+    note: >
+      RE-REVIEW NOTE (I-3): This resolution was a docstring addition, not a code
+      fix — the failure mode remains active until task-3 is implemented. This item
+      has been restored to silent_failure_conditions in the re-review iteration.
+      The docstring warning is retained, but the item is no longer classified as
+      resolved. See silent_failure_conditions entry for the JSON-serialization concern.
+
+re_review_resolved_items:
+  - finding_id: CRITICAL-DT-1
+    original_section: tests/feedback/test_hit_injection.py:19-53
+    description: >
+      DT-1 only asserted JSON round-trip survival, not that the prompt appeared
+      verbatim in `rendered` before serialization. A Jinja2 autoescape
+      misconfiguration that mangled characters into round-trippable substrings
+      would silently pass.
+    resolution: >
+      Added pre-serialization assertion in DT-1 (before json.dumps call):
+      `assert prompt in rendered, "rendered wrapper must contain the original
+      prompt verbatim (autoescape regression check)"`. The assertion checks the
+      raw rendered string before any JSON encoding, closing the gap between
+      "survives round-trip" and "was never mangled in the first place".
+
+  - finding_id: I-1
+    original_section: src/secondsight/feedback/hit_injection.py:39-43
+    description: >
+      Raises docstring listed only TemplateNotFound and UndefinedError; other
+      TemplateError subclasses (e.g. TemplateSyntaxError) were not covered.
+    resolution: >
+      Replaced enumerated raises with the parent class jinja2.exceptions.TemplateError,
+      listing TemplateNotFound, UndefinedError, and TemplateSyntaxError as named
+      subclasses in the description. All subclasses now documented as propagating
+      uncaught; task-3 is responsible for fail-open handling.
+
+  - finding_id: I-2
+    original_section: src/secondsight/feedback/hit_injection.py:44-46
+    description: >
+      No guard for the case where render() returns empty string for a non-empty
+      prompt (future template change silently producing no output). Return value
+      would be indistinguishable from the bypass path.
+    resolution: >
+      Added post-render guard: if result is falsy after calling render(), raises
+      RuntimeError with message "hit_injection_wrapper template rendered empty output
+      for a non-empty prompt; template contract is violated". Added DT-4
+      (test_dt_wrapper_raises_on_empty_render_for_nonempty_prompt) which monkeypatches
+      `render` in the hit_injection module namespace and asserts RuntimeError is
+      raised. DT-4 confirmed green.
+
+  - finding_id: I-3
+    original_section: changes/.../scar-reports/task-2-scar.yaml:160-172
+    description: >
+      JSON-serialization concern was in resolved_items with "added docstring warning"
+      as resolution. A docstring is documentation, not a fix — the failure mode
+      remains active until task-3 implements a proper JSON serializer.
+    resolution: >
+      Moved the concern back to silent_failure_conditions with updated description
+      noting that the docstring warning exists but the failure mode is unresolved
+      at task-2 scope. The original resolved_items entry is retained with a
+      RE-REVIEW NOTE clarifying the reclassification.
+
+  - finding_id: S-1
+    original_section: src/secondsight/feedback/hit_injection.py:46
+    description: >
+      Magic string "feedback/hit_injection_wrapper" used directly in render() call.
+    resolution: >
+      Added module-level constant `_TEMPLATE_NAME = "feedback/hit_injection_wrapper"`
+      above the function definition. render() call now uses `_TEMPLATE_NAME`.
+
+  - finding_id: S-2
+    original_section: src/secondsight/feedback/hit_injection.py:27-30
+    description: >
+      Docstring presented the empty-string → "no injection" contract as settled
+      while scar records it as verified: false.
+    resolution: >
+      Added sentence to docstring Returns section: "Note: the empty-string →
+      'no injection' contract is assumed and must be confirmed by the task-3
+      implementer at hook integration time." The assumption remains verified: false
+      in the scar; the docstring now reflects that uncertainty rather than hiding it.
+
+  - finding_id: S-3
+    original_section: tests/feedback/test_hit_injection.py:116-121
+    description: >
+      test_wrapper_is_non_empty_for_normal_prompt was redundant: it asserts
+      non-empty output, which is already guaranteed by test_wrapper_contains_original_prompt
+      (which asserts the full prompt string appears verbatim — a strictly stronger condition).
+    resolution: >
+      Removed test_wrapper_is_non_empty_for_normal_prompt. Test count changed from
+      8 passing to 8 passing (removed 1 redundant, added 1 DT-4 = net zero change).
+
+accepted_suggestions_not_fixed:
+  - finding_id: S-PATTERN
+    description: >
+      Suggestion to justify or reconsider the module-level structure (single-function
+      module vs. inline guard in the hook, or vs. a strategy registry). The module
+      structure is intentionally accepted for task-2 scope. The one-function-per-module
+      pattern is consistent with other secondsight helper modules (e.g. feedback/classifier.py)
+      and keeps the template name, the bypass guard, and the empty-render guard
+      co-located and independently testable. Task-3 inheritor can re-evaluate during
+      hook integration if a different structure proves more natural.
+    deferred_to_feature_iteration: false
+    rationale: >
+      Accepted as Suggestion-level. No architectural objection raised; the pattern
+      matches existing codebase conventions. Fixing this would require moving code
+      to task-3's scope without clear benefit. Documented here per re-review instructions.

@@ -85,6 +85,9 @@ class BehaviorFlag(BaseModel):
     One row per detected behavior flag. Persisted to the
     `behavior_flags` table (SD §7.3) and consumed by the analysis
     prompt-output parser in GUR-101.
+
+    `confidence` carries a dual role (see field definition below for
+    authoritative description).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -97,7 +100,28 @@ class BehaviorFlag(BaseModel):
     event_ids: list[str]
     intent_summary: str
     reason: str
-    confidence: Literal["high", "medium", "low"]
+    # The closed Literal["high","medium","low"] is load-bearing for role (b)
+    # below: monitoring depends on the three-category ordering with "low" as
+    # the sentinel. Adding a fourth value or reordering semantics silently
+    # invalidates the contamination signal — co-modify the operator monitoring
+    # query before changing this type.
+    confidence: Literal["high", "medium", "low"] = Field(
+        description=(
+            "Dual role: "
+            "(a) LLM's self-assessment of how reliable this flag is — "
+            "downstream filters may elect to ignore 'low' confidence flags. "
+            "(b) Passive data signal for distribution-shift contamination: "
+            "a sustained spike in the 'low' confidence ratio across many "
+            "sessions indicates meta-injection wrapper artefacts may be "
+            "polluting the analysis pipeline. NO monitoring component is "
+            "implemented in this codebase; an operator must query the ratio "
+            "externally (e.g., via dashboard or ad-hoc SQL). See invariant "
+            "#4 in changes/2026-05-21_agent-native-hit-injection/1-kickoff.md "
+            "and gap_6 resolution in "
+            "changes/2026-05-21_agent-native-hit-injection/2-plan.md "
+            "Step 1.5 Pre-thinking."
+        )
+    )
     created_at: datetime
 
 

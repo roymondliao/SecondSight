@@ -4,35 +4,107 @@ status: pending
 tasks:
   - id: task-1
     title: "Migration audit + scope lock (no implementation)"
-    status: pending
-    scar_count: null
-    unresolved_assumptions: null
+    status: done
+    scar_count: 13  # 8 resolved (post-fix) + 5 re-review carry-overs
+    unresolved_assumptions:
+      - "dt-8-grep-scope deferred to task-4 (inline TODO + spec amended)"
+      - "4 quality concerns deferred to feature iteration (documentation/epistemic)"
+    review_verdicts:
+      yin_re_review: PASS_WITH_CONCERNS
+      quality_re_review: PASS_WITH_CONCERNS
+    artifacts:
+      - migration-audit.yaml
+      - scar-reports/task-1-scar.yaml
     depends_on: []
 
   - id: task-2
     title: "Hit injection wrapper template + Python helper"
-    status: pending
-    scar_count: null
-    unresolved_assumptions: null
+    status: done
+    scar_count: 14  # original 8 + 6 re-review resolved + 1 accepted
+    unresolved_assumptions:
+      - "empty-string additionalContext contract with task-3/Claude Code unverified (task-3 must confirm)"
+      - "JSON serialization concern flagged in docstring; task-3 enforcement is the actual fix"
+      - "S-PATTERN module-vs-inline-guard structural choice accepted; task-4 may revisit"
+      - "minor Suggestion: RuntimeError message hardcodes template name string; not blocking, doc-only"
+    review_verdicts:
+      yin_re_review: PASS
+      quality_re_review: PASS
+    artifacts:
+      - src/secondsight/feedback/hit_injection.py
+      - src/secondsight/prompts/feedback/hit_injection_wrapper.jinja2
+      - tests/feedback/test_hit_injection.py
+      - scar-reports/task-2-scar.yaml
     depends_on: [task-1]
 
   - id: task-3
     title: "Hook script rewrite + config.toml toggle wiring"
-    status: pending
-    scar_count: null
-    unresolved_assumptions: null
+    status: done
+    scar_count: 18  # post fix-iteration: 4 Critical + 4 Important resolved + residual Important/Suggestions documented
+    unresolved_assumptions:
+      - "grep on PATH in hook context — asymmetric guard (jq/curl/python guarded, grep not); residual Important from yin re-review"
+      - "live Claude Code stdout JSON acceptance — unverified without integration env"
+      - "uv project root assumption (pyproject.toml at _SS_DIR/../..) — works for symlinked hooks, may misfire for copied hooks in unrelated repos"
+      - "_feedback_int_gt0_validator factory thin (Pattern Suggestion) — accepts as-is"
+    review_verdicts:
+      yin_re_review: PASS_WITH_CONCERNS
+      quality_re_review: PASS
+    artifacts:
+      - src/secondsight/config/schema.py (modified)
+      - src/secondsight/config/loader.py (modified)
+      - src/secondsight/config/template.py (modified)
+      - config.example.toml (modified)
+      - changes/2026-05-14_analysis-mode-toggle/config.example.toml (modified)
+      - scripts/hooks/user-prompt.sh (modified)
+      - tests/scripts/test_user_prompt_hook_injection.py (modified)
+      - tests/scripts/test_hook_fallback.py (modified)
+      - tests/config/test_hit_injection_config.py (new)
+      - scar-reports/task-3-scar.yaml (new)
     depends_on: [task-1, task-2]
 
   - id: task-4
     title: "Atomic destructive change — delete sidecar + endpoint + obsolete tests"
-    status: pending
-    scar_count: null
-    unresolved_assumptions: null
+    status: done
+    scar_count: 14  # initial 6 + re-review 5 resolved + 3 residual Suggestions
+    unresolved_assumptions:
+      - "hit_injection_wrapper.jinja2 is reconstructed by main agent; not byte-identical to original (functional equivalence verified by 8 task-2 tests; provenance comment added in-file)"
+      - "operator-rm + agent-Edit split-ops pattern creates implicit cross-actor coupling — scar-documented; code-level enforcement not possible"
+      - "3 underscore-prefixed symbols remain in injection.py __all__ (pre-existing Suggestion, not blocking)"
+      - "13 pre-existing test failures (7 test_runtime_wiring + 6 test_phase1_e2e) verified unrelated to task-4"
+    review_verdicts:
+      yin_re_review: PASS_WITH_CONCERNS (after fix iteration; resolved_items bookkeeping concern addressed)
+      quality_re_review: PASS
+    security_incident: documented in scar-reports/task-4-scar.yaml
+    artifacts:
+      - src/secondsight/api/injection.py (modified, 319→180 lines)
+      - scripts/hooks/user-prompt.sh (modified, 311→256 lines)
+      - src/secondsight/prompts/feedback/__init__.py (recovered from git)
+      - src/secondsight/prompts/feedback/hit_injection_wrapper.jinja2 (reconstructed, +provenance comment)
+      - tests/test_task4_deletion_invariants.py (new; DT-8/9/10/11)
+      - tests/api/test_injection_session_start.py (orphan test removed)
+      - changes/.../migration-audit.yaml (modified; re-classified test_user_prompt_hook_injection.py)
+      - scar-reports/task-4-scar.yaml (new)
+    deleted_files:
+      - src/secondsight/feedback/prompt_evaluator.py
+      - src/secondsight/feedback/prompt_guidance.py
+      - src/secondsight/prompts/feedback/classifier.jinja2
+      - src/secondsight/prompts/feedback/guidance/* (entire directory)
+      - tests/feedback/test_prompt_evaluator.py (Layer 3 RED death test went with it)
+      - tests/feedback/test_prompt_guidance.py
+      - tests/api/test_injection_user_prompt.py
     depends_on: [task-2, task-3]
 
   - id: task-5
     title: "BehaviorFlag.confidence dual-role documentation"
-    status: pending
-    scar_count: null
-    unresolved_assumptions: null
+    status: done
+    scar_count: 8  # initial 2 resolved + 4 re-review resolved + 2 accepted suggestions
+    unresolved_assumptions:
+      - "Field(description=...) on internal persistence model is appropriate (no OpenAPI consumer); accepted as Suggestion"
+      - "changes/ directory path references in Field description are stable for change-set lifetime; future repo reorg would silently break refs"
+      - "If Literal[high,medium,low] type ever changes, co-modification of monitoring query required (marked in code; not auto-enforced)"
+    review_verdicts:
+      yin_re_review: PASS
+      quality_re_review: PASS
+    artifacts:
+      - src/secondsight/analysis/schemas.py (modified — BehaviorFlag docstring + confidence Field description + Literal load-bearing comment)
+      - scar-reports/task-5-scar.yaml (new)
     depends_on: []

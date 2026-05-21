@@ -1,0 +1,236 @@
+# Scar report for task-5: BehaviorFlag.confidence dual-role documentation
+
+task_id: task-5
+title: "BehaviorFlag.confidence dual-role documentation"
+completion_status: DONE
+date: 2026-05-21
+
+# ============================================================
+# STEP 0 prerequisite answers
+# ============================================================
+
+step_0_answers:
+  q1_path_resisted: >
+    The easiest path was a one-liner inline comment like
+    "# also serves as contamination tripwire" on the confidence field.
+    Avoided that because it omits the invariant reference path, leaving
+    future readers unable to find the framing. Chose Field(description=...)
+    instead, which makes the dual-role text visible in model_fields inspection
+    and in generated OpenAPI schema — durable, not just source-readable.
+
+  q2_when_not_to_implement: >
+    Should not have been implemented if: (a) the confidence field were
+    about to be renamed or removed (not the case), or (b) the dual-role
+    text were already documented elsewhere that would be the canonical
+    location (it was not — the class docstring mentioned confidence only
+    as a Pydantic validation death case in the module header).
+
+  q3_silent_failure_first_discoverer: >
+    If this docstring were vague or omitted the invariant reference, the
+    failure path is: distribution-shift contamination occurs (meta-injection
+    wrapper artefacts inflate low-confidence flags), the low-confidence ratio
+    spikes, but the on-call operator sees only "more low confidence flags"
+    with no documented link to contamination detection. They fix individual
+    flags as data quality issues rather than halting the pipeline. By the
+    time the pattern is recognized, weeks of sessions may have produced
+    contaminated directives. The operator (yuyu_liao) would be the first
+    discoverer — but only after the directive pool has drifted.
+
+# ============================================================
+# Known shortcuts
+# ============================================================
+
+known_shortcuts:
+  - item: >
+      BehaviorFlagDraft.confidence (the LLM-emitted shape, schemas.py line 120)
+      was NOT given the same Field(description=...) annotation. The dual-role
+      rationale applies to the persisted form (BehaviorFlag); Draft is a
+      transient shape that is promoted before any monitoring occurs.
+      Omitting the annotation on Draft is intentional, not an oversight.
+    risk: low
+    deferred_to_feature_iteration: false
+
+# ============================================================
+# Silent failure conditions
+# ============================================================
+
+silent_failure_conditions:
+  - condition: >
+      Future maintainer changes confidence from Literal["high","medium","low"]
+      to a different type (e.g., float 0.0-1.0) and forgets to migrate the
+      Field description. The description would then reference "low" as a
+      string value that no longer exists, making the operational instruction
+      ("monitor the 'low' ratio") meaningless.
+    detection: >
+      No automated guard. The description is a free-form string; Pydantic
+      does not enforce cross-referencing between description text and the
+      Literal values. A co-modification reminder in the description itself
+      ("if confidence type changes, update this description") would be the
+      lowest-cost guard but was not added — the description is already long
+      and the risk is low given the field's stated stability.
+    severity: low
+
+  - condition: >
+      OpenAPI spec generation omits field-level descriptions if the schema
+      generator does not walk FieldInfo.description. This would silently
+      drop the dual-role text from any auto-generated API docs. However,
+      the description is still visible via model_fields inspection and in
+      source code, so this is a documentation reach issue, not a runtime issue.
+    detection: >
+      python -c "from secondsight.analysis.schemas import BehaviorFlag;
+      print(BehaviorFlag.model_fields['confidence'])" confirms the
+      description is present. Test added in verification step.
+    severity: very_low
+
+# ============================================================
+# Assumptions made
+# ============================================================
+
+assumptions_made:
+  - assumption: >
+      Field(description=...) is acceptable docstring style in this project.
+      The existing file uses Field(...) for constraints (min_length, ge, max_length,
+      default) but not for description text. Adding description= is consistent
+      with Pydantic v2's intended use.
+    verified: true
+    verification_method: >
+      python -c "from secondsight.analysis.schemas import BehaviorFlag;
+      print(BehaviorFlag.model_fields['confidence'])" returned the full
+      description text as expected. 423 tests passed with no regression.
+
+  - assumption: >
+      The dual-role documentation only needs to live on BehaviorFlag (the
+      persisted model), not on BehaviorFlagDraft (the LLM-emitted shape).
+      Monitoring the contamination signal happens on stored rows, not on
+      in-flight Draft objects.
+    verified: true
+    verification_method: >
+      Reviewed the promotion flow: BehaviorFlagDraft is constructed from
+      LLM output and immediately promoted to BehaviorFlag in the orchestrator.
+      No monitoring layer reads BehaviorFlagDraft rows — only BehaviorFlag
+      rows are persisted and queryable.
+
+  - assumption: >
+      The file path references in the description
+      ("changes/2026-05-21_agent-native-hit-injection/1-kickoff.md" and
+      "2-plan.md §1.5 Pre-thinking") are stable. These are change-set
+      documents in the repo; they will not move after the chain is committed.
+    verified: true
+    verification_method: >
+      Both files exist at the referenced paths and contain the invariant #4
+      and gap_6 content that the description points to.
+
+# ============================================================
+# Debt registered
+# ============================================================
+
+debt_registered: false
+debt_location: null
+
+# ============================================================
+# Narrative
+# ============================================================
+
+narrative: >
+  This task resolved the single "BehaviorFlag.confidence remains undocumented
+  as contamination tripwire" death path by adding a Field(description=...) that
+  names both roles explicitly with file-path references to the governing
+  invariant. The class docstring was also extended with a brief pointer to the
+  dual-role field definition, so readers scanning the class-level docstring are
+  directed to the field. No new code was introduced; no schema shape changed;
+  all 423 analysis tests pass. The Field description is machine-readable via
+  model_fields and would appear in any OpenAPI schema generated from this model.
+
+# ============================================================
+# Resolved items (self-iteration)
+# ============================================================
+
+resolved_items:
+  - original_section: assumptions_made
+    description: "Field(description=...) style acceptability"
+    resolution: >
+      Verified by running the Python import and confirming model_fields output
+      includes the full description text. Style is consistent with Pydantic v2
+      intended usage and the existing Field(...) constraint patterns in the file.
+
+  - original_section: assumptions_made
+    description: "Reference paths to 1-kickoff.md and 2-plan.md are stable"
+    resolution: >
+      Confirmed both files exist at the referenced paths and contain the
+      cited content (invariant #4, gap_6 resolution).
+
+# ============================================================
+# Self-review checklist
+# ============================================================
+
+self_review:
+  death_tests_before_unit_tests: "N/A — documentation task; no death tests required per spec"
+  all_assumptions_listed: true
+  code_deletable_without_breaking_tests: "N/A — added documentation, no logic"
+  names_honest: true
+  self_iteration_attempted: true
+  deferred_items_genuinely_outside_scope: "N/A — no deferred items"
+  tests_run_after_self_iteration: true
+  test_result: "423 passed, 4 skipped, 0 failed"
+
+# ============================================================
+# Re-review resolved items (added after re-review cycle)
+# ============================================================
+re_review_resolved_items:
+  - id: yin-critical-monitoring-overclaim
+    source: samsara:code-reviewer (yin) — initial review, Critical
+    finding: >
+      Field description used imperative "Monitor this ratio over time" implying
+      built-in monitoring component. No such component exists. Plan §Component #5
+      explicitly labels this production-only operator-side instrument with no
+      code in this change.
+    resolution: >
+      Replaced "Operational tripwire" with "Passive data signal"; removed
+      imperative "Monitor this ratio..." sentence; added explicit caveat:
+      "NO monitoring component is implemented in this codebase; an operator
+      must query the ratio externally (e.g., via dashboard or ad-hoc SQL)."
+      Re-review verdict: PASS.
+
+  - id: yin-important-relative-path
+    source: samsara:code-reviewer (yin) — initial review, Important
+    finding: >
+      Second file reference `2-plan.md §1.5 Pre-thinking` was bare filename
+      without directory prefix. Ambiguous relative path.
+    resolution: >
+      Updated to full path
+      `changes/2026-05-21_agent-native-hit-injection/2-plan.md Step 1.5 Pre-thinking`.
+
+  - id: quality-important-literal-bet-unmarked
+    source: samsara:code-quality-reviewer — initial review, Important
+    finding: >
+      Literal["high","medium","low"] is load-bearing for contamination signal
+      (three-category ordering + "low" sentinel), but no comment at the type
+      annotation site stated this assumption.
+    resolution: >
+      Added comment block above the Literal: names the bet (closed-set
+      ordering, "low" sentinel), names the dependent (operator monitoring
+      query), names the failure mode (silent invalidation), and gives a
+      co-modification instruction.
+
+  - id: quality-suggestion-dry-class-docstring
+    source: samsara:code-quality-reviewer — initial review, Suggestion
+    finding: >
+      Class docstring partially restated the dual-role text from the Field
+      description. Two truth-sites in the same file.
+    resolution: >
+      Collapsed class docstring to pure pointer: "see field definition
+      below for authoritative description". Single authoritative site
+      preserved in Field description.
+
+re_review_accepted_as_suggestion:
+  - id: quality-suggestion-coupling-changes-path
+    rationale: >
+      Field description references changes/ directory paths. Coupling is
+      visible (any reader sees the references); not a hidden dependency.
+      No structural mitigation possible without relocating invariants to
+      stable docs/ folder (out of scope for this doc task).
+  - id: quality-suggestion-pattern-field-on-internal-model
+    rationale: >
+      Field(description=...) on an internal persistence model uses pattern
+      machinery without OpenAPI consumer. Overhead is low; description
+      remains source-readable + accessible via model_fields. Accepted.

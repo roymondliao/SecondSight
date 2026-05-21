@@ -1,0 +1,282 @@
+task_id: task-3
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: >
+      The Python snippet executed by the shell hook reads config.toml using
+      tomllib (Python 3.11+) and falls back to `hit_injection_enabled = True`
+      on any read/parse exception.  There is no version guard for Python < 3.11:
+      tomllib became stdlib in 3.11; on 3.10 the import fails with ModuleNotFoundError,
+      which is caught by the bare `except Exception` and the default True is used.
+      This means on Python 3.10 the config toggle is silently ignored (always enabled).
+      The project requires Python 3.14 (per pyproject.toml), so this is not a
+      practical risk, but the silent ignore on older Python is undocumented behavior.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The legacy curl block in `scripts/hooks/user-prompt.sh` is now unreachable
+      under normal operation (the new Python path always `return 0`s before reaching
+      it).  Per task-3 spec this is intentional — task-4 deletes it atomically.
+      The unreachable block is marked with a comment.  Verified: DT-6 checks that
+      legacy curl markers do NOT appear in additionalContext.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      Originally, the Python invocation used `eval "$python_cmd" - <<< "$python_script"`
+      where `$python_cmd` was a multi-token string.  This was resolved during
+      self-iteration: the invocation was refactored to use a bash array (`python_argv`)
+      and a temp file for the script, eliminating the `eval` and the heredoc
+      single-quote fragility.  See `resolved_items` below.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The test `test_dt_user_prompt_hook_injection_failure_still_posts_observation_ingest`
+      was updated to test ingest-path survival after Python injection runs (not after
+      legacy curl failure).  It uses a fake curl that only handles ingest calls
+      (not injection endpoint calls), which is correct for the new path — the hook
+      no longer calls the injection endpoint via curl.  This is correct behavior,
+      not a shortcut.
+    deferred_to_feature_iteration: false
+
+silent_failure_conditions:
+  - description: >
+      If the hook's execution environment does not have `uv` on PATH AND does
+      not have a `python3` that can import `secondsight`, the hook falls back
+      to `python` (bare). If none of these work, it logs to curl-errors.log
+      and silently skips injection.  In the common Claude Code deployment
+      (SecondSight installed via `uv`), `uv` should be on PATH.  If the user
+      installs SecondSight via pip into a system Python and the hook is symlinked,
+      the `uv` path resolves to a different project directory and may fail to
+      find the right venv.  The log entry names the error, so this is detectable,
+      but the detection is passive (no metric, no alert).
+    deferred_to_feature_iteration: false
+
+  - description: >
+      When `python3` is on PATH but does NOT have the `secondsight` package
+      installed (e.g., a system Python without the venv), the `uv` path is tried
+      first (if uv is available).  If uv is available and the project root is
+      found, uv will run correctly.  If the project root detection fails (e.g.,
+      `pyproject.toml` not present at `_SS_DIR/../..`), the hook falls back to
+      bare `python3` which will fail with `ModuleNotFoundError`.  The failure is
+      logged and the hook returns 0 (fail-open).  The operator must check
+      curl-errors.log to detect this.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The `mktemp` call for the Python stderr capture file may fail in
+      restricted environments (no /tmp, no TMP env var).  The fallback path
+      (`else` branch) redirects stderr directly to curl_error_log, which
+      means uv deprecation warnings would appear in curl-errors.log even
+      on successful Python runs.  This is the degraded path and is acceptable
+      since it preserves the fail-open guarantee.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The prompt is passed to Python via the `_SS_HIT_PROMPT` environment
+      variable.  In bash, setting `export _SS_HIT_PROMPT="$prompt"` within a
+      command substitution `$()` creates a subprocess scope — the export is
+      not visible to the parent shell.  This is correct behavior.  However,
+      if the prompt contains null bytes (\x00), bash will silently truncate it
+      at the null.  Prompts from Claude Code UserPromptSubmit are not expected
+      to contain null bytes, but if they ever do, the wrapper will be generated
+      for a truncated prompt without error.
+    deferred_to_feature_iteration: false
+
+  - description: >
+      The hook's `print(json.dumps(payload))` in Python emits a trailing newline.
+      The shell captures this with `$()` which strips trailing newlines from
+      command substitution.  The JSON stored in `python_output` will therefore
+      lack the trailing newline.  The hook then emits it via `printf '%s'`
+      (no trailing newline).  Claude Code's hook runner must accept JSON without
+      a trailing newline.  This is the standard behavior, but if Claude Code
+      ever mandates a trailing newline in hook stdout, this would silently
+      produce malformed output.
+    deferred_to_feature_iteration: false
+
+assumptions_made:
+  - description: >
+      SECONDSIGHT_HOME env var (or ~/.secondsight default) is the canonical path
+      where config.toml is read by the hook.
+    verified: true
+    verification_note: >
+      Confirmed: `_secondsight_resolve_home()` in `_lib.sh` returns
+      `$SECONDSIGHT_HOME` (if set and absolute) or `$HOME/.secondsight`.
+      The Python snippet in the hook mirrors this logic by reading
+      `os.environ.get("SECONDSIGHT_HOME")` with the same fallback.
+
+  - description: >
+      `uv` is on PATH in the hook's execution environment when SecondSight
+      is installed and running.
+    verified: true
+    verification_note: >
+      Verified that `uv run --project <project_root> python3` works in this
+      environment.  The hook gracefully falls back to bare `python3` / `python`
+      if uv is absent, and logs to curl-errors.log if none work (DT-7 covers this).
+
+  - description: >
+      The hook's `_SS_DIR` resolves correctly from `$( cd -P "$( dirname
+      "$_SS_SOURCE" )" && pwd )` in all deployment scenarios (direct execution,
+      symlink from ~/.claude/hooks/).
+    verified: true
+    verification_note: >
+      The symlink resolution logic (`while [ -L "$_SS_SOURCE" ]`) was already
+      in place before task-3.  The project root derivation (`_SS_DIR/../..`)
+      is only a heuristic for uv; if it resolves to a wrong directory (e.g.,
+      hook is copied rather than symlinked), uv will fail and the hook falls
+      back to bare python3.  This is the correct fail-open behavior.
+
+  - description: >
+      `print(json.dumps(payload))` produces valid hook stdout accepted by
+      Claude Code's UserPromptSubmit hook runner.
+    verified: false
+    verification_note: >
+      Cannot verify without a live Claude Code environment.  The JSON structure
+      matches the shape used by the legacy curl path (confirmed by reading the
+      existing hook code) and the Claude Code hook spec's hookSpecificOutput
+      contract.  DT-6 verifies the JSON is well-formed and contains expected
+      fields, but live acceptance is untested.
+
+  - description: >
+      The `_TEMPLATE` string in `template.py` and the locked example at
+      `changes/2026-05-14_analysis-mode-toggle/config.example.toml` are kept
+      in sync by `test_template_schema_contract.py`.
+    verified: true
+    verification_note: >
+      Both files were updated with `hit_injection_enabled = true`.
+      test_template_schema_contract.py passes after the update.
+
+resolved_items:
+  - original_section: known_shortcuts
+    description: >
+      eval-based Python invocation with multi-token python_cmd.
+    what_was_done: >
+      Refactored `scripts/hooks/user-prompt.sh` to use a bash array (`python_argv`)
+      for the interpreter + flags, and write the Python script to a temp file before
+      invoking it.  The invocation is now `"$python_bin" "${python_argv[@]}" "$python_script_file"`
+      — no `eval`, no word-splitting risk on paths with spaces.
+      The heredoc single-quote fragility was also eliminated since the Python script
+      is now written to the temp file via `printf '%s\n'` (not executed inline).
+      All 13 task-3 tests pass after this fix.
+
+  - original_section: debt_registered
+    description: >
+      Removed the debt entry for `eval` usage from debt_registered since it was
+      fixed during self-iteration.  The remaining debt item (Python script stored
+      in a heredoc variable) is no longer relevant since the script is now written
+      to a temp file.
+
+debt_registered:
+  - location: scripts/hooks/user-prompt.sh
+    description: >
+      The Python script is stored inline as a shell variable (heredoc into printf).
+      While the `eval` risk was eliminated by using a temp file, the script content
+      itself still lives in the hook bash source.  Task-4 or a follow-up should
+      consider extracting it to a dedicated `.py` file
+      (e.g. `src/secondsight/feedback/_hook_runner.py`) that the hook invokes
+      directly.  This would make the Python logic testable independently of the
+      shell hook and eliminate the inline-script maintenance burden.
+
+narrative: >
+  Task-3 wired `render_wrapper` into the UserPromptSubmit shell hook via a new
+  early-exit block at the top of `_ss_inject_prompt_guidance`.  The block:
+  (1) derives a Python interpreter (uv > python3 > python), (2) invokes a
+  self-contained Python snippet that reads hit_injection_enabled from config.toml,
+  calls render_wrapper with the prompt (passed via _SS_HIT_PROMPT env var for
+  safe multi-word handling), and emits JSON via json.dumps, (3) returns 0 always
+  (fail-open).  The legacy curl block remains unreachable below the `return 0`.
+
+  The config toggle was added to FeedbackConfig (schema.py), _build_feedback_config
+  (loader.py via the new _resolve_feedback_typed_field unified helper), and the TOML
+  template (template.py + both config.example.toml copies).
+
+  Three legacy tests in TestUserPromptGuidanceInjection (test_hook_fallback.py)
+  were superseded and replaced: they had been testing the old curl-path behavior
+  (server body pass-through, injection body shape, server 500 fail-open).  The
+  new tests verify the Python-path behavior instead.
+
+  The `eval` usage with a multi-token python_cmd was resolved during self-iteration
+  via the bash array + temp file refactor (see resolved_items).  The variable that
+  held the executable was renamed from `python_bin` to `python_launcher` in the
+  fix iteration to accurately reflect that it may hold `"uv"` (not a Python
+  interpreter).
+
+  The most significant residual concern after the fix iteration is live Claude Code
+  stdout JSON acceptance: `print(json.dumps(payload))` produces the documented
+  hookSpecificOutput shape, but this has not been tested against a live Claude Code
+  process.  DT-6 verifies the JSON is well-formed and contains expected fields, but
+  live acceptance requires an integration environment (see assumptions_made, verified=false).
+
+re_review_resolved_items:
+  - critical: C1
+    description: >
+      Hook silently swallowed config validation errors with `except Exception: pass`,
+      defaulting `hit_injection_enabled` to True for ANY parse error including
+      TypeError on non-bool values.  This diverged from loader.py which raises
+      SecondSightConfigError for the same input.
+    what_was_done: >
+      Replaced bare `except Exception: pass` with structured exception handling:
+      FileNotFoundError silently defaults True (fresh install path); TypeError /
+      other exceptions now call sys.stderr.write() with a diagnostic message
+      naming the field, invalid value, and expected type.  The hook's stderr
+      capture logic was updated to log stderr on exit 0 when it contains a
+      "hit_injection" marker (so uv deprecation warnings on exit 0 do not pollute
+      the log).  Death test test_dt_hook_logs_warning_on_invalid_bool_value added
+      and passing.
+
+  - critical: C2
+    description: >
+      Scar narrative still claimed "the most significant residual concern is the
+      eval usage" even though resolved_items documented the eval was fixed.
+    what_was_done: >
+      Updated the narrative paragraph to remove the eval claim.  Added a sentence
+      noting the eval was resolved during self-iteration.  Replaced the "most
+      significant residual concern" with the actual top concern: live Claude Code
+      stdout JSON acceptance (unverifiable without integration environment).
+
+  - critical: C3
+    description: >
+      `python_bin` variable name was dishonest: it holds `"uv"` when the uv path
+      is selected, not a Python interpreter binary.
+    what_was_done: >
+      Renamed `python_bin` to `python_launcher` throughout
+      `scripts/hooks/user-prompt.sh`.  Added an I-3 rationale comment block above
+      the detection logic explaining the uv-preferred strategy, the pyproject.toml
+      guard, and the bare python fallback.
+
+  - critical: C4
+    description: >
+      `_resolve_feedback_field` (int) and `_resolve_feedback_bool_field` (bool)
+      were structurally identical helpers with duplicated project→global→builtin
+      resolution logic.
+    what_was_done: >
+      Consolidated into a single `_resolve_feedback_typed_field(field_name,
+      expected_type, project_section, global_section, builtin_default,
+      extra_validation=None)` helper.  Added `_feedback_int_gt0_validator` as a
+      factory that returns the `> 0` check closure (previously inline in
+      _resolve_feedback_field).  Updated all three `_build_feedback_config` call
+      sites.  Deleted the old two-helper pattern.  All existing tests pass
+      (no regression); the I-2 death test (project-scope override) is green.
+
+  - important: I2
+    description: >
+      No test existed for project-scope override winning over global for
+      hit_injection_enabled.
+    what_was_done: >
+      Added test_dt_project_scope_override_wins_over_global in
+      tests/config/test_hit_injection_config.py.  Confirmed passing (the priority
+      chain in _resolve_feedback_typed_field is correct).
+
+  - important: I3
+    description: >
+      No comment block explained the uv detection rationale in the hook.
+    what_was_done: >
+      Added a comment block above the detection logic in user-prompt.sh explaining
+      uv preference, the pyproject.toml guard, the bare python fallback, and the
+      honest description of python_launcher vs python_argv.
+
+  - important: I5
+    description: >
+      Invisible coupling between the hook heredoc and render_wrapper module path.
+    what_was_done: >
+      Added a comment at the heredoc declaration in user-prompt.sh noting it is
+      the coupling site and renaming render_wrapper requires updating this string.

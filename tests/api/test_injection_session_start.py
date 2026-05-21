@@ -349,18 +349,7 @@ def test_session_start_injection_adapter_render_failure_surfaces(
     assert "render" in response.text.lower()
 
 
-def test_user_prompt_injection_default_cli_auto_without_state_fails_open_204(
-    tmp_path: Path,
-) -> None:
-    """Default CLI auto config without state fails open instead of blocking."""
-    home = tmp_path / ".secondsight"
-    home.mkdir()
-
-    with _client(home) as client:
-        response = client.post(
-            "/hook/injection/user-prompt/codex",
-            json={"project_id": "proj-1", "prompt": "ambiguous prompt", "session_id": "s1"},
-        )
-
-    assert response.status_code == 204
-    assert response.content == b""
+# Orphan test for the deleted /hook/injection/user-prompt/{agent} endpoint
+# removed in task-4 (atomic destructive change); covered now by
+# tests/test_task4_deletion_invariants.py::test_dt_deleted_endpoint_returns_404
+# which asserts the route is gone, not that it 204s.

@@ -1,0 +1,348 @@
+# Migration Audit — agent-native-hit-injection
+#
+# Frozen snapshot of all references to the sidecar-classifier symbols
+# that task-4 will atomically delete. This file is ground truth for
+# task-4's exhaustive deletion pass.
+#
+# Grep command used (run from repository root):
+#   grep -rln "prompt_evaluator\|/hook/injection/user-prompt" src/ tests/ scripts/ \
+#       --include='*.py' --include='*.sh' --include='*.toml'
+#
+# Scope rationale: src/ + tests/ are the primary Python code tree.
+#   scripts/ is explicitly included because it contains executable shell
+#   hooks (scripts/hooks/*.sh) that call the API server at runtime.
+#   Excluding scripts/ was the planning-time omission that Critical #1
+#   identified: user-prompt.sh line 118 carries a live curl call to the
+#   deleted route, invisible to a src/-only audit.
+#   Other top-level dirs (.agents/, .claude/, .github/, docs/, frontend/,
+#   bugfix/, changes/) contain no *.py *.sh *.toml executable artefacts
+#   that reference these symbols (verified by grep run; see extended_scope_audit).
+#
+# Repo HEAD SHA at audit time: 512b5c9cbd04fcbecefadcacb8f5f14c55f2a608
+# Audit date: 2026-05-21
+# Re-audit date (fix iteration): 2026-05-21
+#   Scope corrected from "src/ tests/" to "src/ tests/ scripts/".
+#   New file found: scripts/hooks/user-prompt.sh (1 hit, line 118).
+#   Updated file count: 6 (was 5).
+
+meta:
+  grep_pattern: "prompt_evaluator|/hook/injection/user-prompt"
+  grep_scope_primary: "src/ tests/ scripts/ (*.py *.sh *.toml)"
+  grep_scope_rationale: >
+    src/ and tests/ cover all Python source and test code.
+    scripts/ is included because it contains executable shell hooks
+    that call the API server at runtime — omitting it was the
+    planning-time scope gap identified in the fix-iteration review.
+    Other top-level directories (.agents/, .claude/, .github/, docs/,
+    frontend/, bugfix/, changes/, references/) do not contain *.py
+    *.sh *.toml files matching these symbols (verified; see
+    extended_scope_audit below).
+  grep_scope_extended: ".claude/ docs/ changes/ bugfix/ frontend/ .agents/ .github/ references/ pyproject.toml *.md *.yaml *.yml *.json"
+  head_sha: "512b5c9cbd04fcbecefadcacb8f5f14c55f2a608"
+  predicted_file_count: 5
+  actual_file_count: 6
+  planning_drift: true
+  planning_drift_note: >
+    Original task-1 spec scoped grep to "src/ tests/" only. scripts/ was
+    omitted. This caused scripts/hooks/user-prompt.sh (1 hit, line 118) to
+    be invisible to the initial audit. This was a planning failure in
+    task-1.md Step 1, not an implementer error. The fix iteration corrects
+    both this audit and the task spec. See scar-reports/task-1-scar.yaml
+    resolved_items for the full post-mortem.
+
+# ============================================================
+# FILE LAYERS AND UPDATE RULES
+# ============================================================
+#
+# This file carries three distinct layers with different update semantics:
+#
+# Layer A — GREP SNAPSHOT (the `files:` block)
+#   Derived from grep output at a specific HEAD SHA. Treat as frozen.
+#   Update rule: only re-run if HEAD SHA changes before task-4 executes;
+#   task-4's Step 1 is to replay the grep and compare. If SHA drifts,
+#   task-4 must flag discrepancies before proceeding.
+#
+# Layer B — SUPPLEMENTAL DELETION LIST (the `co_deleted_artifacts:` block)
+#   Files confirmed for deletion by filesystem inspection (ls / Read),
+#   NOT derived from the grep pattern (they are the deleted symbols
+#   themselves, not callers of them). These entries were added by the
+#   implementer's direct file inspection, not grep output. Re-verify
+#   existence via `ls` or `Read` at task-4 time before deleting.
+#   Update rule: if overview.md changes the deletion scope, update here.
+#
+# Layer C — OPEN DECISION REGISTER (the `boundary_notes:` block)
+#   Records files adjacent to the deletion scope where the correct
+#   action is ambiguous. Each note either has a recommended default
+#   (task-4 can act without further analysis) or is explicitly flagged
+#   as requiring task-4 judgment. Update rule: resolved once task-4
+#   acts; leave as-is for the record after task-4 commits.
+#
+# Decision on cohesion: layers kept in one file (option a from reviewer).
+# Rationale: all three layers are consumed in a single pass by task-4,
+# and splitting would require task-4 to read two files and reconcile
+# references between them. The layer documentation above makes the
+# three rhythms explicit. Cost of splitting is higher than cost of
+# documenting.
+
+# ============================================================
+# PRIMARY SCOPE — src/, tests/, and scripts/ (executable code)
+# ============================================================
+
+files:
+
+  - path: src/secondsight/api/injection.py
+    category: surgical-remove
+    rationale: >
+      The file also contains the /hook/injection/session-start/{agent} endpoint,
+      which must survive. Only the following must be excised:
+        - line 24-27: import of PromptEvaluationDecision and evaluate_user_prompt
+                      from secondsight.feedback.prompt_evaluator
+        - line 28-31: import of bypass_registry and guidance_for_category
+                      from secondsight.feedback.prompt_guidance
+        - line 47-55: UserPromptInjectionRequest model class definition
+        - line 201-293: @router.post("/hook/injection/user-prompt/{agent}") handler
+        - line 296-307: _resolve_cli_agent_from_state helper function (called only
+                        by the user-prompt handler; no external callers found)
+        - __all__ entries: "UserPromptInjectionRequest" and "_resolve_cli_agent_from_state"
+      Collateral note: after excision, the prompt_guidance imports (bypass_registry,
+      guidance_for_category) also become unused in this file. prompt_guidance.py
+      itself is NOT in the deletion scope (see boundary_notes below).
+    line_hits:
+      - line: 24
+        symbol: "from secondsight.feedback.prompt_evaluator import ("
+      - line: 201
+        symbol: "@router.post(\"/hook/injection/user-prompt/{agent}\")"
+
+  - path: scripts/hooks/user-prompt.sh
+    category: surgical-remove
+    rationale: >
+      This shell hook is the executable entry point called by Claude Code on every
+      user prompt submission. It MUST survive; only the legacy sidecar curl block
+      must be removed. Line 118 contains the live runtime call to the deleted route:
+        "http://127.0.0.1:${port}/hook/injection/user-prompt/${agent}"
+      The surrounding block (approximately lines 57-125, the entire
+      _ss_inject_prompt_guidance function and its call at line 125) invokes the
+      sidecar classifier endpoint that task-4 deletes. If task-4 removes the API
+      route without removing this curl call, the hook silently fails: curl returns
+      a non-2xx error, the `|| return 0` at line 119 swallows it, no injection
+      occurs, and no error is logged to the user. This is the exact Level 4 silent
+      rot path this change is designed to eliminate.
+      The hook's non-curl logic (early exit, secondsight_post ingest call at
+      line 126, exit 0 at line 127) must be preserved. Task-3 writes the new
+      wrapper path into this file; task-4 removes only the old curl block.
+      See also task-4.md "Surgically remove from file" section.
+    line_hits:
+      - line: 118
+        symbol: "\"http://127.0.0.1:${port}/hook/injection/user-prompt/${agent}\""
+
+  - path: tests/feedback/test_prompt_evaluator.py
+    category: delete-entire-file
+    rationale: >
+      File docstring: "Death-first tests for the UserPromptSubmit ambiguity evaluator."
+      Every test in this file imports from secondsight.feedback.prompt_evaluator.
+      The entire file exists solely to test the deleted module.
+      Line count: 276 lines.
+    line_hits:
+      - line: 18
+        symbol: "from secondsight.feedback.prompt_evaluator import ("
+      - line: 74
+        symbol: "secondsight.feedback.prompt_evaluator.asyncio.create_subprocess_exec"
+      - line: 110
+        symbol: "secondsight.feedback.prompt_evaluator.asyncio.create_subprocess_exec"
+      - line: 137
+        symbol: "secondsight.feedback.prompt_evaluator.asyncio.create_subprocess_exec"
+      - line: 168
+        symbol: "secondsight.feedback.prompt_evaluator.asyncio.create_subprocess_exec"
+      - line: 265
+        symbol: "from secondsight.feedback import prompt_evaluator"
+      - line: 273
+        symbol: "monkeypatch.setattr(prompt_evaluator, \"render\", fake_render)"
+
+  - path: tests/scripts/test_user_prompt_hook_injection.py
+    category: surgical-rewrite-by-task-3
+    rationale: >
+      ORIGINAL audit (task-1) classified this as delete-entire-file because all
+      tests at audit time exercised the /hook/injection/user-prompt/* route.
+      task-3 implementer REWROTE the file (not deleted) to test the new
+      Python-helper-driven path: replaced mock-server fixtures with subprocess
+      fixtures + DT-5/6/7 covering the new B-META wrapper path. The file now
+      has useful coverage for the post-deletion code path; deleting it now
+      would lose that coverage.
+      The two surviving string references to "/hook/injection/user-prompt/"
+      (lines 269 and 352 post-task-3) are documentation strings in test docstrings
+      / assertion messages confirming the OLD path is gone — they are not live
+      callers and do not import deleted symbols.
+      Category was retroactively updated post-task-4 (re-review found the
+      "delete-entire-file" classification stale after task-3's rewrite).
+    line_hits_pre_task_3:
+      - line: 73
+        symbol: "*/hook/injection/user-prompt/*"
+      - line: 98
+        symbol: "/hook/injection/user-prompt/claude_code"
+      - line: 122
+        symbol: "HTTP handler that delays /hook/injection/user-prompt/* responses."
+
+  - path: tests/api/test_injection_user_prompt.py
+    category: delete-entire-file
+    rationale: >
+      File docstring: "UserPromptSubmit injection route contract tests."
+      Every test in this file tests the /hook/injection/user-prompt/{agent} API
+      route, and the file imports PromptEvaluation from the deleted module at
+      line 13. The entire file's purpose is the deleted route.
+      Line count: 344 lines.
+    line_hits:
+      - line: 13
+        symbol: "from secondsight.feedback.prompt_evaluator import PromptEvaluation"
+      - line: 46
+        symbol: "/hook/injection/user-prompt/claude_code"
+      - line: 59
+        symbol: "def test_dt_user_prompt_evaluator_failure_fails_open_204"
+      - line: 75
+        symbol: "/hook/injection/user-prompt/codex"
+      - line: 100
+        symbol: "/hook/injection/user-prompt/codex"
+      - line: 114
+        symbol: "from secondsight.feedback.prompt_evaluator import asyncio as evaluator_asyncio"
+      - line: 160
+        symbol: "/hook/injection/user-prompt/claude_code"
+      - line: 201
+        symbol: "/hook/injection/user-prompt/codex"
+      - line: 237
+        symbol: "/hook/injection/user-prompt/claude_code"
+      - line: 266
+        symbol: "/hook/injection/user-prompt/claude_code"
+      - line: 307
+        symbol: "/hook/injection/user-prompt/claude_code"
+      - line: 334
+        symbol: "/hook/injection/user-prompt/claude_code"
+
+  - path: tests/api/test_injection_session_start.py
+    category: surgical-remove
+    rationale: >
+      File is primarily for /hook/injection/session-start/{agent} tests, which
+      must survive. However, lines 352-366 contain a single test function
+      test_user_prompt_injection_default_cli_auto_without_state_fails_open_204
+      that exercises the /hook/injection/user-prompt/codex route. Only this
+      function (14 lines) must be surgically removed.
+      The file does NOT import from prompt_evaluator directly — the grep hit is
+      only the route URL string at line 361.
+      Line count total: 366 lines. Surgical scope: lines 352-366.
+    line_hits:
+      - line: 361
+        symbol: "/hook/injection/user-prompt/codex"
+
+# ============================================================
+# ADDITIONAL SYMBOLS — not in primary grep but co-deleted
+# (Layer B: filesystem-inspected, not grep-derived)
+# Re-verify existence via `ls` or file read at task-4 time.
+# ============================================================
+
+co_deleted_artifacts:
+  # These are deleted by task-4 per overview.md but do not appear in the
+  # primary grep pattern because they ARE the deleted modules themselves,
+  # not callers of them. These entries were added by direct filesystem
+  # inspection (ls / Read), NOT by grep output. Task-4 must re-verify
+  # each file exists before attempting deletion.
+
+  - path: src/secondsight/feedback/prompt_evaluator.py
+    reason: >
+      The source module being deleted. Does not appear as a "reference"
+      in grep output (grep would match it only if the string
+      "prompt_evaluator" appears in its own content — likely in
+      docstrings — but it is listed here as the deletion target, not
+      a caller). Confirmed present at 11.1K by filesystem inspection.
+    action: delete-entire-file
+
+  - path: src/secondsight/prompts/feedback/classifier.jinja2
+    reason: >
+      Template for the sidecar classifier prompt. Listed in overview.md
+      deletion scope. Added here by filesystem inspection (ls confirms
+      presence); not matched by grep pattern.
+    action: delete-entire-file
+
+  - path: src/secondsight/prompts/feedback/guidance/
+    reason: >
+      Contains: __init__.py, missing_scope.jinja2, missing_success_criteria.jinja2,
+      missing_target.jinja2, multiple_interpretations.jinja2.
+      These templates are rendered only by guidance_for_category() in
+      prompt_guidance.py, which is called only by the user-prompt handler.
+      Listed in overview.md deletion scope. Added here by filesystem
+      inspection (ls confirms directory exists); not matched by grep pattern.
+    action: delete-entire-directory
+
+# ============================================================
+# BOUNDARY NOTES — files adjacent to deletion scope
+# (Layer C: open decision register; resolved once task-4 acts)
+# ============================================================
+
+boundary_notes:
+
+  - note: >
+      src/secondsight/feedback/prompt_guidance.py is NOT in the deletion scope
+      despite being imported by injection.py's user-prompt handler and by
+      prompt_evaluator.py. The overview.md lists deletion of the prompts/feedback/
+      templates (classifier.jinja2 + guidance/ folder) but does NOT list
+      prompt_guidance.py itself.
+
+      After task-4 deletes prompt_evaluator.py and the user-prompt handler,
+      prompt_guidance.py will have NO remaining callers in src/ or scripts/ or
+      tests/ (confirmed by grep — tests/feedback/test_prompt_guidance.py is its
+      only test, and that file tests only guidance_for_category and bypass_registry
+      which are otherwise unused after the deletion).
+
+      RECOMMENDED DEFAULT for task-4: delete prompt_guidance.py AND
+      tests/feedback/test_prompt_guidance.py as dead code. Rationale: keeping
+      dead code with no callers creates silent rot — a future import will
+      succeed without triggering any behavior, and a future developer will not
+      know whether it is safe to remove. Delete unless task-4 finds evidence
+      of an external caller not covered by this audit (e.g., a dynamically
+      constructed import, or a caller outside src/ scripts/ tests/).
+      If task-4 chooses to retain them as dormant, document the decision
+      explicitly in the task-4 scar report.
+
+  - note: >
+      tests/feedback/test_prompt_guidance.py exists and is NOT in the primary
+      grep hits (it does not reference "prompt_evaluator" or the route URL).
+      It will become a test file that tests unreachable code after deletion.
+      Per the recommended default above, task-4 should delete it along with
+      prompt_guidance.py unless evidence of external callers exists.
+
+  - note: >
+      _resolve_cli_agent_from_state in injection.py has no external callers
+      (confirmed by grep). It can be co-deleted with the user-prompt handler
+      without any other surgical changes required.
+
+# ============================================================
+# EXTENDED SCOPE — outside src/, tests/, and scripts/
+# ============================================================
+
+extended_scope_audit:
+  searched: ".claude/ docs/ changes/ bugfix/ frontend/ .agents/ .github/ references/ pyproject.toml root-level *.md *.yaml *.yml *.json"
+  executable_references_found: false
+  non_executable_references:
+    - location: "changes/2026-05-19_directive-injection-runtime/ (multiple files)"
+      nature: "Planning/architecture documents from a prior change. Read-only audit trail."
+      action: no-follow-up-needed
+
+    - location: "changes/2026-05-21_agent-native-hit-injection/ (multiple files)"
+      nature: "This change's own planning documents (overview.md, 2-plan.md, task specs,
+               acceptance.yaml, problem-autopsy.md, 1-kickoff.md). Self-referential."
+      action: no-follow-up-needed
+
+    - location: "bugfix/2026-05-20_user-prompt-injection-timeout/ (bug-report.yaml,
+               root-cause.yaml, fix-summary.yaml)"
+      nature: "Bug report documents for a prior bugfix that targeted the user-prompt
+               injection path. These are historical records. Their content will
+               reference a deleted path but are inert — they are not imported or
+               executed."
+      action: no-follow-up-needed
+
+  pyproject_toml_reference: false
+  dot_claude_reference: false
+  docs_directory: "exists at repo root but contains no *.py *.sh *.toml files matching the pattern"
+  scripts_directory_note: >
+    scripts/ was incorrectly placed in the extended scope in the initial audit.
+    It is executable code (shell hooks called at runtime) and belongs in the
+    PRIMARY scope. Corrected in this fix iteration: scripts/ is now in
+    grep_scope_primary. The grep hit found there (user-prompt.sh line 118) is
+    recorded in the `files:` block above under scripts/hooks/user-prompt.sh.

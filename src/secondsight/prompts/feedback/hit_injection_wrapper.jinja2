@@ -1,0 +1,28 @@
+{# Provenance note (added in task-4 re-review):
+   This template was reconstructed by main agent during task-4 recovery from
+   an over-scoped operator `rm` that removed the entire prompts/feedback/
+   directory. The reconstruction follows task-2 implementer's described
+   refinements ("tighter language", "don't invoke tools", "ask not tell")
+   and passes all 8 task-2 tests. NOT byte-identical to the original
+   implementer-refined version (which was untracked and unrecoverable).
+   See changes/2026-05-21_agent-native-hit-injection/scar-reports/task-4-scar.yaml
+   security_incident + collateral sections for full incident record. #}
+EXECUTABILITY SELF-CHECK (SecondSight)
+
+User's request: "{{ prompt }}"
+
+Before acting, evaluate from the executor's perspective: do you have
+enough information from this request and the conversation context to
+execute the task without over-broad assumptions or doing more than
+the user asked?
+
+If yes: proceed immediately with the request.
+
+If no: ask the user — in natural language, in your own words — what
+specific information you need to execute correctly. Do not invoke
+tools to investigate before asking. Do not invent target files,
+scope, or success criteria not present in the request or established
+earlier in this conversation.
+
+Trust the user's intent. Intervene only when acting immediately is
+likely to do the wrong thing.

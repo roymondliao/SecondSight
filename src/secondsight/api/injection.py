@@ -21,15 +21,6 @@ from secondsight.config.loader import load_project_config
 from secondsight.config.schema import FeedbackConfig, SecondSightConfigError
 from secondsight.event import EventType
 from secondsight.feedback.convention import ConventionSelector
-from secondsight.feedback.prompt_evaluator import (
-    PromptEvaluationDecision,
-    evaluate_user_prompt,
-)
-from secondsight.feedback.prompt_guidance import (
-    bypass_registry,
-    guidance_for_category,
-)
-from secondsight.state import SecondSightState, SecondSightStateError
 from secondsight.storage.directives_repository import DirectivesRepository
 
 router = APIRouter()
@@ -41,17 +32,6 @@ class SessionStartInjectionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     project_id: str | None = Field(default=None, min_length=1, max_length=128)
-    cwd: str | None = Field(default=None, min_length=1, max_length=4096)
-
-
-class UserPromptInjectionRequest(BaseModel):
-    """Request body for UserPromptSubmit injection."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    project_id: str | None = Field(default=None, min_length=1, max_length=128)
-    prompt: str = Field(..., min_length=1)
-    session_id: str | None = None
     cwd: str | None = Field(default=None, min_length=1, max_length=4096)
 
 
@@ -100,13 +80,6 @@ def _validated_hook_cwd(cwd: str) -> Path:
     if not path.is_absolute():
         raise HTTPException(status_code=422, detail="cwd must be an absolute path.")
     return path
-
-
-def _project_root_from_cwd(cwd: str | None, *, fallback: Path) -> Path:
-    """Validate hook-provided cwd and return evaluator project_root."""
-    if cwd is None:
-        return fallback
-    return _validated_hook_cwd(cwd)
 
 
 def _project_id_from_hook_context(project_id: str | None, cwd: str | None) -> str:
@@ -198,122 +171,10 @@ async def session_start_injection(
     return Response(content=payload, media_type="application/json")
 
 
-@router.post("/hook/injection/user-prompt/{agent}")
-async def user_prompt_injection(
-    agent: str,
-    body: UserPromptInjectionRequest,
-    request: Request,
-) -> Response:
-    """Return raw UserPromptSubmit guidance payload or 204 on pass/bypass/fail-open."""
-    _validate_path_id("agent", agent)
-    project_id = _project_id_from_hook_context(body.project_id, body.cwd)
-
-    state: AppState = request.app.state.server_state
-    try:
-        adapter = state.adapter_registry.for_(agent, EventType.USER_PROMPT.value)
-    except NoAdapterError:
-        raise HTTPException(
-            status_code=422, detail="No adapter registered for the specified agent."
-        )
-
-    if bypass_registry.should_bypass(agent=agent, prompt=body.prompt):
-        return Response(status_code=204)
-
-    try:
-        cfg = load_project_config(state.secondsight_home, project_id)
-    except SecondSightConfigError as exc:
-        logger.warning(
-            "UserPrompt injection config resolution failed open: project_id={pid} error={err}",
-            pid=project_id,
-            err=exc,
-        )
-        return Response(status_code=204)
-
-    project_root = _project_root_from_cwd(body.cwd, fallback=state.secondsight_home)
-
-    try:
-        evaluation = await evaluate_user_prompt(
-            prompt=body.prompt,
-            mode_config=cfg.general,
-            analysis_config=cfg.analysis,
-            providers_config=cfg.providers,
-            project_root=project_root,
-            session_id=body.session_id,
-            resolved_cli_agent=_resolve_cli_agent_from_state(
-                secondsight_home=state.secondsight_home,
-                configured_agent=cfg.analysis.cli.default_agent,
-            ),
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "UserPrompt evaluator raised and failed open: agent={agent} project_id={pid} "
-            "session_id={sid} error={err}",
-            agent=agent,
-            pid=project_id,
-            sid=body.session_id,
-            err=exc,
-        )
-        return Response(status_code=204)
-
-    if str(evaluation.decision) != PromptEvaluationDecision.INTERVENE.value:
-        if getattr(evaluation, "failure_reason", None):
-            logger.warning(
-                "UserPrompt evaluator failed open: agent={agent} project_id={pid} "
-                "session_id={sid} reason={reason}",
-                agent=agent,
-                pid=project_id,
-                sid=body.session_id,
-                reason=evaluation.failure_reason,
-            )
-        return Response(status_code=204)
-    if evaluation.primary_category is None:
-        logger.warning(
-            "UserPrompt evaluator returned intervene without category; failing open: "
-            "agent={agent} project_id={pid} session_id={sid}",
-            agent=agent,
-            pid=project_id,
-            sid=body.session_id,
-        )
-        return Response(status_code=204)
-
-    try:
-        guidance = guidance_for_category(evaluation.primary_category)
-        payload = adapter.render_user_prompt_output(guidance)
-    except NotImplementedError as exc:
-        raise HTTPException(status_code=501, detail=str(exc)) from exc
-    except Exception as exc:
-        logger.error(
-            "UserPrompt injection render failed: agent={agent} project_id={pid} error={err}",
-            agent=agent,
-            pid=project_id,
-            err=exc,
-        )
-        raise HTTPException(status_code=500, detail="Injection render failed.") from exc
-
-    return Response(content=payload, media_type="application/json")
-
-
-def _resolve_cli_agent_from_state(*, secondsight_home: Path, configured_agent: str) -> str | None:
-    """Resolve CLI default_agent='auto' for classifier subprocess routing."""
-    if configured_agent != "auto":
-        return configured_agent
-    try:
-        state = SecondSightState.load(secondsight_home / "state.json")
-    except SecondSightStateError as exc:
-        logger.warning("UserPrompt evaluator state resolution failed open: error={err}", err=exc)
-        return None
-    if state is None:
-        return None
-    return state.init_agent
-
-
 __all__ = [
     "SessionStartInjectionRequest",
-    "UserPromptInjectionRequest",
     "_build_session_start_text",
     "_project_id_from_hook_context",
-    "_project_root_from_cwd",
     "_render_session_start_convention_template",
-    "_resolve_cli_agent_from_state",
     "router",
 ]

@@ -1150,9 +1150,28 @@ def _user_prompt_payload() -> str:
 
 
 class TestUserPromptGuidanceInjection:
-    """Layer 1 tests: user-prompt.sh prints raw guidance payloads fail-open."""
+    """Layer 1 tests: user-prompt.sh injection path (updated for task-3 new Python path).
 
-    def test_raw_server_payload_printed_to_stdout_unchanged(self, tmp_path: Path) -> None:
+    Task-3 replaced the legacy curl-to-injection-endpoint path with an agent-native
+    Python helper (secondsight.feedback.hit_injection.render_wrapper).  The new path
+    fires first and always returns before the legacy curl block.  Tests below verify
+    the new path's behavior.
+
+    The original three tests tested the legacy curl path:
+      - test_raw_server_payload_printed_to_stdout_unchanged (server body pass-through)
+      - test_user_prompt_hook_sends_cwd_not_project_id (injection POST body shape)
+      - test_dt_empty_stdout_when_injection_server_errors (server 500 fail-open)
+    All three have been replaced with tests that reflect the new Python-path behavior.
+    The legacy curl block remains in user-prompt.sh for task-4's atomic deletion.
+    """
+
+    def test_new_path_emits_wrapper_json_not_server_body(self, tmp_path: Path) -> None:
+        """Replaces test_raw_server_payload_printed_to_stdout_unchanged.
+
+        The new Python path emits render_wrapper JSON, NOT the server's body.
+        The mock server is still started (to absorb the ingest POST), but its
+        injection body is irrelevant — the hook never calls the injection endpoint.
+        """
         body = (
             '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit",'
             '"additionalContext":"clarify scope"}}'
@@ -1162,15 +1181,40 @@ class TestUserPromptGuidanceInjection:
             home = tmp_path / ".secondsight"
             home.mkdir()
             env = build_env(port=port, home=home, agent="codex")
-            result = run_hook(hook_script("user-prompt.sh"), _user_prompt_payload(), env=env)
+            import os
+
+            env["HOME"] = os.environ.get("HOME", str(Path.home()))
+            env["PATH"] = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+            result = run_hook(
+                hook_script("user-prompt.sh"), _user_prompt_payload(), env=env, timeout=30.0
+            )
 
             assert result.returncode == 0
-            assert result.stdout == body
+            # The hook must emit JSON from the Python path (NOT the server body above).
+            assert result.stdout != "", (
+                f"hook must emit wrapper JSON; got empty stdout. stderr: {result.stderr!r}"
+            )
+            assert result.stdout != body, (
+                "hook must emit Python-generated wrapper, not the legacy server body"
+            )
+            import json as _json
+
+            payload = _json.loads(result.stdout)
+            additional_context = payload.get("hookSpecificOutput", {}).get("additionalContext", "")
+            assert additional_context, "additionalContext must be non-empty"
+            assert "fix it" in additional_context, (
+                "additionalContext must contain original prompt (proves Python path ran)"
+            )
         finally:
             server.shutdown()
 
-    def test_user_prompt_hook_sends_cwd_not_project_id(self, tmp_path: Path) -> None:
-        """DT-UP-1: project_id derivation belongs to the server, not shell."""
+    def test_no_injection_curl_call_made_by_new_path(self, tmp_path: Path) -> None:
+        """Replaces test_user_prompt_hook_sends_cwd_not_project_id.
+
+        The new Python path does NOT call the legacy /hook/injection/user-prompt/
+        endpoint at all.  The recording server should NOT record any injection body.
+        (It will still receive the observation ingest POST at /hook/{agent}/user_prompt.)
+        """
         body = (
             '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit",'
             '"additionalContext":"clarify scope"}}'
@@ -1179,30 +1223,70 @@ class TestUserPromptGuidanceInjection:
         try:
             home = tmp_path / ".secondsight"
             home.mkdir()
+            import os
+
             env = build_env(port=port, home=home, agent="codex")
-            result = run_hook(hook_script("user-prompt.sh"), _user_prompt_payload(), env=env)
+            env["HOME"] = os.environ.get("HOME", str(Path.home()))
+            env["PATH"] = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+            result = run_hook(
+                hook_script("user-prompt.sh"), _user_prompt_payload(), env=env, timeout=30.0
+            )
 
             assert result.returncode == 0
-            request_body = json.loads(bodies[0])
-            assert request_body == {
-                "prompt": "fix it",
-                "session_id": "sess-test",
-                "cwd": "/tmp/proj-test",
-            }
-            assert "project_id" not in request_body
+            # The new Python path does not POST to the injection endpoint.
+            # The recording server may receive ONE body: the observation ingest POST.
+            # It must NOT receive the injection request body shape {prompt, session_id, cwd}.
+            injection_bodies = [
+                b
+                for b in bodies
+                if isinstance(b, str)
+                and '"prompt"' in b
+                and '"cwd"' in b
+                and '"session_id"' in b
+                and len(b) < 200  # injection body is small
+            ]
+            assert len(injection_bodies) == 0, (
+                f"Injection endpoint was called with body {injection_bodies!r}; "
+                "new Python path should not call the legacy injection endpoint."
+            )
         finally:
             server.shutdown()
 
-    def test_dt_empty_stdout_when_injection_server_errors(self, tmp_path: Path) -> None:
-        """DC3: hook-side UserPromptSubmit injection failure fails open."""
-        port, server = _make_convention_server("provider failed", status=500)
+    def test_new_path_still_emits_wrapper_when_server_not_running(self, tmp_path: Path) -> None:
+        """Replaces test_dt_empty_stdout_when_injection_server_errors.
+
+        The new Python path does not depend on the injection server.  Even when
+        no server is listening (connection refused), the Python path emits wrapper
+        JSON.  The legacy curl block (unreachable) would have failed open with
+        empty stdout; the new path succeeds independently of the server.
+
+        This test uses a port where no server is listening to verify independence.
+        """
+        home = tmp_path / ".secondsight"
+        home.mkdir()
+        import os
+
+        # Port 1 is reserved/unroutable — connection will be refused immediately.
+        env = build_env(port=1, home=home, agent="claude_code")
+        env["HOME"] = os.environ.get("HOME", str(Path.home()))
+        env["PATH"] = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+        result = run_hook(
+            hook_script("user-prompt.sh"), _user_prompt_payload(), env=env, timeout=30.0
+        )
+
+        assert result.returncode == 0, (
+            f"hook must exit 0; got {result.returncode}. stderr: {result.stderr!r}"
+        )
+        # New path emits wrapper JSON regardless of server state.
+        assert result.stdout != "", (
+            "new Python path must emit wrapper JSON even when injection server is unreachable. "
+            f"stderr: {result.stderr!r}"
+        )
+        import json as _json
+
         try:
-            home = tmp_path / ".secondsight"
-            home.mkdir()
-            env = build_env(port=port, home=home, agent="claude_code")
-            result = run_hook(hook_script("user-prompt.sh"), _user_prompt_payload(), env=env)
-
-            assert result.returncode == 0
-            assert result.stdout == ""
-        finally:
-            server.shutdown()
+            payload = _json.loads(result.stdout)
+        except _json.JSONDecodeError as exc:
+            pytest.fail(f"hook stdout is not valid JSON: {exc}\nstdout: {result.stdout!r}")
+        additional_context = payload.get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert additional_context, "additionalContext must be non-empty"

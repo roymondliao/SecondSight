@@ -40,7 +40,7 @@ import re
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -64,6 +64,7 @@ from secondsight.config.schema import (
     AnalysisSDKConfig,
     BUILTIN_FEEDBACK_CONVENTION_INJECTION_BUDGET,
     BUILTIN_FEEDBACK_CONVENTION_TOP_N,
+    BUILTIN_FEEDBACK_HIT_INJECTION_ENABLED,
     FallbackModelsConfig,
     FeedbackConfig,
     GeneralConfig,
@@ -576,26 +577,65 @@ def _build_analysis_config(doc: dict[str, Any]) -> AnalysisConfig:
     )
 
 
-def _resolve_feedback_field(
+def _resolve_feedback_typed_field(
     *,
     field_name: str,
-    global_section: dict[str, Any],
+    expected_type: type,
     project_section: dict[str, Any],
-    builtin_default: int,
-) -> int:
+    global_section: dict[str, Any],
+    builtin_default: Any,
+    extra_validation: Callable[[Any], None] | None = None,
+) -> Any:
+    """Resolve a [feedback] field with priority project → global → builtin.
+
+    Enforces strict type identity (``type(value) is expected_type``) so that
+    e.g. integer ``1`` is rejected for a bool field, and string ``"true"`` is
+    rejected for both bool and int fields.
+
+    Args:
+        field_name: TOML key under [feedback].
+        expected_type: Python type to enforce (e.g. ``bool``, ``int``).
+        project_section: Parsed [feedback] dict from the per-project TOML.
+        global_section: Parsed [feedback] dict from the global TOML.
+        builtin_default: Value returned when neither layer contains the field.
+            Must already be of ``expected_type`` — not validated here.
+        extra_validation: Optional callable receiving the resolved value after
+            the type check passes.  Should raise SecondSightConfigError if the
+            value is out of range.  None means no extra validation.
+
+    Returns:
+        The resolved value (same type as ``builtin_default``).
+
+    Raises:
+        SecondSightConfigError: Value is present but of the wrong type,
+            or ``extra_validation`` raises.
+    """
     if field_name in project_section:
         value = project_section[field_name]
     elif field_name in global_section:
         value = global_section[field_name]
     else:
-        value = builtin_default
-    if type(value) is not int:
+        # builtin_default is always the correct type by typing contract.
+        return builtin_default
+    if type(value) is not expected_type:
+        type_label = expected_type.__name__
         raise SecondSightConfigError(
-            f"[feedback].{field_name} must be an integer; got {type(value).__name__!r}"
+            f"[feedback].{field_name} must be a {type_label}; "
+            f"got {type(value).__name__!r} {value!r}"
         )
-    if value <= 0:
-        raise SecondSightConfigError(f"[feedback].{field_name} must be > 0; got {value!r}")
+    if extra_validation is not None:
+        extra_validation(value)
     return value
+
+
+def _feedback_int_gt0_validator(field_name: str) -> Callable[[int], None]:
+    """Return a validator that raises SecondSightConfigError when value <= 0."""
+
+    def _validate(value: int) -> None:
+        if value <= 0:
+            raise SecondSightConfigError(f"[feedback].{field_name} must be > 0; got {value!r}")
+
+    return _validate
 
 
 def _build_feedback_config(
@@ -613,17 +653,28 @@ def _build_feedback_config(
         project_section = {}
 
     return FeedbackConfig(
-        convention_injection_budget=_resolve_feedback_field(
+        convention_injection_budget=_resolve_feedback_typed_field(
             field_name="convention_injection_budget",
-            global_section=global_section,
+            expected_type=int,
             project_section=project_section,
+            global_section=global_section,
             builtin_default=BUILTIN_FEEDBACK_CONVENTION_INJECTION_BUDGET,
+            extra_validation=_feedback_int_gt0_validator("convention_injection_budget"),
         ),
-        convention_top_n=_resolve_feedback_field(
+        convention_top_n=_resolve_feedback_typed_field(
             field_name="convention_top_n",
-            global_section=global_section,
+            expected_type=int,
             project_section=project_section,
+            global_section=global_section,
             builtin_default=BUILTIN_FEEDBACK_CONVENTION_TOP_N,
+            extra_validation=_feedback_int_gt0_validator("convention_top_n"),
+        ),
+        hit_injection_enabled=_resolve_feedback_typed_field(
+            field_name="hit_injection_enabled",
+            expected_type=bool,
+            project_section=project_section,
+            global_section=global_section,
+            builtin_default=BUILTIN_FEEDBACK_HIT_INJECTION_ENABLED,
         ),
     )
 

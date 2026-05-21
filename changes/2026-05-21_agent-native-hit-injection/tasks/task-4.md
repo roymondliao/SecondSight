@@ -19,6 +19,14 @@ failure; stop and go back.
 
 ## Files
 
+**Authoritative source:** `../migration-audit.yaml` is the ground truth for
+the full deletion scope. The lists below are a human-readable checklist
+derived from it. If there is ever a discrepancy between this file and
+`migration-audit.yaml`, the audit YAML wins. (Cross-reference: the
+`co_deleted_artifacts` section of `migration-audit.yaml` covers the
+"Delete entire file" entries below; the `files:` section with
+`category: surgical-remove` covers the "Surgically remove" entries.)
+
 ### Delete entire file
 
 - `src/secondsight/feedback/prompt_evaluator.py`
@@ -51,10 +59,18 @@ failure; stop and go back.
 
 ## Death Test Requirements
 
+> **Carry-over from task-1 re-review (R1 accepted; defer-to-task-4):**
+> DT-8's grep scope below was originally `src/ tests/`. Task-1's amended grep
+> command includes `scripts/` (Planning Amendment, 2026-05-21). DT-8 must
+> match that scope, otherwise the post-deletion validation can report
+> "zero matches" while leaving a stale curl call in
+> `scripts/hooks/user-prompt.sh`. **task-4 implementer: BEFORE writing DT-8,
+> change its grep scope to `src/ tests/ scripts/` to match task-1.**
+
 **DT-8: No surviving reference to `prompt_evaluator` or the deleted endpoint URL.**
 Test name: `test_dt_no_dangling_references_to_deleted_sidecar`
 Given: this task's commit is checked out
-When:  `grep -rln "prompt_evaluator\|/hook/injection/user-prompt" src/ tests/ --include='*.py' --include='*.sh' --include='*.toml'` is run
+When:  `grep -rln "prompt_evaluator\|/hook/injection/user-prompt" src/ tests/ scripts/ --include='*.py' --include='*.sh' --include='*.toml'` is run
 Then:  command returns empty (zero matches).
 
 **DT-9: Deleted endpoint returns 404 in HTTP integration test.**

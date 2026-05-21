@@ -28,12 +28,12 @@ This task has no death tests because it produces no executable
 artifact. Instead, it produces a verified audit document.
 
 Verification (not death test):
-- `grep -rln "prompt_evaluator\|/hook/injection/user-prompt" src/ tests/ --include='*.py' --include='*.sh' --include='*.toml'`
+- `grep -rln "prompt_evaluator\|/hook/injection/user-prompt" src/ tests/ scripts/ --include='*.py' --include='*.sh' --include='*.toml'`
   output must exactly match the file list in `migration-audit.yaml`.
 
 ## Implementation Steps
 
-- [ ] Step 1: Run `grep -rln "prompt_evaluator\|/hook/injection/user-prompt" src/ tests/ --include='*.py' --include='*.sh' --include='*.toml'` from repository root.
+- [ ] Step 1: Run `grep -rln "prompt_evaluator\|/hook/injection/user-prompt" src/ tests/ scripts/ --include='*.py' --include='*.sh' --include='*.toml'` from repository root.
 - [ ] Step 2: For each file matched, record the line numbers where the symbol appears (`grep -n` per file).
 - [ ] Step 3: Categorise each reference as one of: `delete-entire-file`, `surgical-remove`, `audit-only`. Categorisation rules:
   - `delete-entire-file`: the whole file's purpose is the deleted code (e.g., `tests/feedback/test_prompt_evaluator.py`).
@@ -60,3 +60,32 @@ This task is intentionally small and bureaucratic. Its purpose is
 to make task-4's destructive change unambiguous and verifiable.
 If task-4 ever fails because of a missed reference, task-1 has
 failed its function — record that as a scar.
+
+## Planning Amendment (2026-05-21)
+
+The grep scope in Step 1 was originally written as `src/ tests/`. This was
+too narrow: `scripts/` contains executable shell hooks (`scripts/hooks/*.sh`)
+that call the API server at runtime and must be included in any audit of live
+references to deleted endpoints.
+
+The original scope omission caused `scripts/hooks/user-prompt.sh` line 118 to
+be invisible to the audit. That line is a live curl call to the deleted route;
+if task-4 had removed the API endpoint without removing this curl call, the
+hook would have silently failed (curl non-2xx → `|| return 0` → no injection,
+no error logged to the user).
+
+**Root cause:** the Step 1 grep command was written from knowledge of the
+Python source tree without checking what other executable directories existed
+at the repo root. The correct approach is to first enumerate top-level
+executable directories:
+
+    find . -maxdepth 1 -type d | sort
+
+...then include all directories that contain runtime-executed code (src/,
+tests/, scripts/, and any others found). Documentation directories (docs/,
+changes/, bugfix/, .agents/, .github/) do not need to be in the primary scope
+but should be covered in the extended scope audit.
+
+This amendment corrects the grep command in Step 1 and the matching
+Verification command above. The `migration-audit.yaml` has been updated to
+reflect the corrected scope and the newly found 6th file.

@@ -83,13 +83,16 @@ primary_model = ""
 fallback_model = ""
 
 # -----------------------------------------------------------------------------
-# [feedback] — Convention injection budgets
+# [feedback] — Convention injection budgets + hit injection toggle
 # -----------------------------------------------------------------------------
 [feedback]
 # Max tokens for SessionStart convention injection (SD §5.8.3).
 convention_injection_budget = 2000
 # Cross-session aggregation: take top-N most-frequent conventions as active.
 convention_top_n = 15
+# Agent-native executability self-check injection via UserPromptSubmit hook.
+# Set to false to disable without removing the hook from ~/.claude/hooks/.
+hit_injection_enabled = true
 
 # -----------------------------------------------------------------------------
 # [general] — Dispatch mode and logging

@@ -184,13 +184,17 @@ auto_start = true
 cache_size_mb = 64
 
 # =============================================================================
-# [feedback] — Convention injection budgets
+# [feedback] — Convention injection budgets + hit injection toggle
 # =============================================================================
 [feedback]
 # SessionStart convention 注入的 token 上限。
 convention_injection_budget = 2000
 # 跨 session 聚合時取前 N 個最常見 convention 為 active。
 convention_top_n = 15
+# Agent-native executability self-check injection via UserPromptSubmit hook.
+# When true, the hook calls render_wrapper(prompt) and emits additionalContext.
+# Set to false to disable without removing the hook from ~/.claude/hooks/.
+hit_injection_enabled = true
 
 # =============================================================================
 # [retention] — Data lifecycle (TTL)

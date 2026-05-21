@@ -80,6 +80,7 @@ __all__ = [
     "BUILTIN_ANALYSIS_MAX_RETRY_COUNT_CAP",
     "BUILTIN_FEEDBACK_CONVENTION_INJECTION_BUDGET",
     "BUILTIN_FEEDBACK_CONVENTION_TOP_N",
+    "BUILTIN_FEEDBACK_HIT_INJECTION_ENABLED",
 ]
 
 
@@ -122,6 +123,7 @@ BUILTIN_SDK_FALLBACK_MODEL: str = ""
 BUILTIN_ANALYSIS_TIMEOUT_SECONDS: int = 300
 BUILTIN_FEEDBACK_CONVENTION_INJECTION_BUDGET: int = 2000
 BUILTIN_FEEDBACK_CONVENTION_TOP_N: int = 15
+BUILTIN_FEEDBACK_HIT_INJECTION_ENABLED: bool = True
 
 
 @dataclass(frozen=True)
@@ -408,10 +410,14 @@ class FeedbackConfig:
     Attributes:
         convention_injection_budget: SessionStart convention token budget.
         convention_top_n: Max active conventions considered by future aggregation paths.
+        hit_injection_enabled: Whether to run the agent-native hit injection path via
+            the UserPromptSubmit hook.  Defaults to True.  Set to False to disable
+            the executability self-check meta-instruction without removing the hook.
     """
 
     convention_injection_budget: int = BUILTIN_FEEDBACK_CONVENTION_INJECTION_BUDGET
     convention_top_n: int = BUILTIN_FEEDBACK_CONVENTION_TOP_N
+    hit_injection_enabled: bool = BUILTIN_FEEDBACK_HIT_INJECTION_ENABLED
 
     def __post_init__(self) -> None:
         if type(self.convention_injection_budget) is not int:
@@ -432,6 +438,11 @@ class FeedbackConfig:
         if self.convention_top_n <= 0:
             raise SecondSightConfigError(
                 f"[feedback].convention_top_n must be > 0; got {self.convention_top_n!r}"
+            )
+        if type(self.hit_injection_enabled) is not bool:
+            raise SecondSightConfigError(
+                "[feedback].hit_injection_enabled must be a boolean; "
+                f"got {type(self.hit_injection_enabled).__name__!r}"
             )
 
 

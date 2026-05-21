@@ -56,19 +56,68 @@ _ss_injection_log() {
 
 _ss_inject_prompt_guidance() {
     local payload_json="$1"
-    command -v jq   > /dev/null 2>&1 || {
-        _ss_injection_log "jq not found; cannot read prompt"
-        return 0
-    }
-    command -v curl > /dev/null 2>&1 || {
-        _ss_injection_log "curl not found; cannot call injection endpoint"
-        return 0
-    }
 
-    local cwd
-    cwd="$(printf '%s' "$payload_json" | jq -r '.cwd // empty' 2>/dev/null)"
-    if [ -z "$cwd" ]; then
-        _ss_injection_log "missing cwd"
+    # -------------------------------------------------------------------------
+    # Agent-native hit injection via Python render_wrapper.
+    #
+    # Resolution order:
+    # 1. Read config [feedback].hit_injection_enabled via Python.
+    #    If disabled → return 0 (no stdout, no injection).
+    # 2. Extract prompt from payload via jq.
+    # 3. Invoke render_wrapper(prompt) via Python → emit JSON envelope → return 0.
+    # 4. Any Python failure → log to curl-errors.log → return 0 (fail-open).
+    # -------------------------------------------------------------------------
+
+    local ss_home
+    ss_home="$(_secondsight_resolve_home)"
+    local logs_dir="$ss_home/logs"
+    mkdir -p "$logs_dir" 2>/dev/null || true
+    local curl_error_log="$logs_dir/curl-errors.log"
+
+    # Determine Python interpreter: prefer `uv run --project` so the
+    # secondsight package is importable even when the venv is not activated.
+    # The project root is two levels above _SS_DIR (scripts/hooks → scripts → root).
+    local ss_project_root
+    ss_project_root="$(cd "$_SS_DIR/../.." 2>/dev/null && pwd 2>/dev/null)" || ss_project_root=""
+
+    # Interpreter detection rationale (I-3):
+    #   - `uv run --project` is preferred: it activates the project venv so
+    #     `secondsight` is importable even without manually sourcing .venv.
+    #   - The pyproject.toml guard avoids `uv run` when the hook is copied
+    #     (not symlinked) to a directory two levels below a different project;
+    #     if pyproject.toml is absent at `_SS_DIR/../..`, uv is skipped.
+    #   - Bare python3/python is the last resort: it succeeds only if the
+    #     caller activated the venv beforehand, so it may fail with
+    #     ModuleNotFoundError — logged to curl-errors.log, hook returns 0.
+    #
+    # `python_launcher` holds the executable name: "uv" when uv path is used
+    # (NOT a Python interpreter), "python3" or "python" for the bare fallback.
+    # `python_argv` holds any sub-command arguments (e.g. "run --project ...
+    # python3" for uv; empty for the bare Python path).
+    # Invocation: "$python_launcher" "${python_argv[@]}" <script_file>
+    local python_launcher=""
+    local -a python_argv=()
+    if [ -n "$ss_project_root" ] && [ -f "$ss_project_root/pyproject.toml" ] \
+            && command -v uv > /dev/null 2>&1; then
+        python_launcher="uv"
+        python_argv=("run" "--project" "$ss_project_root" "python3")
+    elif command -v python3 > /dev/null 2>&1; then
+        python_launcher="python3"
+        python_argv=()
+    elif command -v python > /dev/null 2>&1; then
+        python_launcher="python"
+        python_argv=()
+    else
+        printf 'secondsight_warning: hit_injection: python3/python not found; injection skipped\n' \
+            >> "$curl_error_log" 2>/dev/null || true
+        # No interpreter available; fail-open with no injection (the observation
+        # ingest via secondsight_post runs after this function returns).
+        return 0
+    fi
+
+    # Extract prompt from payload (requires jq).
+    if ! command -v jq > /dev/null 2>&1; then
+        _ss_injection_log "jq not found; cannot read prompt"
         return 0
     fi
 
@@ -79,46 +128,123 @@ _ss_inject_prompt_guidance() {
         return 0
     fi
 
-    local session_id
-    session_id="$(printf '%s' "$payload_json" | jq -r '.session_id // empty' 2>/dev/null)"
+    # Invoke Python: check config toggle, call render_wrapper, emit JSON.
+    # The Python snippet:
+    #   1. Reads hit_injection_enabled from config (defaults True if absent).
+    #   2. If disabled, prints nothing and exits 0.
+    #   3. Calls render_wrapper(prompt) — returns "" for empty/whitespace prompts.
+    #   4. Uses json.dumps for safe serialisation of the wrapper string.
+    #   5. Any exception propagates to stderr; the shell treats non-zero exit
+    #      as failure and falls through to the fail-open handler below.
+    #
+    # IMPORTANT: the wrapper text may contain double quotes, backslashes, and
+    # newlines.  We use json.dumps (not printf/interpolation) to serialise it
+    # safely.  The final JSON is emitted via print() which adds exactly one
+    # trailing newline — acceptable for Claude Code hook stdout contract.
+    # The prompt is passed via environment variable _SS_HIT_PROMPT rather than
+    # sys.argv to avoid shell word-splitting on prompts that contain spaces,
+    # special characters, or newlines.  An env var is opaque to the shell and
+    # is read by Python via os.environ.get().
+    # COUPLING SITE: the string "secondsight.feedback.hit_injection" below is a
+    # hard-coded module path. Renaming render_wrapper's module requires updating
+    # this heredoc. See debt_registered in task-3-scar.yaml for the extraction plan.
+    local python_script
+    python_script="$(cat <<'PYEOF'
+import json, sys, os
+ss_home = os.environ.get("SECONDSIGHT_HOME") or os.path.join(os.path.expanduser("~"), ".secondsight")
+config_path = os.path.join(ss_home, "config.toml")
+hit_injection_enabled = True
+try:
+    import tomllib  # Python 3.11+
+    with open(config_path, "rb") as f:
+        doc = tomllib.load(f)
+    raw = doc.get("feedback", {}).get("hit_injection_enabled", True)
+    if type(raw) is not bool:
+        sys.stderr.write(
+            f"hit_injection_enabled: invalid value {raw!r}; "
+            f"expected bool true/false; defaulting to true\n"
+        )
+        hit_injection_enabled = True
+    else:
+        hit_injection_enabled = raw
+except FileNotFoundError:
+    hit_injection_enabled = True  # no config.toml → default True (fresh install)
+except Exception as e:
+    sys.stderr.write(f"hit_injection config read error: {e!r}; defaulting to true\n")
+    hit_injection_enabled = True
+if not hit_injection_enabled:
+    sys.exit(0)
+prompt = os.environ.get("_SS_HIT_PROMPT", "")
+from secondsight.feedback.hit_injection import render_wrapper
+wrapper = render_wrapper(prompt)
+if not wrapper:
+    sys.exit(0)
+payload = {
+    "hookSpecificOutput": {
+        "hookEventName": "UserPromptSubmit",
+        "additionalContext": wrapper,
+    }
+}
+print(json.dumps(payload))
+PYEOF
+    )"
 
-    local body
-    if [ -n "$session_id" ]; then
-        body="$(jq -cn \
-            --arg prompt "$prompt" \
-            --arg cwd "$cwd" \
-            --arg sid "$session_id" \
-            '{"prompt": $prompt, "session_id": $sid, "cwd": $cwd}' 2>/dev/null)"
-    else
-        body="$(jq -cn \
-            --arg prompt "$prompt" \
-            --arg cwd "$cwd" \
-            '{"prompt": $prompt, "session_id": null, "cwd": $cwd}' 2>/dev/null)"
+    # Write the Python script to a temp file so we can invoke the interpreter
+    # without `eval`.  This avoids word-splitting on paths with spaces (e.g.
+    # project root or uv binary path with spaces in a parent directory).
+    local python_script_file
+    python_script_file="$(mktemp 2>/dev/null)" || python_script_file=""
+    if [ -n "$python_script_file" ]; then
+        printf '%s\n' "$python_script" > "$python_script_file" 2>/dev/null || python_script_file=""
     fi
-    [ -n "$body" ] || return 0
 
-    local port="${SECONDSIGHT_PORT:-8420}"
-    local agent="${SECONDSIGHT_AGENT:-claude_code}"
-    local ss_home
-    ss_home="$(_secondsight_resolve_home)"
-    local logs_dir="$ss_home/logs"
-    mkdir -p "$logs_dir" 2>/dev/null || true
-    local curl_error_log="$logs_dir/curl-errors.log"
+    # Run Python, capturing stdout (the JSON envelope) and stderr (any errors).
+    # The prompt is exported as _SS_HIT_PROMPT so Python reads it safely via
+    # os.environ — avoids shell word-splitting on prompts with spaces/newlines.
+    local python_output
+    local python_stderr_file
+    python_stderr_file="$(mktemp 2>/dev/null)" || python_stderr_file=""
 
-    local injection_payload
-    injection_payload="$(curl \
-        --silent \
-        --show-error \
-        --fail \
-        --connect-timeout 0.1 \
-        --max-time 5.0 \
-        --request POST \
-        --header 'Content-Type: application/json' \
-        --data-raw "$body" \
-        "http://127.0.0.1:${port}/hook/injection/user-prompt/${agent}" \
-        2>>"$curl_error_log")" || return 0
+    if [ -n "$python_script_file" ] && [ -n "$python_stderr_file" ]; then
+        python_output="$(export _SS_HIT_PROMPT="$prompt"; \
+            "$python_launcher" "${python_argv[@]}" "$python_script_file" \
+            2>"$python_stderr_file")"
+        local python_exit=$?
+        # Log stderr when:
+        #   (a) Python exited non-zero (error path), OR
+        #   (b) stderr contains our config diagnostic prefix (hit_injection_enabled:
+        #       or "hit_injection config read error:") even on exit 0 — this is the
+        #       C1 fix: operators must see invalid-value diagnostics in the log.
+        # We do NOT log all non-empty stderr on exit 0 to avoid polluting the log
+        # with uv deprecation warnings that appear on every successful run.
+        if [ -s "$python_stderr_file" ]; then
+            if [ $python_exit -ne 0 ] || grep -q "hit_injection" "$python_stderr_file" 2>/dev/null; then
+                if [ $python_exit -ne 0 ]; then
+                    printf 'secondsight_warning: hit_injection python error: ' \
+                        >> "$curl_error_log" 2>/dev/null || true
+                fi
+                cat "$python_stderr_file" >> "$curl_error_log" 2>/dev/null || true
+            fi
+        fi
+        rm -f "$python_stderr_file" 2>/dev/null || true
+    else
+        # Fallback: no temp files available; use stdin pipe + redirect stderr
+        # (uv deprecation warnings may appear in log, but this is the degraded path).
+        python_output="$(export _SS_HIT_PROMPT="$prompt"; \
+            "$python_launcher" "${python_argv[@]}" - <<< "$python_script" \
+            2>>"$curl_error_log")"
+        local python_exit=$?
+    fi
+    rm -f "$python_script_file" 2>/dev/null || true
 
-    [ -n "$injection_payload" ] && printf '%s' "$injection_payload"
+    if [ $python_exit -ne 0 ]; then
+        # Python exited non-zero: error already logged above (if stderr_file available).
+        return 0
+    fi
+
+    if [ -n "$python_output" ]; then
+        printf '%s' "$python_output"
+    fi
     return 0
 }
 
