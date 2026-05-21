@@ -160,6 +160,22 @@ def test_dt_hook_logs_warning_on_invalid_bool_value(tmp_path: Path) -> None:
     )
 
 
+def test_dt_hook_script_delegates_to_cli_runtime() -> None:
+    """DT-C2: shell hook must delegate to CLI, not embed inline Python source."""
+    script_content = hook_script("user-prompt.sh").read_text(encoding="utf-8")
+
+    assert "python_script=" not in script_content, (
+        "user-prompt.sh must not carry an inline Python program; keep business logic in the "
+        "Python runtime entrypoint instead."
+    )
+    assert "<<'PYEOF'" not in script_content, (
+        "user-prompt.sh still embeds a heredoc Python runner; this refactor is incomplete."
+    )
+    assert "-m secondsight hook user-prompt" in script_content, (
+        "user-prompt.sh must delegate to the internal hook CLI entrypoint."
+    )
+
+
 def test_dt_hook_bypasses_known_agent_control_prompts(tmp_path: Path) -> None:
     """DT-B1: agent control-surface prompts must not be wrapped.
 
@@ -236,6 +252,55 @@ def test_dt_hook_uses_pinned_runtime_file_when_path_has_no_python(tmp_path: Path
         "pinned runtime file must let the hook emit wrapper JSON even when PATH has no python. "
         f"stderr: {result.stderr!r}"
     )
+
+
+def test_dt_hook_emits_wrapper_json_when_jq_missing(tmp_path: Path) -> None:
+    """DT-J1: jq absence must not block wrapper injection.
+
+    Acceptance for this change-set was amended to move payload parsing into the
+    Python helper. If jq is still required in the shell path, the hook silently
+    emits no wrapper stdout on hosts that have Python but not jq.
+    """
+    home = tmp_path / ".secondsight"
+    _write_config(home, enabled=True)
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    _symlink_tools(fake_bin, [tool for tool in _STANDARD_TOOLS if tool != "jq"])
+    _symlink_tools(fake_bin, ["python3", "python", "mktemp", "grep"])
+
+    env = build_env(port=8420, home=home, agent="claude_code")
+    env["HOME"] = str(tmp_path)
+    env["PATH"] = str(fake_bin)
+
+    result = run_hook(
+        hook_script("user-prompt.sh"),
+        _make_payload("fix the auth bug"),
+        env=env,
+        timeout=30.0,
+    )
+
+    assert result.returncode == 0, (
+        f"hook must exit 0 when jq is missing; got {result.returncode}. stderr: {result.stderr!r}"
+    )
+    assert result.stdout != "", (
+        "hook must still emit wrapper JSON when jq is missing but Python is available. "
+        f"stderr: {result.stderr!r}"
+    )
+
+    payload = json.loads(result.stdout)
+    additional_context = payload.get("hookSpecificOutput", {}).get("additionalContext", "")
+    assert "fix the auth bug" in additional_context, (
+        f"additionalContext must contain the original prompt text. Payload: {payload!r}"
+    )
+
+    log_file = home / "logs" / "curl-errors.log"
+    if log_file.exists():
+        log_content = log_file.read_text(encoding="utf-8")
+        assert "jq not found; cannot read prompt" not in log_content, (
+            "jq absence must not block user-prompt injection after the parsing move. "
+            f"Content: {log_content!r}"
+        )
 
 
 def test_dt_hook_emits_no_stdout_when_disabled(tmp_path: Path) -> None:

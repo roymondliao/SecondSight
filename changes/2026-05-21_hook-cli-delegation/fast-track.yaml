@@ -1,0 +1,30 @@
+type: fast_track
+description: "Move UserPromptSubmit hook runtime logic out of user-prompt.sh into an internal CLI entrypoint."
+death_clause: "If user-prompt.sh still embeds inline Python source or the CLI path changes hook stdout/stderr behavior, this change is failed."
+acceptance:
+  - "UserPromptSubmit hook business logic lives in Python code, not a shell heredoc."
+  - "The shell hook delegates to an internal `secondsight hook user-prompt` CLI entrypoint."
+  - "The internal hook CLI stays hidden from top-level help."
+  - "Hook stdout JSON for valid prompts remains unchanged."
+scar_tag: none
+scar_items: []
+files_changed:
+  - "scripts/hooks/user-prompt.sh"
+  - "src/secondsight/cli/app.py"
+  - "src/secondsight/cli/hook.py"
+  - "src/secondsight/feedback/hook_runner.py"
+  - "tests/cli/test_cli_app.py"
+  - "tests/scripts/test_user_prompt_hook_injection.py"
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: "Reused hit_injection.render_wrapper and should_bypass_wrapper; the new runner only centralizes config/payload orchestration."
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: "Shell now does launcher resolution only; Python owns payload parsing and wrapper construction through the hidden CLI path."
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: "Removed the temp-file heredoc Python program instead of wrapping it in another shell helper."
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: "The hook JSON contract now has one Python implementation path shared by CLI tests and shell execution."

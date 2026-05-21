@@ -132,6 +132,50 @@ def test_version_subcommand() -> None:
     assert "secondsight " in result.output
 
 
+def test_death_internal_hook_user_prompt_hidden_from_help() -> None:
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0
+    assert "│ hook       " not in result.output, (
+        "internal hook runtime commands must stay hidden from top-level help; "
+        "otherwise we accidentally expose a machine-facing surface as a user-facing CLI."
+    )
+
+
+def test_death_internal_hook_user_prompt_emits_wrapper_json(tmp_path: Path) -> None:
+    home = tmp_path / "secondsight"
+    home.mkdir()
+    (home / "config.toml").write_text(
+        "[feedback]\nhit_injection_enabled = true\n",
+        encoding="utf-8",
+    )
+
+    payload = json.dumps(
+        {
+            "session_id": "sess-1",
+            "cwd": "/tmp/proj-test",
+            "transcript_path": "/tmp/transcript.jsonl",
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "fix the auth bug",
+        }
+    )
+    result = runner.invoke(
+        app,
+        ["hook", "user-prompt"],
+        input=payload,
+        env={
+            "SECONDSIGHT_HOME": str(home),
+            "SECONDSIGHT_AGENT": "claude_code",
+        },
+    )
+
+    assert result.exit_code == 0, result.output
+    parsed = json.loads(result.stdout)
+    additional_context = parsed.get("hookSpecificOutput", {}).get("additionalContext", "")
+    assert "fix the auth bug" in additional_context, (
+        f"internal hook CLI must preserve wrapper output contract. Payload: {parsed!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # DT-1: init --dry-run --format json is non-destructive
 # ---------------------------------------------------------------------------

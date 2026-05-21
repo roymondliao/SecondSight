@@ -1,5 +1,5 @@
 feature: agent-native-hit-injection
-status: pending
+status: done
 
 tasks:
   - id: task-1

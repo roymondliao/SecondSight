@@ -43,17 +43,6 @@ secondsight_exit_if_disabled
 
 PAYLOAD="$(cat)"
 
-_ss_injection_log() {
-    local message="$1"
-    local ss_home
-    ss_home="$(_secondsight_resolve_home)"
-    local logs_dir="$ss_home/logs"
-    mkdir -p "$logs_dir" 2>/dev/null || return 0
-    printf 'secondsight_warning: user-prompt injection skipped: %s\n' "$message" \
-        >> "$logs_dir/curl-errors.log" 2>/dev/null || true
-    return 0
-}
-
 _ss_resolve_cmd_path() {
     local cmd_name="$1"
     local cmd_path
@@ -92,7 +81,7 @@ _ss_inject_prompt_guidance() {
     # Resolution order:
     # 1. Read config [feedback].hit_injection_enabled via Python.
     #    If disabled → return 0 (no stdout, no injection).
-    # 2. Extract prompt from payload via jq.
+    # 2. Parse payload + extract prompt inside Python.
     # 3. Invoke render_wrapper(prompt) via Python → emit JSON envelope → return 0.
     # 4. Any Python failure → log to curl-errors.log → return 0 (fail-open).
     # -------------------------------------------------------------------------
@@ -163,110 +152,28 @@ _ss_inject_prompt_guidance() {
         return 0
     fi
 
-    # Extract prompt from payload (requires jq).
-    if ! command -v jq > /dev/null 2>&1; then
-        _ss_injection_log "jq not found; cannot read prompt"
-        return 0
-    fi
-
-    local prompt
-    prompt="$(printf '%s' "$payload_json" | jq -r '.prompt // empty' 2>/dev/null)"
-    if [ -z "$prompt" ]; then
-        _ss_injection_log "missing prompt"
-        return 0
-    fi
-
-    # Invoke Python: check config toggle, call render_wrapper, emit JSON.
-    # The Python snippet:
-    #   1. Reads hit_injection_enabled from config (defaults True if absent).
-    #   2. If disabled, prints nothing and exits 0.
-    #   3. Calls render_wrapper(prompt) — returns "" for empty/whitespace prompts.
-    #   4. Uses json.dumps for safe serialisation of the wrapper string.
-    #   5. Any exception propagates to stderr; the shell treats non-zero exit
-    #      as failure and falls through to the fail-open handler below.
-    #
-    # IMPORTANT: the wrapper text may contain double quotes, backslashes, and
-    # newlines.  We use json.dumps (not printf/interpolation) to serialise it
-    # safely.  The final JSON is emitted via print() which adds exactly one
-    # trailing newline — acceptable for Claude Code hook stdout contract.
-    # The prompt is passed via environment variable _SS_HIT_PROMPT rather than
-    # sys.argv to avoid shell word-splitting on prompts that contain spaces,
-    # special characters, or newlines.  An env var is opaque to the shell and
-    # is read by Python via os.environ.get().
-    # COUPLING SITE: the string "secondsight.feedback.hit_injection" below is a
-    # hard-coded module path. Renaming render_wrapper's module requires updating
-    # this heredoc. See debt_registered in task-3-scar.yaml for the extraction plan.
-    local python_script
-    python_script="$(cat <<'PYEOF'
-import json, sys, os
-ss_home = os.environ.get("SECONDSIGHT_HOME") or os.path.join(os.path.expanduser("~"), ".secondsight")
-config_path = os.path.join(ss_home, "config.toml")
-hit_injection_enabled = True
-try:
-    import tomllib  # Python 3.11+
-    with open(config_path, "rb") as f:
-        doc = tomllib.load(f)
-    raw = doc.get("feedback", {}).get("hit_injection_enabled", True)
-    if type(raw) is not bool:
-        sys.stderr.write(
-            f"hit_injection_enabled: invalid value {raw!r}; "
-            f"expected bool true/false; defaulting to true\n"
-        )
-        hit_injection_enabled = True
-    else:
-        hit_injection_enabled = raw
-except FileNotFoundError:
-    hit_injection_enabled = True  # no config.toml → default True (fresh install)
-except Exception as e:
-    sys.stderr.write(f"hit_injection config read error: {e!r}; defaulting to true\n")
-    hit_injection_enabled = True
-if not hit_injection_enabled:
-    sys.exit(0)
-prompt = os.environ.get("_SS_HIT_PROMPT", "")
-agent = os.environ.get("SECONDSIGHT_AGENT", "claude_code")
-from secondsight.feedback.hit_injection import render_wrapper, should_bypass_wrapper
-if should_bypass_wrapper(prompt, agent):
-    sys.exit(0)
-wrapper = render_wrapper(prompt)
-if not wrapper:
-    sys.exit(0)
-payload = {
-    "hookSpecificOutput": {
-        "hookEventName": "UserPromptSubmit",
-        "additionalContext": wrapper,
-    }
-}
-print(json.dumps(payload))
-PYEOF
-    )"
-
-    # Write the Python script to a temp file so we can invoke the interpreter
-    # without `eval`.  This avoids word-splitting on paths with spaces (e.g.
-    # project root or uv binary path with spaces in a parent directory).
-    local python_script_file
-    python_script_file="$(mktemp 2>/dev/null)" || python_script_file=""
-    if [ -n "$python_script_file" ]; then
-        printf '%s\n' "$python_script" > "$python_script_file" 2>/dev/null || python_script_file=""
-    fi
-
-    # Run Python, capturing stdout (the JSON envelope) and stderr (any errors).
-    # The prompt is exported as _SS_HIT_PROMPT so Python reads it safely via
-    # os.environ — avoids shell word-splitting on prompts with spaces/newlines.
+    # Invoke the internal SecondSight CLI entrypoint.  Payload parsing, config
+    # loading, bypass checks, and JSON emission live in Python; the shell only
+    # resolves a launcher and captures stdout/stderr.
     local python_output
     local python_stderr_file
     python_stderr_file="$(mktemp 2>/dev/null)" || python_stderr_file=""
 
-    if [ -n "$python_script_file" ] && [ -n "$python_stderr_file" ]; then
+    if [ -n "$python_stderr_file" ]; then
         if [ ${#python_argv[@]} -gt 0 ]; then
-            python_output="$(export _SS_HIT_PROMPT="$prompt" \
-                PYTHONPATH="$python_path_prefix${PYTHONPATH:+:$PYTHONPATH}"; \
-                "$python_launcher" "${python_argv[@]}" "$python_script_file" \
-                2>"$python_stderr_file")"
+            python_output="$(
+                printf '%s' "$payload_json" | \
+                PYTHONPATH="$python_path_prefix${PYTHONPATH:+:$PYTHONPATH}" \
+                    "$python_launcher" "${python_argv[@]}" -m secondsight hook user-prompt \
+                    2>"$python_stderr_file"
+            )"
         else
-            python_output="$(export _SS_HIT_PROMPT="$prompt" \
-                PYTHONPATH="$python_path_prefix${PYTHONPATH:+:$PYTHONPATH}"; \
-                "$python_launcher" "$python_script_file" \
-                2>"$python_stderr_file")"
+            python_output="$(
+                printf '%s' "$payload_json" | \
+                PYTHONPATH="$python_path_prefix${PYTHONPATH:+:$PYTHONPATH}" \
+                    "$python_launcher" -m secondsight hook user-prompt \
+                    2>"$python_stderr_file"
+            )"
         fi
         local python_exit=$?
         # Log stderr when:
@@ -287,22 +194,24 @@ PYEOF
         fi
         rm -f "$python_stderr_file" 2>/dev/null || true
     else
-        # Fallback: no temp files available; use stdin pipe + redirect stderr
-        # (uv deprecation warnings may appear in log, but this is the degraded path).
+        # Fallback: no temp stderr file available; append stderr directly to the log.
         if [ ${#python_argv[@]} -gt 0 ]; then
-            python_output="$(export _SS_HIT_PROMPT="$prompt" \
-                PYTHONPATH="$python_path_prefix${PYTHONPATH:+:$PYTHONPATH}"; \
-                "$python_launcher" "${python_argv[@]}" - <<< "$python_script" \
-                2>>"$curl_error_log")"
+            python_output="$(
+                printf '%s' "$payload_json" | \
+                PYTHONPATH="$python_path_prefix${PYTHONPATH:+:$PYTHONPATH}" \
+                    "$python_launcher" "${python_argv[@]}" -m secondsight hook user-prompt \
+                    2>>"$curl_error_log"
+            )"
         else
-            python_output="$(export _SS_HIT_PROMPT="$prompt" \
-                PYTHONPATH="$python_path_prefix${PYTHONPATH:+:$PYTHONPATH}"; \
-                "$python_launcher" - <<< "$python_script" \
-                2>>"$curl_error_log")"
+            python_output="$(
+                printf '%s' "$payload_json" | \
+                PYTHONPATH="$python_path_prefix${PYTHONPATH:+:$PYTHONPATH}" \
+                    "$python_launcher" -m secondsight hook user-prompt \
+                    2>>"$curl_error_log"
+            )"
         fi
         local python_exit=$?
     fi
-    rm -f "$python_script_file" 2>/dev/null || true
 
     if [ $python_exit -ne 0 ]; then
         # Python exited non-zero: error already logged above (if stderr_file available).
