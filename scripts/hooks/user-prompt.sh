@@ -54,6 +54,35 @@ _ss_injection_log() {
     return 0
 }
 
+_ss_resolve_cmd_path() {
+    local cmd_name="$1"
+    local cmd_path
+    cmd_path="$(command -v "$cmd_name" 2>/dev/null)" || return 1
+    if [ -L "$cmd_path" ]; then
+        local target
+        target="$(readlink "$cmd_path" 2>/dev/null)" || target=""
+        case "$target" in
+            /*) cmd_path="$target" ;;
+            *) cmd_path="$(cd -P "$(dirname "$cmd_path")" 2>/dev/null && pwd)/$target" ;;
+        esac
+    fi
+    printf '%s\n' "$cmd_path"
+}
+
+_ss_runtime_python_from_file() {
+    local runtime_file="$_SS_DIR/.secondsight-hook-runtime.sh"
+    if [ ! -f "$runtime_file" ]; then
+        return 1
+    fi
+    # shellcheck source=/dev/null
+    . "$runtime_file" 2>/dev/null || return 1
+    if [ -n "${SECONDSIGHT_HOOK_PYTHON:-}" ] && [ -x "${SECONDSIGHT_HOOK_PYTHON:-}" ]; then
+        printf '%s\n' "$SECONDSIGHT_HOOK_PYTHON"
+        return 0
+    fi
+    return 1
+}
+
 _ss_inject_prompt_guidance() {
     local payload_json="$1"
 
@@ -74,39 +103,58 @@ _ss_inject_prompt_guidance() {
     mkdir -p "$logs_dir" 2>/dev/null || true
     local curl_error_log="$logs_dir/curl-errors.log"
 
-    # Determine Python interpreter: prefer `uv run --project` so the
-    # secondsight package is importable even when the venv is not activated.
+    # Determine Python interpreter.  Prefer an already-importable python on PATH
+    # (typically an activated project venv), then fall back to `uv run --project`
+    # for shells where the venv is not activated.
     # The project root is two levels above _SS_DIR (scripts/hooks → scripts → root).
     local ss_project_root
     ss_project_root="$(cd "$_SS_DIR/../.." 2>/dev/null && pwd 2>/dev/null)" || ss_project_root=""
+    local python_probe='import secondsight.feedback.hit_injection'
+    local python_path_prefix=""
+    if [ -n "$ss_project_root" ] && [ -d "$ss_project_root/src" ]; then
+        python_path_prefix="$ss_project_root/src"
+    fi
 
     # Interpreter detection rationale (I-3):
-    #   - `uv run --project` is preferred: it activates the project venv so
-    #     `secondsight` is importable even without manually sourcing .venv.
+    #   - Prefer python3/python already on PATH when they can import the local
+    #     `secondsight` package. This avoids unnecessary uv startup/cache work
+    #     for the common case where the project venv is already active.
     #   - The pyproject.toml guard avoids `uv run` when the hook is copied
     #     (not symlinked) to a directory two levels below a different project;
     #     if pyproject.toml is absent at `_SS_DIR/../..`, uv is skipped.
-    #   - Bare python3/python is the last resort: it succeeds only if the
-    #     caller activated the venv beforehand, so it may fail with
-    #     ModuleNotFoundError — logged to curl-errors.log, hook returns 0.
+    #   - If bare python exists but cannot import `secondsight`, fall through
+    #     to uv. That keeps copied hooks working when global python lacks the
+    #     project deps.
     #
     # `python_launcher` holds the executable name: "uv" when uv path is used
-    # (NOT a Python interpreter), "python3" or "python" for the bare fallback.
+    # (NOT a Python interpreter), or the resolved absolute path to python3/python.
     # `python_argv` holds any sub-command arguments (e.g. "run --project ...
     # python3" for uv; empty for the bare Python path).
     # Invocation: "$python_launcher" "${python_argv[@]}" <script_file>
     local python_launcher=""
     local -a python_argv=()
-    if [ -n "$ss_project_root" ] && [ -f "$ss_project_root/pyproject.toml" ] \
+    local pinned_python=""
+    local resolved_python3=""
+    local resolved_python=""
+    pinned_python="$(_ss_runtime_python_from_file)" || pinned_python=""
+    resolved_python3="$(_ss_resolve_cmd_path python3)" || resolved_python3=""
+    resolved_python="$(_ss_resolve_cmd_path python)" || resolved_python=""
+    if [ -n "$pinned_python" ] \
+            && PYTHONPATH="$python_path_prefix${PYTHONPATH:+:$PYTHONPATH}" \
+                "$pinned_python" -c "$python_probe" > /dev/null 2>&1; then
+        python_launcher="$pinned_python"
+    elif [ -n "$resolved_python3" ] \
+            && PYTHONPATH="$python_path_prefix${PYTHONPATH:+:$PYTHONPATH}" \
+                "$resolved_python3" -c "$python_probe" > /dev/null 2>&1; then
+        python_launcher="$resolved_python3"
+    elif [ -n "$resolved_python" ] \
+            && PYTHONPATH="$python_path_prefix${PYTHONPATH:+:$PYTHONPATH}" \
+                "$resolved_python" -c "$python_probe" > /dev/null 2>&1; then
+        python_launcher="$resolved_python"
+    elif [ -n "$ss_project_root" ] && [ -f "$ss_project_root/pyproject.toml" ] \
             && command -v uv > /dev/null 2>&1; then
         python_launcher="uv"
         python_argv=("run" "--project" "$ss_project_root" "python3")
-    elif command -v python3 > /dev/null 2>&1; then
-        python_launcher="python3"
-        python_argv=()
-    elif command -v python > /dev/null 2>&1; then
-        python_launcher="python"
-        python_argv=()
     else
         printf 'secondsight_warning: hit_injection: python3/python not found; injection skipped\n' \
             >> "$curl_error_log" 2>/dev/null || true
@@ -175,7 +223,10 @@ except Exception as e:
 if not hit_injection_enabled:
     sys.exit(0)
 prompt = os.environ.get("_SS_HIT_PROMPT", "")
-from secondsight.feedback.hit_injection import render_wrapper
+agent = os.environ.get("SECONDSIGHT_AGENT", "claude_code")
+from secondsight.feedback.hit_injection import render_wrapper, should_bypass_wrapper
+if should_bypass_wrapper(prompt, agent):
+    sys.exit(0)
 wrapper = render_wrapper(prompt)
 if not wrapper:
     sys.exit(0)
@@ -206,9 +257,17 @@ PYEOF
     python_stderr_file="$(mktemp 2>/dev/null)" || python_stderr_file=""
 
     if [ -n "$python_script_file" ] && [ -n "$python_stderr_file" ]; then
-        python_output="$(export _SS_HIT_PROMPT="$prompt"; \
-            "$python_launcher" "${python_argv[@]}" "$python_script_file" \
-            2>"$python_stderr_file")"
+        if [ ${#python_argv[@]} -gt 0 ]; then
+            python_output="$(export _SS_HIT_PROMPT="$prompt" \
+                PYTHONPATH="$python_path_prefix${PYTHONPATH:+:$PYTHONPATH}"; \
+                "$python_launcher" "${python_argv[@]}" "$python_script_file" \
+                2>"$python_stderr_file")"
+        else
+            python_output="$(export _SS_HIT_PROMPT="$prompt" \
+                PYTHONPATH="$python_path_prefix${PYTHONPATH:+:$PYTHONPATH}"; \
+                "$python_launcher" "$python_script_file" \
+                2>"$python_stderr_file")"
+        fi
         local python_exit=$?
         # Log stderr when:
         #   (a) Python exited non-zero (error path), OR
@@ -230,9 +289,17 @@ PYEOF
     else
         # Fallback: no temp files available; use stdin pipe + redirect stderr
         # (uv deprecation warnings may appear in log, but this is the degraded path).
-        python_output="$(export _SS_HIT_PROMPT="$prompt"; \
-            "$python_launcher" "${python_argv[@]}" - <<< "$python_script" \
-            2>>"$curl_error_log")"
+        if [ ${#python_argv[@]} -gt 0 ]; then
+            python_output="$(export _SS_HIT_PROMPT="$prompt" \
+                PYTHONPATH="$python_path_prefix${PYTHONPATH:+:$PYTHONPATH}"; \
+                "$python_launcher" "${python_argv[@]}" - <<< "$python_script" \
+                2>>"$curl_error_log")"
+        else
+            python_output="$(export _SS_HIT_PROMPT="$prompt" \
+                PYTHONPATH="$python_path_prefix${PYTHONPATH:+:$PYTHONPATH}"; \
+                "$python_launcher" - <<< "$python_script" \
+                2>>"$curl_error_log")"
+        fi
         local python_exit=$?
     fi
     rm -f "$python_script_file" 2>/dev/null || true

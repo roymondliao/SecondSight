@@ -185,3 +185,20 @@ def test_wrapper_unicode_prompt_survives_json_round_trip() -> None:
 
     assert "修復" in recovered, "CJK characters must survive JSON round-trip"
     assert "🔐" in recovered, "Emoji must survive JSON round-trip"
+
+
+@pytest.mark.parametrize(
+    ("agent", "prompt", "expected"),
+    [
+        ("claude_code", "/help", True),
+        ("claude_code", "# remember this", True),
+        ("codex", "/commit", True),
+        ("codex", "# remember this", False),
+        ("opencode", "/help", False),
+        ("claude_code", "fix the auth bug", False),
+    ],
+)
+def test_should_bypass_wrapper_agent_prefixes(agent: str, prompt: str, expected: bool) -> None:
+    from secondsight.feedback.hit_injection import should_bypass_wrapper
+
+    assert should_bypass_wrapper(prompt, agent) is expected

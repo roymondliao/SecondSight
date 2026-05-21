@@ -22,6 +22,7 @@ Death tests:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -185,6 +186,12 @@ def test_init_apply_then_idempotent(tmp_path: Path) -> None:
     assert first.exit_code == 0, first.output
     payload_first = json.loads(first.output)
     assert payload_first["scripts_copied"], "first run should copy scripts"
+    runtime_file = fake_claude / "hooks" / ".secondsight-hook-runtime.sh"
+    assert runtime_file.is_file(), "init must pin a hook runtime file alongside installed hooks"
+    runtime_content = runtime_file.read_text(encoding="utf-8")
+    assert sys.executable in runtime_content, (
+        f"hook runtime file must pin the init-time python executable. Content: {runtime_content!r}"
+    )
 
     second = runner.invoke(
         app,
@@ -201,6 +208,7 @@ def test_init_apply_then_idempotent(tmp_path: Path) -> None:
     assert second.exit_code == 0, second.output
     payload_second = json.loads(second.output)
     assert payload_second["scripts_copied"] == [], "second run should be a no-op for scripts"
+    assert "hook_runtime_status" in payload_second
     assert all(action == "skip" for action in payload_second["settings_actions"].values()), (
         f"second run should skip every settings action, got {payload_second['settings_actions']!r}"
     )

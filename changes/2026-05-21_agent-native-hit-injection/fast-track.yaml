@@ -1,0 +1,27 @@
+type: fast_track
+description: "Restore pre-wrap bypass filtering for UserPromptSubmit hit injection and keep the hook on a working Python path."
+death_clause: "If agent control prompts such as slash commands are wrapped into additionalContext, this change is failed."
+acceptance:
+  - "UserPromptSubmit hit injection skips wrapping for known agent control-surface prefixes."
+  - "Normal prompts still render the executability self-check wrapper."
+  - "The hook prefers an already-importable Python on PATH before falling back to uv."
+scar_tag: none
+scar_items: []
+files_changed:
+  - "src/secondsight/feedback/hit_injection.py"
+  - "scripts/hooks/user-prompt.sh"
+  - "tests/feedback/test_hit_injection.py"
+  - "tests/scripts/test_user_prompt_hook_injection.py"
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: "Kept bypass rules in hit_injection.py so shell and tests share one source of truth."
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: "Filter decision lives beside wrapper generation; shell stays orchestration-only."
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: "Used a small prefix map instead of adding a second wrapper/template layer."
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: "Interpreter probe reuses the same import target and PYTHONPATH prefix for detection and execution."

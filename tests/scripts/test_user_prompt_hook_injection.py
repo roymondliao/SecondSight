@@ -25,6 +25,7 @@ of the injection toggle.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -156,6 +157,84 @@ def test_dt_hook_logs_warning_on_invalid_bool_value(tmp_path: Path) -> None:
     )
     assert "invalid" in log_content.lower() or "expected bool" in log_content.lower(), (
         f"curl-errors.log must describe what was wrong. Content: {log_content!r}"
+    )
+
+
+def test_dt_hook_bypasses_known_agent_control_prompts(tmp_path: Path) -> None:
+    """DT-B1: agent control-surface prompts must not be wrapped.
+
+    Silent failure path: if slash-command / memorize-style prompts are wrapped,
+    the agent receives SecondSight's executability self-check instead of its own
+    native control surface. The command may stop working while the hook still
+    exits 0, which looks like normal success.
+    """
+    home = tmp_path / ".secondsight"
+    _write_config(home, enabled=True)
+
+    env = build_env(port=8420, home=home, agent="claude_code")
+    import os
+
+    env["HOME"] = os.environ.get("HOME", str(Path.home()))
+    env["PATH"] = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+
+    result = run_hook(
+        hook_script("user-prompt.sh"),
+        _make_payload("/help"),
+        env=env,
+        timeout=30.0,
+    )
+
+    assert result.returncode == 0, (
+        f"hook must exit 0 for bypass prompts; got {result.returncode}. stderr: {result.stderr!r}"
+    )
+    assert result.stdout == "", (
+        "known control-surface prompts must bypass hit injection and emit no wrapper stdout. "
+        f"stdout: {result.stdout!r}"
+    )
+
+
+def test_dt_hook_uses_pinned_runtime_file_when_path_has_no_python(tmp_path: Path) -> None:
+    """DT-B2: pinned hook runtime must bypass PATH-based interpreter guessing.
+
+    Silent failure path: `secondsight init` succeeds, but the hook later runs in
+    a narrower PATH than the shell used during install. Without a pinned runtime
+    file, the hook falls back to uv-or-PATH guessing and silently emits no
+    wrapper stdout.
+    """
+    hook_dir = tmp_path / "hooks"
+    shutil.copytree(Path(__file__).resolve().parents[2] / "scripts" / "hooks", hook_dir)
+    runtime_file = hook_dir / ".secondsight-hook-runtime.sh"
+    runtime_file.write_text(
+        "#!/usr/bin/env bash\n"
+        f"SECONDSIGHT_HOOK_PYTHON={subprocess.run(['which', 'python3'], capture_output=True, text=True).stdout.strip()!r}\n",
+        encoding="utf-8",
+    )
+
+    home = tmp_path / ".secondsight"
+    _write_config(home, enabled=True)
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    # Intentionally omit python3/python/uv from PATH; the pinned runtime file
+    # must carry the hook through.
+    _symlink_tools(fake_bin, _STANDARD_TOOLS)
+
+    env = build_env(port=8420, home=home, agent="claude_code")
+    env["PATH"] = str(fake_bin)
+
+    result = run_hook(
+        hook_dir / "user-prompt.sh",
+        _make_payload("fix the auth bug"),
+        env=env,
+        timeout=30.0,
+    )
+
+    assert result.returncode == 0, (
+        f"hook must exit 0 when using pinned runtime; got {result.returncode}. stderr: {result.stderr!r}"
+    )
+    assert result.stdout != "", (
+        "pinned runtime file must let the hook emit wrapper JSON even when PATH has no python. "
+        f"stderr: {result.stderr!r}"
     )
 
 

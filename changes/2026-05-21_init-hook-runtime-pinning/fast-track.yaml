@@ -1,0 +1,27 @@
+type: fast_track
+description: "Pin the Python launcher during `secondsight init` so UserPromptSubmit hooks stop guessing their runtime at execution time."
+death_clause: "If init completes but the hook later runs without a pinned runtime and silently skips wrapper output because PATH changed, this change is failed."
+acceptance:
+  - "`secondsight init` writes a hook runtime file next to installed hook scripts."
+  - "`user-prompt.sh` prefers the pinned runtime file before PATH/uv guessing."
+  - "The hook still emits wrapper JSON when PATH lacks python but the pinned runtime file is present."
+scar_tag: none
+scar_items: []
+files_changed:
+  - "src/secondsight/cli/init.py"
+  - "scripts/hooks/user-prompt.sh"
+  - "tests/cli/test_cli_app.py"
+  - "tests/scripts/test_user_prompt_hook_injection.py"
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: "Runtime pinning is centralized in init; hook execution only consumes the generated file."
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: "Install-time decision lives in cli/init.py, while hook runtime stays in the hook script."
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: "Used one tiny shell fragment file instead of adding a new daemon/config subsystem."
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: "Pinned runtime stores only sys.executable; PATH probing remains fallback-only."
