@@ -58,7 +58,7 @@ from secondsight.storage.behavior_flags_repository import BehaviorFlagsRepositor
 from secondsight.storage.db_engine import DBEngine
 from secondsight.storage.directive_revisions_repository import DirectiveRevisionsRepository
 from secondsight.storage.directives_repository import DirectivesRepository
-from tests.analysis._fake_agent import FakeAnalysisAgent
+from tests.analysis.test_fake_agent import FakeAnalysisAgent
 
 # --- import module under test ---
 # These will FAIL until aggregator.py is implemented. Expected red phase.

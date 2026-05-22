@@ -191,7 +191,7 @@ def test_dt_fl_3_sweeper_task_started_in_lifespan(tmp_secondsight_home: Path) ->
     from secondsight.api.server import create_app
 
     app = create_app(secondsight_home=tmp_secondsight_home)
-    with TestClient(app) as client:
+    with TestClient(app):
         # Access the server_state (set during lifespan)
         server_state = app.state.server_state
         assert server_state.sweeper_task is not None, (
@@ -215,7 +215,7 @@ def test_dt_fl_3_sweeper_task_cancelled_on_shutdown(tmp_secondsight_home: Path) 
     app = create_app(secondsight_home=tmp_secondsight_home)
 
     sweeper_task_ref: list = []
-    with TestClient(app) as client:
+    with TestClient(app):
         server_state = app.state.server_state
         sweeper_task_ref.append(server_state.sweeper_task)
         # Verify it's running inside the context

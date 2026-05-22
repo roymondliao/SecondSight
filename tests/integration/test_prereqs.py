@@ -1,4 +1,4 @@
-"""Death tests for tests/integration/_prereqs.require_e2e_prereqs_or_skip.
+"""Death tests for tests/integration/test_prereq_helpers.require_e2e_prereqs_or_skip.
 
 DT-1.1  Missing 'bash' triggers pytest.skip with the literal token "bash".
 DT-1.2  Missing 'curl' triggers pytest.skip with the literal token "curl".
@@ -13,7 +13,8 @@ the skip happens AND it carries the missing tool's name.
 
 LIMITATION: these tests invoke the helper from inside test scope, where
 ``allow_module_level=True`` is a no-op. The flag's actual behavior at
-module-import scope is documented as a BOUNDARY CONTRACT in _prereqs.py
+module-import scope is documented as a BOUNDARY CONTRACT in
+test_prereq_helpers.py
 itself; that docstring is the regression guard for the flag.
 """
 
@@ -23,7 +24,7 @@ from typing import Callable
 
 import pytest
 
-from tests.integration import _prereqs
+from tests.integration import test_prereq_helpers
 
 
 def _patched_which(missing: set[str]) -> Callable[[str], str | None]:
@@ -48,12 +49,16 @@ def test_named_skip_on_missing_tool(monkeypatch: pytest.MonkeyPatch, missing_too
     skip, an operator wouldn't know which tool to install. The named token
     is part of the contract, not cosmetic.
     """
-    # See COUPLING CONTRACT in _prereqs.py — patching _prereqs.shutil.which
-    # depends on _prereqs holding shutil as a module attribute.
-    monkeypatch.setattr(_prereqs.shutil, "which", _patched_which({missing_tool}))
+    # See COUPLING CONTRACT in test_prereq_helpers.py — patching the module
+    # attribute depends on test_prereq_helpers holding shutil as a module attribute.
+    monkeypatch.setattr(
+        test_prereq_helpers.shutil,
+        "which",
+        _patched_which({missing_tool}),
+    )
 
     with pytest.raises(pytest.skip.Exception) as excinfo:
-        _prereqs.require_e2e_prereqs_or_skip()
+        test_prereq_helpers.require_e2e_prereqs_or_skip()
 
     msg = str(excinfo.value)
     assert missing_tool in msg, (
@@ -71,5 +76,5 @@ def test_no_skip_when_all_present(monkeypatch: pytest.MonkeyPatch) -> None:
     over-eagerly skips even on a fully-equipped machine, which would
     silently drop e2e coverage.
     """
-    monkeypatch.setattr(_prereqs.shutil, "which", _patched_which(set()))
-    assert _prereqs.require_e2e_prereqs_or_skip() is None
+    monkeypatch.setattr(test_prereq_helpers.shutil, "which", _patched_which(set()))
+    assert test_prereq_helpers.require_e2e_prereqs_or_skip() is None

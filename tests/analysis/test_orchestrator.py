@@ -53,7 +53,7 @@ from secondsight.storage.db_engine import DBEngine
 from secondsight.storage.directives_repository import DirectivesRepository
 from secondsight.storage.events_repository import EventsRepository
 from secondsight.storage.session_reports_repository import SessionReportsRepository
-from tests.analysis._fake_agent import FakeAnalysisAgent
+from tests.analysis.test_fake_agent import FakeAnalysisAgent
 
 # --- import module under test (will FAIL until orchestrator.py is created) ---
 from secondsight.analysis.orchestrator import (

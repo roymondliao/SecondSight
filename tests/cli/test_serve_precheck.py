@@ -73,10 +73,6 @@ def test_serve_failing_precheck_logs_actionable_error(tmp_path: Path) -> None:
     ):
         result = runner.invoke(secondsight_app, ["serve"])
 
-    # Output (stdout or stderr combined by runner) should mention the failure reason
-    combined_output = (result.output or "") + (
-        result.stderr if hasattr(result, "stderr") and result.stderr else ""
-    )
     assert result.exit_code != 0
 
 

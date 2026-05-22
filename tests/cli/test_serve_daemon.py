@@ -330,9 +330,6 @@ def test_death_log_open_fallback_emits_stderr_diagnostic(
     # We verify that the print() is reached by running the actual code
     # inside a forked child that writes its captured output to a file.
 
-    pid_path = tmp_path / "server.pid"
-    # Use /dev/null/nested.log — /dev/null is a file so nested path is invalid.
-    log_path = Path("/dev/null/nested.log")
     # Ensure parent mkdir call itself doesn't fail before the child runs.
     # We need log_path.parent.mkdir() to succeed.  Since /dev/null exists as
     # a char device, mkdir() on it will fail at the parent level too.

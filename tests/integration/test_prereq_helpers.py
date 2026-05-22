@@ -14,7 +14,7 @@ named-skip contract makes the failure mode loud and operator-actionable
 from __future__ import annotations
 
 # COUPLING CONTRACT: tests/integration/test_prereqs.py patches
-# ``_prereqs.shutil.which`` (the module attribute, not the imported
+# ``test_prereq_helpers.shutil.which`` (the module attribute, not the imported
 # name). This works because we ``import shutil`` and reference
 # ``shutil.which(...)``. If a future refactor changes this to
 # ``from shutil import which``, the test monkeypatch target becomes

@@ -45,7 +45,7 @@ from secondsight.analysis.schemas import (
 )
 from secondsight.storage.behavior_flags_repository import BehaviorFlagsRepository
 from secondsight.storage.db_engine import DBEngine
-from tests.analysis._fake_agent import FakeAnalysisAgent
+from tests.analysis.test_fake_agent import FakeAnalysisAgent
 
 # --- import the function under test ---
 # This import will FAIL until behavior.py is implemented. That is expected

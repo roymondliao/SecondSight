@@ -31,7 +31,7 @@ from typing import Any
 
 import pytest
 
-from tests.integration._prereqs import require_e2e_prereqs_or_skip
+from tests.integration.test_prereq_helpers import require_e2e_prereqs_or_skip
 
 # Module-level guard — must execute at import time so the skip propagates
 # before pytest collects any tests below.

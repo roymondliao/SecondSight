@@ -1,0 +1,37 @@
+type: fast_track
+description: "Fix the repo-wide pre-commit failures by removing unused test locals and renaming helper modules under tests/ to satisfy the naming hook."
+death_clause: "If any helper rename breaks pytest imports or any removed variable was actually required for assertions or requests, this change is failed."
+acceptance:
+  - "`python tests naming` passes because helper modules under tests/ now use `test_*.py` filenames."
+  - "`ruff-check` passes with the previously reported F841 locals removed."
+  - "`pre-commit run --all-files` passes across the repository."
+scar_tag: none
+scar_items: []
+files_changed:
+  - "tests/analysis/test_fake_agent.py"
+  - "tests/test_factories.py"
+  - "tests/integration/test_prereq_helpers.py"
+  - "tests/analysis/test_agent_protocol.py"
+  - "tests/analysis/test_aggregator.py"
+  - "tests/analysis/test_behavior.py"
+  - "tests/analysis/test_factory.py"
+  - "tests/analysis/test_orchestrator.py"
+  - "tests/integration/test_phase1_e2e.py"
+  - "tests/integration/test_prereqs.py"
+  - "tests/api/test_server_lifespan.py"
+  - "tests/cli/test_serve_daemon.py"
+  - "tests/cli/test_serve_precheck.py"
+  - "tests/storage/test_analysis_runs_repository.py"
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: "The fix preserved the shared helper-module pattern and only updated import paths after renaming."
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: "Naming fixes stayed inside tests/ and did not move logic into production modules or new helper layers."
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: "Unused locals were removed directly instead of suppressing Ruff or adding dummy reads."
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: "The changes reuse existing tests and hooks as the source of truth; no duplicate lint-specific wrappers were introduced."

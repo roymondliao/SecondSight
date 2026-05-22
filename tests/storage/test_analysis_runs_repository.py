@@ -219,7 +219,7 @@ class TestLifecycle:
         failed) AND updated_at < since. Used by ship-manifest review.
         """
         # Create a partial run (pending — non-terminal)
-        run_id = repo.start_run(project_id="proj-1", session_id="sess-1")
+        repo.start_run(project_id="proj-1", session_id="sess-1")
 
         # Create a completed run
         run_id2 = repo.start_run(project_id="proj-1", session_id="sess-2")

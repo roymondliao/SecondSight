@@ -18,7 +18,7 @@ Assumption (verified): pytest-asyncio 1.3.0 with no asyncio_mode=auto in
 pyproject.toml. All async tests need pytestmark = pytest.mark.asyncio.
 
 FakeAnalysisAgent was originally defined here; extracted to
-tests/analysis/_fake_agent.py (GUR-102 task-3) so task-3/4/5 can import
+tests/analysis/test_fake_agent.py (GUR-102 task-3) so task-3/4/5 can import
 without pulling in task-2's test assertions. All tests below use the
 shared module. The behaviour is identical.
 """
@@ -36,7 +36,7 @@ from secondsight.analysis.prompts.summary import SummaryOutput
 from secondsight.analysis.schemas import BehaviorFlagDraft, BehaviorFlagType, SegmentAnalysis
 
 # FakeAnalysisAgent is now the shared test double; import from shared module.
-from tests.analysis._fake_agent import FakeAnalysisAgent  # noqa: F401
+from tests.analysis.test_fake_agent import FakeAnalysisAgent  # noqa: F401
 
 
 # =====================================================================

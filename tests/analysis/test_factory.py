@@ -44,7 +44,7 @@ from secondsight.storage.analysis_runs_repository import AnalysisRunsRepository
 from secondsight.storage.behavior_flags_repository import BehaviorFlagsRepository
 from secondsight.storage.directives_repository import DirectivesRepository
 from secondsight.storage.session_reports_repository import SessionReportsRepository
-from tests.analysis._fake_agent import FakeAnalysisAgent
+from tests.analysis.test_fake_agent import FakeAnalysisAgent
 
 UTC = timezone.utc
 
