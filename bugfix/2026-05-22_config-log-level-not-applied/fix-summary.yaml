@@ -1,0 +1,25 @@
+title: config-log-level-not-applied
+date: 2026-05-22
+status: FIXED
+change_summary:
+  - >
+    Added `src/secondsight/logging_utils.py` with `configure_logging(level)`,
+    which removes loguru's default stderr sink and installs a managed stderr
+    sink at the configured threshold.
+  - >
+    Wired `src/secondsight/cli/serve.py` to apply `config.general.log_level`
+    during precheck and again right before `uvicorn.run(...)`.
+  - >
+    Passed the same resolved level into `uvicorn.run(log_level=...)` so
+    stdlib/uvicorn logs stay aligned with the application logger.
+  - >
+    Added regression tests in `tests/test_logging_utils.py` and
+    `tests/cli/test_serve_precheck.py`.
+validated_by:
+  - "pytest tests/cli/test_serve_precheck.py tests/test_logging_utils.py -q"
+  - "uv run pre-commit run --all-files"
+silent_failure_conditions: >
+  This fix can silently regress if a future startup path bypasses
+  `configure_logging()` and instantiates loguru with its default sink again, or
+  if another module calls `logger.add(sys.stderr, level="DEBUG")` after serve
+  startup. The protection is currently scoped to the serve entrypoint.

@@ -36,7 +36,9 @@ from loguru import logger
 
 from secondsight.api.server import ServerConfig, create_app
 from secondsight.cli import _home as cli_home
+from secondsight.config import SecondSightConfig, SecondSightConfigError, load_global_config
 from secondsight.daemon import StopOutcome, daemon_status, daemonize, stop_daemon
+from secondsight.logging_utils import configure_logging
 
 app = typer.Typer(name="serve", help="Manage the SecondSight daemon server.")
 
@@ -49,7 +51,7 @@ def _log_path(home: Path) -> Path:
     return home / "logs" / "server.log"
 
 
-def _run_precheck(home: Path) -> None:
+def _run_precheck(home: Path) -> SecondSightConfig:
     """Run server startup pre-check. Exits non-zero on failure.
 
     Called BEFORE _run_server() to validate that the config is consistent
@@ -65,7 +67,6 @@ def _run_precheck(home: Path) -> None:
     DC6: on CLI mode success, logs the resolved binary path for forensics.
     DC7: catches empty provider keys for SDK mode.
     """
-    from secondsight.config import SecondSightConfigError, load_global_config
     from secondsight.config.precheck import precheck
     from secondsight.state import SecondSightState, SecondSightStateError
 
@@ -84,6 +85,8 @@ def _run_precheck(home: Path) -> None:
             f"Check that config.toml exists and is readable."
         )
         raise typer.Exit(code=1)
+
+    configure_logging(config.general.log_level)
 
     # Load state (may be None on fresh install — not an error at this layer)
     state_path = home / "state.json"
@@ -112,9 +115,10 @@ def _run_precheck(home: Path) -> None:
         raise typer.Exit(code=1)
 
     logger.info(f"secondsight serve: startup pre-check passed (mode={config.general.mode!r}).")
+    return config
 
 
-def _run_server(home: Path) -> None:
+def _run_server(home: Path, config: SecondSightConfig | None = None) -> None:
     """Start uvicorn in the current process.  Blocking call.
 
     This is the shared entry point for both foreground and daemon modes.
@@ -123,9 +127,20 @@ def _run_server(home: Path) -> None:
     single-process only.  Without this, WEB_CONCURRENCY could silently set
     workers > 1 and break the registry's per-project locking invariant.
     """
+    resolved_config = config
+    if resolved_config is None:
+        resolved_config = load_global_config(home=home)
+
+    resolved_log_level = configure_logging(resolved_config.general.log_level)
     cfg = ServerConfig()
     server_app = create_app(secondsight_home=home, config=cfg)
-    uvicorn.run(server_app, host=cfg.host, port=cfg.port, workers=1)
+    uvicorn.run(
+        server_app,
+        host=cfg.host,
+        port=cfg.port,
+        workers=1,
+        log_level=resolved_log_level,
+    )
 
 
 @app.callback(invoke_without_command=True)
@@ -155,9 +170,9 @@ def serve(
         return
 
     # Foreground mode: precheck BEFORE server start (DC5/DC6/DC7)
-    _run_precheck(resolved_home)
+    config = _run_precheck(resolved_home)
     logger.info("Starting SecondSight server in foreground (home={h})", h=resolved_home)
-    _run_server(resolved_home)
+    _run_server(resolved_home, config)
 
 
 def _do_stop(home: Path) -> None:
@@ -191,7 +206,7 @@ def _do_daemon(home: Path) -> None:
     # Precheck BEFORE daemonizing (DC5/DC6/DC7): fail fast in the parent
     # process so the user sees the error. If precheck runs in the child,
     # the error goes to the log file and the user sees "Daemon started." — wrong.
-    _run_precheck(home)
+    config = _run_precheck(home)
 
     # Check if already running
     status = daemon_status(pid)
@@ -205,7 +220,7 @@ def _do_daemon(home: Path) -> None:
     typer.echo(f"Starting SecondSight daemon (home={home}, log={log})...")
 
     def on_child() -> None:
-        _run_server(home)
+        _run_server(home, config)
 
     daemonize(pid_path=pid, log_path=log, on_child=on_child)
     typer.echo("Daemon started.")

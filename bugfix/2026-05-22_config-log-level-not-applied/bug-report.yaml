@@ -1,0 +1,24 @@
+title: config-log-level-not-applied
+date: 2026-05-22
+failure_level: 2
+symptom: >
+  Operator sets `~/.secondsight/config.toml` `[general].log_level = "info"`
+  but `secondsight serve` still emits DEBUG lines from `secondsight.*`
+  modules such as `secondsight.api.server:_sweep_all_projects`.
+impact_scope: >
+  Any server process started via `secondsight serve` or `secondsight serve
+  --daemon` after the logging migration to loguru. The config value is read
+  into `SecondSightConfig.general.log_level` but has no runtime effect.
+detection_source: operator report with live server logs
+expected_behavior: >
+  `log_level = "info"` suppresses DEBUG output from loguru-backed application
+  logs and keeps INFO/WARNING/ERROR visible.
+actual_behavior: >
+  Loguru's built-in default stderr sink remains active at its default DEBUG
+  threshold, so DEBUG messages continue to print even when config says INFO.
+duration_since_break: >
+  Since `[general].log_level` was introduced as schema/config surface without a
+  matching runtime consumer on the serve path.
+detection_delay: >
+  The issue remained latent until an operator explicitly checked server output
+  after setting `log_level = "info"`.

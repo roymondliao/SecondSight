@@ -11,6 +11,7 @@ The test patches precheck() directly so we don't need a real server startup.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from typer.testing import CliRunner
@@ -24,6 +25,10 @@ from secondsight.cli.app import app as secondsight_app
 
 
 runner = CliRunner()
+
+
+def _config(*, log_level: str = "info"):
+    return SimpleNamespace(general=SimpleNamespace(mode="cli", log_level=log_level))
 
 
 def _failing_precheck(*args, **kwargs):
@@ -51,6 +56,7 @@ def _passing_precheck(*args, **kwargs):
 def test_serve_failing_precheck_exits_nonzero(tmp_path: Path) -> None:
     """Death test: failing precheck → serve exits with non-zero status code."""
     with (
+        patch("secondsight.cli.serve.configure_logging"),
         patch("secondsight.config.precheck.precheck", side_effect=_failing_precheck),
         patch("secondsight.cli.serve._run_server"),  # prevent actual server start
         patch("secondsight.cli._home.secondsight_home", return_value=tmp_path),
@@ -67,6 +73,7 @@ def test_serve_failing_precheck_exits_nonzero(tmp_path: Path) -> None:
 def test_serve_failing_precheck_logs_actionable_error(tmp_path: Path) -> None:
     """Death test: failing precheck → error output contains actionable message."""
     with (
+        patch("secondsight.cli.serve.configure_logging"),
         patch("secondsight.config.precheck.precheck", side_effect=_failing_precheck),
         patch("secondsight.cli.serve._run_server"),
         patch("secondsight.cli._home.secondsight_home", return_value=tmp_path),
@@ -83,6 +90,7 @@ def test_serve_passing_precheck_does_not_exit_nonzero(tmp_path: Path) -> None:
     The serve command should proceed normally (exit 0 or no explicit exit).
     """
     with (
+        patch("secondsight.cli.serve.configure_logging"),
         patch("secondsight.config.precheck.precheck", side_effect=_passing_precheck),
         patch("secondsight.cli.serve._run_server"),  # no-op, returns immediately
         patch("secondsight.cli._home.secondsight_home", return_value=tmp_path),
@@ -116,6 +124,7 @@ def test_serve_calls_precheck_before_server_start(tmp_path: Path) -> None:
         call_order.append("run_server")
 
     with (
+        patch("secondsight.cli.serve.configure_logging"),
         patch("secondsight.config.precheck.precheck", side_effect=record_precheck),
         patch("secondsight.cli.serve._run_server", side_effect=record_run_server),
         patch("secondsight.cli._home.secondsight_home", return_value=tmp_path),
@@ -138,6 +147,7 @@ def test_serve_failing_precheck_does_not_call_run_server(tmp_path: Path) -> None
         run_server_called.append(True)
 
     with (
+        patch("secondsight.cli.serve.configure_logging"),
         patch("secondsight.config.precheck.precheck", side_effect=_failing_precheck),
         patch("secondsight.cli.serve._run_server", side_effect=record_run_server),
         patch("secondsight.cli._home.secondsight_home", return_value=tmp_path),
@@ -148,3 +158,18 @@ def test_serve_failing_precheck_does_not_call_run_server(tmp_path: Path) -> None
         "_run_server() was called even though precheck failed. "
         "Server must NOT start when precheck fails."
     )
+
+
+def test_serve_applies_general_log_level_before_starting_server(tmp_path: Path) -> None:
+    """Configured [general].log_level must be consumed during serve startup."""
+    with (
+        patch("secondsight.cli.serve.load_global_config", return_value=_config(log_level="info")),
+        patch("secondsight.cli.serve.configure_logging") as configure_mock,
+        patch("secondsight.config.precheck.precheck", side_effect=_passing_precheck),
+        patch("secondsight.cli.serve._run_server"),
+        patch("secondsight.cli._home.secondsight_home", return_value=tmp_path),
+    ):
+        result = runner.invoke(secondsight_app, ["serve"])
+
+    assert result.exit_code == 0, f"serve should succeed, got {result.exit_code}: {result.output!r}"
+    configure_mock.assert_called_with("info")

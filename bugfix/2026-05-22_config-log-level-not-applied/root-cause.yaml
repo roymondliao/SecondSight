@@ -1,0 +1,27 @@
+title: config-log-level-not-applied
+date: 2026-05-22
+hypothesis: >
+  The config loader already resolves `[general].log_level`, but no production
+  startup path applies that value to loguru or uvicorn, so the default DEBUG
+  sink keeps leaking logs.
+root_cause:
+  primary: >
+    `src/secondsight/config/loader.py::_build_general_config()` materializes
+    `GeneralConfig.log_level`, but `src/secondsight/cli/serve.py` previously
+    ignored the value entirely. No code called `logger.remove()/add()` or
+    otherwise configured loguru from the loaded config.
+  secondary: >
+    `uvicorn.run()` was also started without an explicit `log_level`, so even
+    if application logs were fixed later, stdlib/uvicorn verbosity could drift
+    from the configured value.
+hidden_by:
+  - >
+    Schema/docs/template all advertised `log_level`, which makes the feature
+    look complete even though the runtime consumer was missing.
+  - >
+    The server already used `from loguru import logger` everywhere, so it was
+    easy to assume the migration also included centralized configuration.
+reproduction:
+  - Create `~/.secondsight/config.toml` with `[general] log_level = "info"`.
+  - Start `secondsight serve`.
+  - Observe DEBUG lines from `secondsight.api.server` still printed to stderr.
