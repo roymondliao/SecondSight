@@ -244,6 +244,74 @@ def test_death_config_with_missing_keys_returns_diff_message_no_write(tmp_path: 
 
 
 # ---------------------------------------------------------------------------
+# DT-init-5c: merge_missing_keys=True fills gaps without overriding existing values
+# ---------------------------------------------------------------------------
+
+
+def test_death_merge_config_fills_missing_keys_without_overwriting_existing_values(
+    tmp_path: Path,
+) -> None:
+    """When merge_missing_keys=True, missing template keys must be added in place.
+
+    Silent failure path: if merge mode rewrites existing operator choices back
+    to template defaults, `secondsight init --merge-config` becomes destructive
+    instead of a safe upgrade path.
+    """
+    from secondsight.config.template import write_config_if_needed
+
+    secondsight_home = tmp_path / ".secondsight"
+    secondsight_home.mkdir()
+    config_path = secondsight_home / "config.toml"
+    config_path.write_text(
+        "[feedback]\nconvention_injection_budget = 999\n[retention]\nraw_traces_ttl_days = 90\n",
+        encoding="utf-8",
+    )
+
+    result = write_config_if_needed(secondsight_home, merge_missing_keys=True)
+
+    parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert parsed["feedback"]["convention_injection_budget"] == 999, (
+        "merge_missing_keys=True must preserve existing operator values instead of "
+        "resetting them to template defaults"
+    )
+    assert parsed["feedback"]["hit_injection_enabled"] is True, (
+        "merge_missing_keys=True must add missing keys from the template"
+    )
+    assert parsed["directive_lifecycle"]["capacity_ceiling"] == 15, (
+        "merge_missing_keys=True must add missing sections with template defaults"
+    )
+    assert "merged" in result.lower(), f"merge mode must report a merged status, got: {result!r}"
+
+
+def test_death_merge_config_dry_run_reports_without_writing(tmp_path: Path) -> None:
+    """Dry-run merge must not mutate config.toml.
+
+    Silent failure path: a preview command that writes anyway is worse than a
+    failed merge because it violates the user's trust in `--dry-run`.
+    """
+    from secondsight.config.template import write_config_if_needed
+
+    secondsight_home = tmp_path / ".secondsight"
+    secondsight_home.mkdir()
+    config_path = secondsight_home / "config.toml"
+    original = "[retention]\nraw_traces_ttl_days = 90\n"
+    config_path.write_text(original, encoding="utf-8")
+
+    result = write_config_if_needed(
+        secondsight_home,
+        dry_run=True,
+        merge_missing_keys=True,
+    )
+
+    assert config_path.read_text(encoding="utf-8") == original, (
+        "dry-run merge must not change config.toml"
+    )
+    assert "would merge" in result.lower(), (
+        f"dry-run merge must describe the pending merge, got: {result!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Unit tests for generate_config_template()
 # ---------------------------------------------------------------------------
 

@@ -15,13 +15,19 @@ Provides three public functions:
       Returns key paths that are in the template but absent from the existing
       config file. Empty list means the existing config is up-to-date.
 
-  write_config_if_needed(home: Path, *, dry_run: bool = False) -> str
+  write_config_if_needed(
+      home: Path,
+      *,
+      dry_run: bool = False,
+      merge_missing_keys: bool = False,
+  ) -> str
       The main entry point for ``secondsight init``. Implements the four-case
       protection logic:
         1. File absent  → create it, return "generated" message.
         2. File exists, malformed TOML → return "malformed" error message, no write.
         3. File exists, all template keys present → return "up-to-date" message.
         4. File exists, new template keys missing → return diff message, no write.
+           Optional merge mode can fill missing keys without overriding existing values.
 
 Import rules (MUST NOT be violated):
     - This module must NOT import from secondsight.analysis or secondsight.sdk.
@@ -35,6 +41,7 @@ Assumption documented in scar-report:
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -317,25 +324,99 @@ def diff_against_template(existing_path: Path) -> list[str]:
     return sorted(missing)
 
 
+def _merge_missing_template_keys(existing: dict, template: dict) -> dict:
+    """Return a merged config dict without overriding existing operator values."""
+    merged: dict = {}
+
+    for key, existing_value in existing.items():
+        template_value = template.get(key)
+        if isinstance(existing_value, dict) and isinstance(template_value, dict):
+            merged[key] = _merge_missing_template_keys(existing_value, template_value)
+        else:
+            merged[key] = existing_value
+
+    for key, template_value in template.items():
+        if key in merged:
+            continue
+        if isinstance(template_value, dict):
+            merged[key] = _merge_missing_template_keys({}, template_value)
+        else:
+            merged[key] = template_value
+
+    return merged
+
+
+def _toml_literal(value: object) -> str:
+    """Serialize a scalar/list value into TOML syntax."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    if isinstance(value, list):
+        rendered = ", ".join(_toml_literal(item) for item in value)
+        return f"[{rendered}]"
+    raise TypeError(f"Unsupported TOML value type: {type(value).__name__}")
+
+
+def _render_toml_section(data: dict, path: tuple[str, ...]) -> list[str]:
+    """Render one TOML section and all nested child sections."""
+    lines: list[str] = []
+    scalar_items = [(key, value) for key, value in data.items() if not isinstance(value, dict)]
+    child_items = [(key, value) for key, value in data.items() if isinstance(value, dict)]
+
+    if path:
+        lines.append(f"[{'.'.join(path)}]")
+    for key, value in scalar_items:
+        lines.append(f"{key} = {_toml_literal(value)}")
+    if scalar_items and child_items:
+        lines.append("")
+
+    for idx, (key, value) in enumerate(child_items):
+        child_lines = _render_toml_section(value, (*path, key))
+        lines.extend(child_lines)
+        if idx != len(child_items) - 1:
+            lines.append("")
+
+    return lines
+
+
+def _render_toml_document(data: dict) -> str:
+    """Render a TOML document from a nested dict."""
+    lines = _render_toml_section(data, ())
+    return "\n".join(lines).rstrip() + "\n"
+
+
 # ---------------------------------------------------------------------------
 # Main entry point: write_config_if_needed
 # ---------------------------------------------------------------------------
 
 
-def write_config_if_needed(home: Path, *, dry_run: bool = False) -> str:
+def write_config_if_needed(
+    home: Path,
+    *,
+    dry_run: bool = False,
+    merge_missing_keys: bool = False,
+) -> str:
     """Write ~/.secondsight/config.toml if needed, with diff protection.
 
     Four-case logic:
         1. config.toml absent → create it (or report what would happen in dry_run).
         2. config.toml exists but malformed → return error message, do NOT write.
         3. config.toml exists, all template keys present → return up-to-date message.
-        4. config.toml exists, new template keys missing → return diff message, no write.
+        4. config.toml exists, new template keys missing → return diff message, no write
+           unless merge_missing_keys=True, in which case fill the gaps.
 
     Args:
         home: The SecondSight home directory (e.g. ``Path.home() / ".secondsight"``).
             The function creates this directory if it does not exist (case 1 only).
         dry_run: If True, skip all writes; still compute what would happen and
             return a "would generate" message in case 1.
+        merge_missing_keys: If True, merge missing template keys into an existing,
+            parseable config.toml without overriding values that are already set.
 
     Returns:
         A human-readable status message describing what was (or would be) done.
@@ -387,9 +468,31 @@ def write_config_if_needed(home: Path, *, dry_run: bool = False) -> str:
         # Case 3: up-to-date. MSG_UP_TO_DATE is a substring of this message.
         return f"{config_path} is already {MSG_UP_TO_DATE}."
 
+    n = len(missing_keys)
+    if merge_missing_keys:
+        lines = [
+            f"{'[dry-run] would ' if dry_run else ''}Merged {n} missing {MSG_NEW_KEYS}{'s' if n != 1 else ''} "
+            f"{'into' if not dry_run else 'into'} {config_path}.",
+            "Merged keys:",
+        ]
+        for key in missing_keys:
+            lines.append(f"  + {key}")
+        if dry_run:
+            lines[0] = (
+                f"[dry-run] would merge {n} missing {MSG_NEW_KEYS}{'s' if n != 1 else ''} "
+                f"into {config_path}."
+            )
+            return "\n".join(lines)
+
+        with config_path.open("rb") as fh:
+            existing_data = tomllib.load(fh)
+        template_data = tomllib.loads(_TEMPLATE)
+        merged_data = _merge_missing_template_keys(existing_data, template_data)
+        config_path.write_text(_render_toml_document(merged_data), encoding="utf-8")
+        return "\n".join(lines)
+
     # Case 4: new keys available — show diff, do NOT write.
     # MSG_NEW_KEYS is a substring of this message (case-insensitive).
-    n = len(missing_keys)
     lines = [
         f"{config_path} has {n} {MSG_NEW_KEYS}{'s' if n != 1 else ''} available. Merge manually.",
         "New keys:",

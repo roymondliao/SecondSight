@@ -90,7 +90,7 @@ def _mock_installer(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(
         "secondsight.config.template.write_config_if_needed",
-        lambda ss_home, dry_run=False: "config already exists",
+        lambda ss_home, dry_run=False, merge_missing_keys=False: "config already exists",
     )
 
 

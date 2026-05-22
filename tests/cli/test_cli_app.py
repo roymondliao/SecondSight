@@ -32,6 +32,14 @@ from secondsight.api.registry import ProjectRegistry
 from secondsight.cli.app import app
 from secondsight.installer.claude_settings import InvalidSettingsError
 
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    try:
+        import tomllib
+    except ImportError:
+        import tomli as tomllib  # type: ignore[import,no-reuse-dep]
+
 runner = CliRunner()
 
 
@@ -303,6 +311,49 @@ def test_init_codex_apply_then_idempotent(tmp_path: Path) -> None:
     assert payload_second["scripts_copied"] == [], "second Codex run should be a no-op for scripts"
     assert all(action == "skip" for action in payload_second["settings_actions"].values()), (
         f"second Codex run should skip every action, got {payload_second['settings_actions']!r}"
+    )
+
+
+def test_init_merge_config_fills_missing_keys_without_resetting_existing_values(
+    tmp_path: Path,
+) -> None:
+    fake_claude = tmp_path / "claude"
+    fake_ss_home = tmp_path / "secondsight"
+    fake_ss_home.mkdir()
+    config_path = fake_ss_home / "config.toml"
+    config_path.write_text(
+        "[feedback]\nconvention_injection_budget = 999\n[retention]\nraw_traces_ttl_days = 90\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--merge-config",
+            "--claude-home",
+            str(fake_claude),
+            "--secondsight-home",
+            str(fake_ss_home),
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    merged = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert merged["feedback"]["convention_injection_budget"] == 999, (
+        "init --merge-config must preserve existing operator values"
+    )
+    assert merged["feedback"]["hit_injection_enabled"] is True, (
+        "init --merge-config must add missing template keys"
+    )
+    assert merged["directive_lifecycle"]["capacity_ceiling"] == 15, (
+        "init --merge-config must add missing template sections"
+    )
+    assert "merged" in payload["config_status"].lower(), (
+        f"config_status must report a merge, got: {payload['config_status']!r}"
     )
 
 

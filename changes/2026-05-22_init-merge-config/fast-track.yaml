@@ -1,0 +1,29 @@
+type: fast_track
+description: "Add `secondsight init --merge-config` so existing config.toml files can safely absorb newly introduced template keys."
+death_clause: "If merge mode overwrites an existing operator-set value or writes a config.toml that tomllib cannot parse, this change is failed."
+acceptance:
+  - "`secondsight init` keeps the previous advisory-only config behavior unless `--merge-config` is explicitly passed."
+  - "`secondsight init --merge-config` fills missing template keys in an existing config.toml without changing values that are already set."
+  - "`write_config_if_needed(..., dry_run=True, merge_missing_keys=True)` reports the pending merge without mutating the file."
+scar_tag: none
+scar_items: []
+files_changed:
+  - "src/secondsight/cli/init.py"
+  - "src/secondsight/config/template.py"
+  - "tests/cli/test_cli_app.py"
+  - "tests/cli/test_init_state.py"
+  - "tests/config/test_template.py"
+  - "tests/e2e/test_legacy_config_upgrade.py"
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: "The new CLI flag reuses write_config_if_needed instead of adding a second config-upgrade path."
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: "Merge semantics live in config/template.py with the existing config lifecycle logic; init.py only wires the explicit flag through."
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: "The merge path adds one recursive dict fill helper and one minimal TOML renderer instead of introducing a separate migration subsystem."
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: "Missing-key detection still comes from diff_against_template; merge mode consumes that same source of truth rather than recomputing a second diff."

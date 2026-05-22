@@ -34,6 +34,7 @@ CLI surface (per SD §9.1 — supports both human + agent personas):
     secondsight init --codex-home DIR       # Codex-specific flag
     secondsight init --hook-source DIR      # override hook bundle (tests)
     secondsight init --secondsight-home DIR # override ~/.secondsight location
+    secondsight init --merge-config         # fill missing config keys safely
 
 Exit codes:
     0 on success (or clean dry-run);
@@ -134,6 +135,11 @@ def init(
         "--force",
         help="Overwrite existing state.json without prompting (for scripted re-init).",
     ),
+    merge_config: bool = typer.Option(
+        False,
+        "--merge-config",
+        help="Fill missing keys in an existing config.toml without overriding existing values.",
+    ),
 ) -> None:
     """Install SecondSight hooks into the chosen agent (idempotent)."""
     # Typer's callback fires on bare `secondsight init`. We do not want sub-
@@ -219,7 +225,11 @@ def init(
     # Never aborts on failure: config.toml issues are advisory (hook install
     # already succeeded). write_config_if_needed() returns a message string
     # rather than raising, so we can always print it and continue.
-    config_status = write_config_if_needed(ss_home, dry_run=dry_run)
+    config_status = write_config_if_needed(
+        ss_home,
+        dry_run=dry_run,
+        merge_missing_keys=merge_config,
+    )
 
     summary = {
         "agent": canonical_agent,
