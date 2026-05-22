@@ -232,13 +232,19 @@ def test_dt12_render_session_start_and_user_prompt_do_not_collapse() -> None:
     session_payload = json.loads(adapter.render_session_start_output("Session convention"))
     prompt_payload = json.loads(adapter.render_user_prompt_output("Prompt guidance"))
 
-    assert session_payload == {"systemMessage": "Session convention"}
+    assert session_payload == {
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": "Session convention",
+        }
+    }
     assert prompt_payload == {
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
             "additionalContext": "Prompt guidance",
         }
     }
+    assert "systemMessage" not in session_payload
     assert "systemMessage" not in prompt_payload
     assert session_payload != prompt_payload
 
@@ -253,7 +259,13 @@ def test_render_session_start_output_escapes_json_content() -> None:
     payload = adapter.render_session_start_output('Line 1\n"quoted"')
     parsed = json.loads(payload)
 
-    assert parsed == {"systemMessage": 'Line 1\n"quoted"'}
+    assert parsed == {
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": 'Line 1\n"quoted"',
+        }
+    }
+    assert "systemMessage" not in parsed
 
 
 def test_render_user_prompt_output_escapes_json_content_without_system_message() -> None:

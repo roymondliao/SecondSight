@@ -202,13 +202,17 @@ def test_dt_session_start_non_default_feedback_budget_changes_selection_runtime(
     assert response.status_code == 200
     payload = json.loads(response.text)
     assert payload == {
-        "systemMessage": (
-            "SecondSight project conventions:\n"
-            "These are project-derived behavioral guidelines for this session. "
-            "Follow them unless the user explicitly gives conflicting instructions.\n\n"
-            "- " + ("S" * 16)
-        )
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": (
+                "SecondSight project conventions:\n"
+                "These are project-derived behavioral guidelines for this session. "
+                "Follow them unless the user explicitly gives conflicting instructions.\n\n"
+                "- " + ("S" * 16)
+            ),
+        }
     }
+    assert "systemMessage" not in payload
     assert "L" * 80 not in response.text
 
 
@@ -261,10 +265,18 @@ def test_dt_session_start_injection_returns_raw_adapter_payload(
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/json")
-    assert response.text == '{"systemMessage":"Injected convention text"}'
+    assert response.text == (
+        '{"hookSpecificOutput":{"hookEventName":"SessionStart",'
+        '"additionalContext":"Injected convention text"}}'
+    )
     assert "conventions" not in response.text
     assert "budget_total" not in response.text
-    assert json.loads(response.text) == {"systemMessage": "Injected convention text"}
+    assert json.loads(response.text) == {
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": "Injected convention text",
+        }
+    }
 
 
 def test_session_start_injection_empty_text_returns_204(

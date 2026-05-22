@@ -1020,7 +1020,10 @@ class TestSessionStartConventionInjection:
         The hook must not unwrap a legacy ``.conventions`` field. The server
         already rendered the target agent's SessionStart envelope.
         """
-        body = '{"systemMessage":"raw payload from server"}'
+        body = (
+            '{"hookSpecificOutput":{"hookEventName":"SessionStart",'
+            '"additionalContext":"raw payload from server"}}'
+        )
         port, server = _make_convention_server(body)
         try:
             home = tmp_path / ".secondsight"
@@ -1037,7 +1040,10 @@ class TestSessionStartConventionInjection:
 
     def test_session_start_hook_calls_new_injection_namespace(self, tmp_path: Path) -> None:
         """UT-SS-1: the hook calls /hook/injection/session-start/{agent} first."""
-        body = '{"systemMessage":"raw payload from server"}'
+        body = (
+            '{"hookSpecificOutput":{"hookEventName":"SessionStart",'
+            '"additionalContext":"raw payload from server"}}'
+        )
         port, server, paths = _make_recording_convention_server(body)
         try:
             home = tmp_path / ".secondsight"
@@ -1053,7 +1059,10 @@ class TestSessionStartConventionInjection:
 
     def test_session_start_hook_sends_cwd_not_project_id(self, tmp_path: Path) -> None:
         """DT-SS-5: project_id derivation belongs to the server, not shell."""
-        body = '{"systemMessage":"raw payload from server"}'
+        body = (
+            '{"hookSpecificOutput":{"hookEventName":"SessionStart",'
+            '"additionalContext":"raw payload from server"}}'
+        )
         port, server, bodies = _make_recording_body_server(body)
         try:
             home = tmp_path / ".secondsight"

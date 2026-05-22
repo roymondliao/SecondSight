@@ -181,7 +181,12 @@ class CodexAdapter(AgentAdapter):
 
     def render_session_start_output(self, text: str) -> str:
         return json.dumps(
-            {"systemMessage": text},
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": text,
+                }
+            },
             ensure_ascii=False,
             separators=(",", ":"),
         )

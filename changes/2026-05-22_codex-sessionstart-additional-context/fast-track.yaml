@@ -1,0 +1,28 @@
+type: fast_track
+description: "Render Codex SessionStart convention injection as hookSpecificOutput.additionalContext instead of systemMessage."
+death_clause: "If Codex SessionStart convention injection still emits systemMessage, this change is considered failed."
+acceptance:
+  - "CodexAdapter.render_session_start_output emits hookSpecificOutput.hookEventName=SessionStart."
+  - "CodexAdapter.render_session_start_output emits hookSpecificOutput.additionalContext with the convention text."
+  - "Codex SessionStart injection responses do not contain systemMessage."
+  - "session-start.sh continues to print the server-rendered agent payload unchanged."
+scar_tag: none
+scar_items: []
+files_changed:
+  - "src/secondsight/adapters/codex.py"
+  - "tests/adapters/test_codex.py"
+  - "tests/api/test_injection_session_start.py"
+  - "tests/scripts/test_hook_fallback.py"
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: "Reused the existing adapter render boundary; no new helper or duplicate shell-side rendering was added."
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: "The format change stays in CodexAdapter.render_session_start_output, which is already the single agent-specific SessionStart rendering point."
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: "The implementation is a direct JSON shape replacement with no extra branching or wrapper abstraction."
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: "The shell hook still prints the API payload unchanged, keeping one source of truth for the Codex SessionStart envelope."
