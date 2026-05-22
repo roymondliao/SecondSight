@@ -1,10 +1,9 @@
 """Production Event model — aligned with SD §3.7.5.
 
 This is the on-the-wire and on-disk shape of an observed event after the
-adapter layer has normalized agent-specific payloads. It is deliberately
-narrower than the PoC `SecondSightEvent` (poc/event_schema.py): adapter
-specifics live in `secondsight.adapters` (Phase 1.3, GUR-97); this model
-is the storage contract.
+adapter layer has normalized agent-specific payloads. Adapter specifics
+live in `secondsight.adapters` (Phase 1.3, GUR-97); this model is the
+storage contract.
 
 Why Pydantic v2:
 - Project already depends on pydantic>=2.13 (pyproject.toml).
