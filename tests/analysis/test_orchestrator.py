@@ -61,6 +61,7 @@ from secondsight.analysis.orchestrator import (
     SessionAlreadyAnalyzedError,
     SessionIncompleteError,
 )
+from secondsight.config.schema import DirectiveLifecycleConfig
 
 # =====================================================================
 # Constants
@@ -222,6 +223,7 @@ def _make_orchestrator(
     *,
     fake_segmenter=None,
     on_analysis_complete=None,
+    directive_lifecycle_config=None,
 ) -> Orchestrator:
     """Build an Orchestrator with a fake segmenter and/or post-analysis callback if provided."""
     return Orchestrator(
@@ -233,6 +235,7 @@ def _make_orchestrator(
         agent=agent,
         segmenter=fake_segmenter,
         on_analysis_complete=on_analysis_complete,
+        directive_lifecycle_config=directive_lifecycle_config,
     )
 
 
@@ -1178,3 +1181,44 @@ class TestB3OnAnalysisCompleteCallback:
         # locate the misuse without needing to read the source.
         assert "coroutine" in str(exc_info.value).lower()
         assert "on_analysis_complete" in str(exc_info.value)
+
+
+class TestAggregateProjectWiring:
+    @pytest.mark.asyncio
+    async def test_passes_directive_capacity_ceiling_to_aggregator(
+        self,
+        events_repo: EventsRepository,
+        flags_repo: BehaviorFlagsRepository,
+        directives_repo: DirectivesRepository,
+        runs_repo: AnalysisRunsRepository,
+        reports_repo: SessionReportsRepository,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        agent = FakeAnalysisAgent(
+            segment_outputs=[_make_segment_analysis_zero_flags()],
+            summary_output=_make_summary_output(),
+        )
+        orchestrator = _make_orchestrator(
+            events_repo,
+            flags_repo,
+            directives_repo,
+            runs_repo,
+            reports_repo,
+            agent,
+            directive_lifecycle_config=DirectiveLifecycleConfig(capacity_ceiling=7),
+        )
+
+        captured: dict[str, int] = {}
+
+        async def _fake_aggregate_project_flags(*args, **kwargs):  # type: ignore[no-untyped-def]
+            captured["capacity_ceiling"] = kwargs["capacity_ceiling"]
+            return object()
+
+        monkeypatch.setattr(
+            "secondsight.analysis.orchestrator.aggregate_project_flags",
+            _fake_aggregate_project_flags,
+        )
+
+        await orchestrator.aggregate_project(_PROJECT_ID)
+
+        assert captured["capacity_ceiling"] == 7

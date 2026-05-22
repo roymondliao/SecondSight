@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 
 from secondsight.analysis.orchestrator import Orchestrator
 from secondsight.analysis.post_analysis_cleanup import PostAnalysisCleanupTrigger
+from secondsight.config import load_project_config
 from secondsight.storage.analysis_runs_repository import AnalysisRunsRepository
 from secondsight.storage.behavior_flags_repository import BehaviorFlagsRepository
 from secondsight.storage.directives_repository import DirectivesRepository
@@ -129,6 +130,7 @@ def build_orchestrator(
         analysis-side schemas eagerly). Documented in scar-B6-3.
     """
     config = RetentionConfig.load(home=home, project_id=project_id)
+    app_config = load_project_config(home, project_id)
     on_analysis_complete = _build_cleanup_trigger(
         config=config,
         resources=resources,
@@ -160,6 +162,7 @@ def build_orchestrator(
         agent=agent,
         filesystem_backup_home=home,
         on_analysis_complete=on_analysis_complete,
+        directive_lifecycle_config=app_config.directive_lifecycle,
     )
 
 

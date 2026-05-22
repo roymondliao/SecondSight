@@ -513,6 +513,27 @@ class TestUTV2Schema8FeedbackConfig:
             FeedbackConfig(convention_top_n=True)  # type: ignore[arg-type]
 
 
+class TestUTV2Schema8BDirectiveLifecycleConfig:
+    def test_directive_lifecycle_defaults_match_template(self) -> None:
+        from secondsight.config.schema import DirectiveLifecycleConfig
+
+        cfg = DirectiveLifecycleConfig()
+        assert cfg.capacity_ceiling == 15
+        assert cfg.boost_delta == 0.15
+        assert cfg.decay_delta == 0.10
+        assert cfg.miss_grace == 2
+        assert cfg.obsolete_threshold == 0.20
+        assert cfg.revision_cap == 3
+
+    def test_directive_lifecycle_rejects_invalid_values(self) -> None:
+        from secondsight.config.schema import DirectiveLifecycleConfig, SecondSightConfigError
+
+        with pytest.raises(SecondSightConfigError, match="capacity_ceiling"):
+            DirectiveLifecycleConfig(capacity_ceiling=0)
+        with pytest.raises(SecondSightConfigError, match="obsolete_threshold"):
+            DirectiveLifecycleConfig(obsolete_threshold=1.2)
+
+
 class TestUTV2Schema9AllDataclassesFrozen:
     """UT-v2-schema-9: All new dataclasses are frozen (immutable after construction)."""
 

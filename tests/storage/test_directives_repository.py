@@ -32,6 +32,12 @@ def _directive(
     disabled_at: datetime | None = None,
     disabled_reason: str | None = None,
     identity_key: str | None = None,
+    weight: float = 0.7,
+    miss_streak: int = 0,
+    last_promoted_at: datetime | None = None,
+    last_source_flag_seen_at: datetime | None = None,
+    revision_count: int = 0,
+    last_revised_at: datetime | None = None,
 ) -> Directive:
     # Default identity_key to the directive id to avoid UNIQUE(project_id,
     # identity_key) conflicts when multiple directives are inserted in tests.
@@ -47,6 +53,12 @@ def _directive(
         source_flag_type="unnecessary_read",
         source_sessions=["s1", "s2"],
         identity_key=identity_key if identity_key is not None else id,
+        weight=weight,
+        miss_streak=miss_streak,
+        last_promoted_at=last_promoted_at,
+        last_source_flag_seen_at=last_source_flag_seen_at,
+        revision_count=revision_count,
+        last_revised_at=last_revised_at,
         created_at=_now(),
         updated_at=_now(),
         disabled_at=disabled_at,
@@ -71,6 +83,26 @@ def repo(tmp_path: Path) -> Iterator[DirectivesRepository]:
 
 
 class TestDeathPaths:
+    def test_dt_3_0_stalled_status_round_trips(self, repo: DirectivesRepository) -> None:
+        repo.insert(
+            _directive(
+                id="dir-stalled",
+                status=DirectiveStatus.STALLED,
+                weight=0.42,
+                miss_streak=3,
+                last_promoted_at=_now(),
+                last_source_flag_seen_at=_now(),
+                revision_count=4,
+                last_revised_at=_now(),
+            )
+        )
+        got = repo.get_by_id("dir-stalled")
+        assert got is not None
+        assert got.status is DirectiveStatus.STALLED
+        assert got.weight == 0.42
+        assert got.miss_streak == 3
+        assert got.revision_count == 4
+
     def test_dt_3_1_disabled_without_reason_raises_no_update(
         self, repo: DirectivesRepository
     ) -> None:
@@ -251,6 +283,34 @@ class TestQueries:
     def test_get_by_id_returns_none_when_missing(self, repo: DirectivesRepository) -> None:
         assert repo.get_by_id("nope") is None
 
+    def test_list_for_identity_resolution_excludes_disabled(
+        self, repo: DirectivesRepository
+    ) -> None:
+        repo.insert(_directive(id="d-active", status=DirectiveStatus.ACTIVE))
+        repo.insert(
+            _directive(
+                id="d-disabled",
+                status=DirectiveStatus.DISABLED,
+                disabled_at=_now(),
+                disabled_reason="operator override",
+            )
+        )
+        repo.insert(_directive(id="d-obsolete", status=DirectiveStatus.OBSOLETE))
+        repo.insert(_directive(id="d-stalled", status=DirectiveStatus.STALLED))
+
+        rows = repo.list_for_identity_resolution("proj-1")
+        assert {row.id for row in rows} == {"d-active", "d-obsolete", "d-stalled"}
+
+    def test_list_active_for_capacity_orders_by_weight_then_age(
+        self, repo: DirectivesRepository
+    ) -> None:
+        repo.insert(_directive(id="d-high", weight=0.9))
+        repo.insert(_directive(id="d-low-b", weight=0.1))
+        repo.insert(_directive(id="d-low-a", weight=0.1))
+
+        rows = repo.list_active_for_capacity("proj-1")
+        assert [row.id for row in rows] == ["d-low-a", "d-low-b", "d-high"]
+
     def test_insert_idempotent_first_wins(self, repo: DirectivesRepository) -> None:
         a = _directive(id="d-x", frequency=0.1)
         b = _directive(id="d-x", frequency=0.99)
@@ -260,12 +320,106 @@ class TestQueries:
         assert d is not None
         assert d.frequency == 0.1
 
+    def test_lifecycle_fields_round_trip_through_repository(
+        self, repo: DirectivesRepository
+    ) -> None:
+        original = _directive(
+            id="d-lifecycle",
+            weight=0.55,
+            miss_streak=2,
+            last_promoted_at=_now(),
+            last_source_flag_seen_at=_now(),
+            revision_count=3,
+            last_revised_at=_now(),
+        )
+        repo.insert(original)
+
+        got = repo.get_by_id("d-lifecycle")
+        assert got is not None
+        assert got.weight == 0.55
+        assert got.miss_streak == 2
+        assert got.last_promoted_at == _now().replace(tzinfo=None)
+        assert got.last_source_flag_seen_at == _now().replace(tzinfo=None)
+        assert got.revision_count == 3
+        assert got.last_revised_at == _now().replace(tzinfo=None)
+
+    def test_apply_revision_preserves_identity_key_and_increments_revision_count(
+        self, repo: DirectivesRepository
+    ) -> None:
+        original = _directive(id="d-revise", identity_key="lineage-keep", revision_count=0)
+        repo.insert(original)
+
+        revised_at = _now()
+        repo.apply_revision(
+            "d-revise",
+            new_instruction="Prefer the explicit target path over broad repository exploration.",
+            revised_at=revised_at,
+        )
+
+        got = repo.get_by_id("d-revise")
+        assert got is not None
+        assert got.identity_key == "lineage-keep"
+        assert got.revision_count == 1
+        assert got.last_revised_at == revised_at.replace(tzinfo=None)
+
     def test_create_schema_idempotent(self, tmp_path: Path) -> None:
         eng = DBEngine(tmp_path / "intel.db")
         try:
             r = DirectivesRepository(eng)
             r.create_schema()
             r.create_schema()
+        finally:
+            eng.dispose()
+
+    def test_create_schema_backfills_new_lifecycle_columns_on_existing_table(
+        self, tmp_path: Path
+    ) -> None:
+        eng = DBEngine(tmp_path / "intel.db")
+        try:
+            with eng.engine.begin() as conn:
+                conn.exec_driver_sql(
+                    """
+                    CREATE TABLE directives (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL,
+                        type TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        instruction TEXT NOT NULL,
+                        frequency FLOAT,
+                        trigger_pattern TEXT,
+                        confidence FLOAT,
+                        max_firing INTEGER,
+                        source_flag_type TEXT,
+                        source_sessions TEXT NOT NULL DEFAULT '[]',
+                        created_at DATETIME NOT NULL,
+                        expires_at DATETIME,
+                        updated_at DATETIME NOT NULL,
+                        disabled_at DATETIME,
+                        disabled_reason TEXT,
+                        identity_key TEXT NOT NULL DEFAULT ''
+                    )
+                    """
+                )
+
+            repo = DirectivesRepository(eng)
+            repo.create_schema()
+
+            with eng.engine.connect() as conn:
+                columns = {
+                    row["name"]
+                    for row in conn.exec_driver_sql("PRAGMA table_info(directives)")
+                    .mappings()
+                    .all()
+                }
+
+            assert {
+                "weight",
+                "miss_streak",
+                "last_promoted_at",
+                "last_source_flag_seen_at",
+                "revision_count",
+                "last_revised_at",
+            }.issubset(columns)
         finally:
             eng.dispose()
 

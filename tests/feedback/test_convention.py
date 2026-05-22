@@ -40,6 +40,7 @@ def _make_directive(
     instruction: str = "Do X not Y",
     frequency: float = 0.8,
     source_flag_type: str = "unnecessary_read",
+    weight: float = 0.7,
 ) -> Directive:
     return Directive(
         id=id,
@@ -50,6 +51,7 @@ def _make_directive(
         frequency=frequency,
         source_flag_type=source_flag_type,
         identity_key=f"key-{id}",
+        weight=weight,
         source_sessions=["s1"],
         created_at=NOW,
         updated_at=NOW,
@@ -108,6 +110,17 @@ class TestDeathPaths:
 
         assert [c.id for c in r1] == [c.id for c in r2]
         assert r1[0].id == "a"
+
+    def test_dt_4_b_weight_does_not_affect_selection_order(self) -> None:
+        """Ordering remains repo/frequency-based even when lifecycle weight exists."""
+        d1 = _make_directive(id="freq-high", instruction="First", frequency=0.9, weight=0.1)
+        d2 = _make_directive(id="freq-low", instruction="Second", frequency=0.5, weight=0.95)
+        repo = _mock_repo([d1, d2])
+
+        selector = ConventionSelector(repo, token_budget=2000)
+        result = selector.select("proj-1")
+
+        assert [c.id for c in result] == ["freq-high", "freq-low"]
 
     def test_dt_5_budget_exactly_exhausted_includes(self) -> None:
         """DT-5: Convention whose cost == remaining budget is included."""

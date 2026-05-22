@@ -24,11 +24,13 @@ from fastapi.testclient import TestClient
 
 from secondsight.analysis.schemas import (
     Directive,
+    DirectiveRevision,
     DirectiveStatus,
     DirectiveType,
 )
 from secondsight.api.registry import ProjectRegistry
 from secondsight.api.server import create_app
+from secondsight.storage.directive_revisions_repository import DirectiveRevisionsRepository
 from secondsight.storage.directives_repository import DirectivesRepository
 
 UTC = timezone.utc
@@ -64,6 +66,9 @@ def _seed_directive(
     disabled_reason: str | None = None,
     created_at: datetime | None = None,
     updated_at: datetime | None = None,
+    weight: float = 0.7,
+    miss_streak: int = 0,
+    revision_count: int = 0,
 ) -> Directive:
     """Materialize the project's resources, then directly write a directive
     row. Returns the Directive that was inserted."""
@@ -83,6 +88,9 @@ def _seed_directive(
         frequency=frequency,
         identity_key=identity_key or f"key-{directive_id}",
         source_sessions=["s1"],
+        weight=weight,
+        miss_streak=miss_streak,
+        revision_count=revision_count,
         created_at=created_at or now,
         updated_at=updated_at or now,
         disabled_at=disabled_at,
@@ -103,6 +111,39 @@ def _read_directive(home: Path, project_id: str, directive_id: str) -> Directive
     out = repo.get_by_id(directive_id)
     asyncio.run(registry.aclose())
     return out
+
+
+def _seed_revision(
+    home: Path,
+    *,
+    project_id: str,
+    directive_id: str,
+    revision_id: str,
+    identity_key: str,
+    revision_index: int,
+    accepted: bool,
+    review_note: str | None = None,
+) -> DirectiveRevision:
+    registry = ProjectRegistry(secondsight_home=home)
+    resources = asyncio.run(registry.get(project_id))
+    repo = DirectiveRevisionsRepository(resources.db_engine)
+    repo.create_schema()
+    revision = DirectiveRevision(
+        id=revision_id,
+        project_id=project_id,
+        directive_id=directive_id,
+        identity_key=identity_key,
+        revision_index=revision_index,
+        old_instruction="old",
+        new_instruction="new",
+        reason="source_flag_seen_without_identity",
+        accepted=accepted,
+        review_note=review_note,
+        created_at=datetime(2026, 5, 8, 14, 0, 0, tzinfo=UTC),
+    )
+    repo.append(revision)
+    asyncio.run(registry.aclose())
+    return revision
 
 
 # =====================================================================
@@ -156,6 +197,37 @@ class TestDeathPaths:
         assert ids == {"D-A1", "D-A2"}
         for d in r.json():
             assert d["status"] == "active"
+
+    def test_dt_2_2_b_get_active_false_includes_obsolete_and_stalled(self, home: Path) -> None:
+        _seed_directive(home, project_id="P", directive_id="D-A1")
+        _seed_directive(
+            home,
+            project_id="P",
+            directive_id="D-O",
+            status=DirectiveStatus.OBSOLETE,
+            weight=0.18,
+            miss_streak=3,
+        )
+        _seed_directive(
+            home,
+            project_id="P",
+            directive_id="D-S",
+            status=DirectiveStatus.STALLED,
+            weight=0.55,
+            revision_count=3,
+        )
+
+        with _client(home) as client:
+            r = client.get("/api/directives", params={"project_id": "P", "active": False})
+        assert r.status_code == 200, r.text
+
+        by_id = {row["id"]: row for row in r.json()}
+        assert {"D-A1", "D-O", "D-S"} <= set(by_id)
+        assert by_id["D-O"]["status"] == "obsolete"
+        assert by_id["D-S"]["status"] == "stalled"
+        assert "weight" in by_id["D-O"]
+        assert "miss_streak" in by_id["D-O"]
+        assert "revision_count" in by_id["D-S"]
 
     def test_dt_2_3_re_enable_clears_lifecycle_fields(self, home: Path) -> None:
         _seed_directive(
@@ -220,6 +292,28 @@ class TestDeathPaths:
                 json={"status": "disabled", "reason": "x"},
             )
         assert r.status_code == 404, r.text
+
+    def test_dt_2_7_revision_history_is_operator_visible(self, home: Path) -> None:
+        _seed_directive(home, project_id="P", directive_id="D1", identity_key="lineage-d1")
+        _seed_revision(
+            home,
+            project_id="P",
+            directive_id="D1",
+            revision_id="rev-1",
+            identity_key="lineage-d1",
+            revision_index=1,
+            accepted=False,
+            review_note="rejected",
+        )
+
+        with _client(home) as client:
+            r = client.get("/api/directives/D1/revisions", params={"project_id": "P"})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert len(body) == 1
+        assert body[0]["directive_id"] == "D1"
+        assert body[0]["accepted"] is False
+        assert body[0]["review_note"] == "rejected"
 
     def test_dt_2_7_etag_changes_after_real_patch(self, home: Path) -> None:
         _seed_directive(home, project_id="P", directive_id="D1")

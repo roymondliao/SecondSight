@@ -1,7 +1,6 @@
-"""Automated directive lifecycle transitions (GUR-108, P3B-2 + P3B-3).
+"""Automated directive lifecycle transitions (GUR-108, P3B-2).
 
-Called by the orchestrator after aggregation to enforce TTL expiry and
-detect re-activation candidates.
+Called by the orchestrator after aggregation to enforce TTL expiry.
 
 P3B-2 — Expiry enforcement:
     Scans active conventions whose ``expires_at`` is in the past.
@@ -9,28 +8,17 @@ P3B-2 — Expiry enforcement:
     query already filters these out defensively, but the status transition
     makes the expiry visible in the API and dashboard.
 
-P3B-3 — Re-activation:
-    Scans ``obsolete`` conventions whose source flag type has rebounded
-    (flag frequency is non-zero in recent sessions). Transitions them
-    back to ``active``. This prevents permanent loss of a convention
-    that was marked obsolete due to a temporary dip in flag frequency.
-
-Both operations are idempotent — running them multiple times produces
-the same DB state.
+Identity-based reactivation now lives in the aggregator's lineage resolution
+path. The old source-flag-type rebound reactivation logic is intentionally
+retired so there is only one auto-revival source of truth.
 
 Silent failure conditions:
     - If ``expires_at`` is NULL for all conventions, expiry enforcement
       is a no-op. Correct: conventions without TTL never expire.
-    - If no conventions are ``obsolete``, re-activation is a no-op.
-    - If the behavior_flags table has no recent rows for a flag type,
-      the rebound check returns 0 and no re-activation occurs.
-
 Design assumptions:
     - Expiry enforcement is clock-based (UTC now vs. expires_at).
-    - Re-activation threshold: ≥ 1 flag of the source type in the
-      last REACTIVATION_LOOKBACK_DAYS (default 14) days.
-    - Both operations use the lifecycle state machine for transition
-      validation (loud failure on invalid transitions).
+    - TTL enforcement continues to use the lifecycle state machine for
+      transition validation (loud failure on invalid transitions).
 
 Ref: SD §5.9.2, §5.9.3
 """
@@ -39,8 +27,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Final
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 
@@ -52,8 +40,6 @@ if TYPE_CHECKING:
     from secondsight.storage.directives_repository import DirectivesRepository
 
 _logger = logging.getLogger(__name__)
-
-REACTIVATION_LOOKBACK_DAYS: Final[int] = 14
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,105 +130,35 @@ def enforce_reactivation(
     directives_repo: "DirectivesRepository",
     db_engine: "DBEngine",
     *,
-    lookback_days: int = REACTIVATION_LOOKBACK_DAYS,
+    lookback_days: int = 0,
 ) -> int:
-    """Re-activate obsolete conventions whose flag type has rebounded.
+    """Legacy shim: source-flag-type rebound reactivation is retired."""
+    del project_id, directives_repo, db_engine, lookback_days
+    return 0
 
-    Scans obsolete conventions, checks if the source_flag_type has
-    any flags in the last ``lookback_days`` days. If so, transitions
-    the convention back to active.
 
-    Uses atomic conditional UPDATE (WHERE status='obsolete') to avoid
-    TOCTOU races with concurrent status changes.
-
-    Returns the number of conventions re-activated in this run.
-    """
-    from secondsight.storage.behavior_flags_table import behavior_flags
-    from secondsight.storage.directives_table import directives
-
-    with directives_repo._db.engine.connect() as conn:
-        stmt = sa.select(directives).where(
-            sa.and_(
-                directives.c.project_id == project_id,
-                directives.c.type == DirectiveType.CONVENTION.value,
-                directives.c.status == DirectiveStatus.OBSOLETE.value,
-            ),
-        )
-        obsolete_rows = list(conn.execute(stmt).mappings())
-
-    if not obsolete_rows:
+def _enforce_capacity_ceiling(
+    project_id: str,
+    directives_repo: "DirectivesRepository",
+    *,
+    ceiling: int,
+) -> int:
+    """Transition lowest-weight active conventions to obsolete until bounded."""
+    if ceiling <= 0:
+        return 0
+    active = directives_repo.list_active_for_capacity(project_id)
+    if len(active) <= ceiling:
         return 0
 
-    threshold = datetime.now(tz=timezone.utc) - timedelta(days=lookback_days)
-    now = datetime.now(tz=timezone.utc)
-
     count = 0
-    for row in obsolete_rows:
-        flag_type = row["source_flag_type"]
-        if not flag_type:
-            continue
-
-        with db_engine.engine.connect() as conn:
-            recent_count_result = conn.execute(
-                sa.select(sa.func.count())
-                .select_from(behavior_flags)
-                .where(
-                    sa.and_(
-                        behavior_flags.c.project_id == project_id,
-                        behavior_flags.c.flag_type == flag_type,
-                        behavior_flags.c.created_at >= threshold,
-                    ),
-                ),
-            ).scalar()
-
-        recent_count = recent_count_result or 0
-        if recent_count == 0:
-            continue
-
-        directive_id = row["id"]
-        try:
-            validate_transition(
-                DirectiveStatus.OBSOLETE,
-                DirectiveStatus.ACTIVE,
-                directive_id=directive_id,
-            )
-            with directives_repo._db.engine.begin() as conn:
-                result = conn.execute(
-                    sa.update(directives)
-                    .where(
-                        sa.and_(
-                            directives.c.id == directive_id,
-                            directives.c.status == DirectiveStatus.OBSOLETE.value,
-                        ),
-                    )
-                    .values(
-                        status=DirectiveStatus.ACTIVE.value,
-                        disabled_at=None,
-                        disabled_reason=None,
-                        updated_at=now,
-                    ),
-                )
-                if result.rowcount == 0:
-                    _logger.debug(
-                        "reactivation: directive_id=%r no longer obsolete, skipped",
-                        directive_id,
-                    )
-                    continue
-            count += 1
-            _logger.info(
-                "reactivation: re-activated directive_id=%r "
-                "(flag_type=%s, recent_flags=%d in last %d days)",
-                directive_id,
-                flag_type,
-                recent_count,
-                lookback_days,
-            )
-        except Exception as exc:
-            _logger.warning(
-                "reactivation: failed to re-activate directive_id=%r: %s",
-                directive_id,
-                exc,
-            )
+    for directive in active[: len(active) - ceiling]:
+        validate_transition(
+            DirectiveStatus.ACTIVE,
+            DirectiveStatus.OBSOLETE,
+            directive_id=directive.id,
+        )
+        directives_repo.update_status(directive.id, DirectiveStatus.OBSOLETE)
+        count += 1
     return count
 
 
@@ -265,7 +181,6 @@ def run_lifecycle_automation(
 
 __all__ = [
     "LifecycleAutomationResult",
-    "REACTIVATION_LOOKBACK_DAYS",
     "enforce_expiry",
     "enforce_reactivation",
     "run_lifecycle_automation",

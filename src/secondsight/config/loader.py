@@ -65,6 +65,12 @@ from secondsight.config.schema import (
     BUILTIN_FEEDBACK_CONVENTION_INJECTION_BUDGET,
     BUILTIN_FEEDBACK_CONVENTION_TOP_N,
     BUILTIN_FEEDBACK_HIT_INJECTION_ENABLED,
+    BUILTIN_DIRECTIVE_LIFECYCLE_BOOST_DELTA,
+    BUILTIN_DIRECTIVE_LIFECYCLE_CAPACITY_CEILING,
+    BUILTIN_DIRECTIVE_LIFECYCLE_DECAY_DELTA,
+    BUILTIN_DIRECTIVE_LIFECYCLE_MISS_GRACE,
+    BUILTIN_DIRECTIVE_LIFECYCLE_OBSOLETE_THRESHOLD,
+    BUILTIN_DIRECTIVE_LIFECYCLE_REVISION_CAP,
     FallbackModelsConfig,
     FeedbackConfig,
     GeneralConfig,
@@ -73,6 +79,7 @@ from secondsight.config.schema import (
     ProjectAnalysisConfig,
     ProviderAnthropicConfig,
     ProviderCustomConfig,
+    DirectiveLifecycleConfig,
     ProviderOpenAIConfig,
     ProvidersConfig,
     SecondSightConfig,
@@ -112,6 +119,7 @@ __all__ = [
     "_build_providers_config",
     "_build_analysis_config",
     "_build_feedback_config",
+    "_build_directive_lifecycle_config",
     # Shared ignore-condition helper (single source of truth for DC12 detection)
     "_legacy_default_agent_should_be_ignored",
     # New in analysis-mode-toggle task-5: materialized resolved provider keys
@@ -679,6 +687,93 @@ def _build_feedback_config(
     )
 
 
+def _resolve_directive_lifecycle_typed_field(
+    *,
+    field_name: str,
+    expected_type: type,
+    project_section: dict[str, Any],
+    global_section: dict[str, Any],
+    builtin_default: Any,
+) -> Any:
+    value = project_section.get(field_name, None)
+    if value in (None, ""):
+        value = global_section.get(field_name, None)
+    if value in (None, ""):
+        return builtin_default
+    if expected_type is float:
+        if type(value) not in (int, float):
+            raise SecondSightConfigError(
+                f"[directive_lifecycle].{field_name} must be numeric; "
+                f"got {type(value).__name__!r} {value!r}"
+            )
+        return float(value)
+    if type(value) is not expected_type:
+        raise SecondSightConfigError(
+            f"[directive_lifecycle].{field_name} must be a {expected_type.__name__}; "
+            f"got {type(value).__name__!r} {value!r}"
+        )
+    return value
+
+
+def _build_directive_lifecycle_config(
+    *,
+    global_doc: dict[str, Any],
+    project_doc: dict[str, Any],
+) -> DirectiveLifecycleConfig:
+    global_section = global_doc.get("directive_lifecycle")
+    if not isinstance(global_section, dict):
+        global_section = {}
+
+    project_section = project_doc.get("directive_lifecycle")
+    if not isinstance(project_section, dict):
+        project_section = {}
+
+    return DirectiveLifecycleConfig(
+        capacity_ceiling=_resolve_directive_lifecycle_typed_field(
+            field_name="capacity_ceiling",
+            expected_type=int,
+            project_section=project_section,
+            global_section=global_section,
+            builtin_default=BUILTIN_DIRECTIVE_LIFECYCLE_CAPACITY_CEILING,
+        ),
+        boost_delta=_resolve_directive_lifecycle_typed_field(
+            field_name="boost_delta",
+            expected_type=float,
+            project_section=project_section,
+            global_section=global_section,
+            builtin_default=BUILTIN_DIRECTIVE_LIFECYCLE_BOOST_DELTA,
+        ),
+        decay_delta=_resolve_directive_lifecycle_typed_field(
+            field_name="decay_delta",
+            expected_type=float,
+            project_section=project_section,
+            global_section=global_section,
+            builtin_default=BUILTIN_DIRECTIVE_LIFECYCLE_DECAY_DELTA,
+        ),
+        miss_grace=_resolve_directive_lifecycle_typed_field(
+            field_name="miss_grace",
+            expected_type=int,
+            project_section=project_section,
+            global_section=global_section,
+            builtin_default=BUILTIN_DIRECTIVE_LIFECYCLE_MISS_GRACE,
+        ),
+        obsolete_threshold=_resolve_directive_lifecycle_typed_field(
+            field_name="obsolete_threshold",
+            expected_type=float,
+            project_section=project_section,
+            global_section=global_section,
+            builtin_default=BUILTIN_DIRECTIVE_LIFECYCLE_OBSOLETE_THRESHOLD,
+        ),
+        revision_cap=_resolve_directive_lifecycle_typed_field(
+            field_name="revision_cap",
+            expected_type=int,
+            project_section=project_section,
+            global_section=global_section,
+            builtin_default=BUILTIN_DIRECTIVE_LIFECYCLE_REVISION_CAP,
+        ),
+    )
+
+
 def _build_global_analysis_config(doc: dict[str, Any]) -> GlobalAnalysisConfig:
     """Build GlobalAnalysisConfig from the parsed global TOML doc.
 
@@ -894,6 +989,10 @@ def _build_config_from_docs(
 
     # [feedback] section — project → global → builtin per field.
     feedback = _build_feedback_config(global_doc=global_doc, project_doc=project_doc)
+    directive_lifecycle = _build_directive_lifecycle_config(
+        global_doc=global_doc,
+        project_doc=project_doc,
+    )
 
     # Per-project model override
     project_analysis_section = project_doc.get("analysis")
@@ -916,6 +1015,7 @@ def _build_config_from_docs(
         analysis_global=analysis_global,
         project_analysis=ProjectAnalysisConfig(model=project_model),
         feedback=feedback,
+        directive_lifecycle=directive_lifecycle,
     )
 
 

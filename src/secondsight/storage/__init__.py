@@ -39,6 +39,9 @@ from secondsight.storage.db_engine import (
     StoragePragmaMismatchError,
     StorageSettings,
 )
+from secondsight.storage.directive_revisions_repository import (
+    DirectiveRevisionsRepository,  # also imports directive_revisions_table → registers table
+)
 from secondsight.storage.directives_repository import (
     DirectivesRepository,  # also imports directives_table → registers table
 )
@@ -58,6 +61,7 @@ __all__ = [
     "AnalysisRunsRepository",
     "BehaviorFlagsRepository",
     "DBEngine",
+    "DirectiveRevisionsRepository",
     "DirectivesRepository",
     "EventsRepository",
     "IngressRecord",

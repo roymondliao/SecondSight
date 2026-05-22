@@ -1,0 +1,19 @@
+task_id: task-2
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: "same-run lineage reuse uses transient pattern_description matching in memory; the signal is not persisted, so post-mortem explainability is limited."
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions:
+  - description: "very generic pattern_description strings in one aggregation run can still over-merge unrelated concepts if they share enough raw tokens."
+    deferred_to_feature_iteration: true
+
+assumptions_made:
+  - assumption: "current Jaccard-style semantic matching is sufficient for first-pass lineage reuse across active/obsolete/stalled directives."
+    verified: false
+    note: "Covered by focused tests, but not validated against a broader corpus of real aggregation outputs."
+    deferred_to_feature_iteration: true
+
+debt_registered: true
+debt_location: "src/secondsight/analysis/aggregator.py; src/secondsight/feedback/directive_identity.py"

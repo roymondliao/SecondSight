@@ -15,6 +15,7 @@ from secondsight.analysis.schemas import (
     DirectiveType,
 )
 from secondsight.feedback.lifecycle_automation import (
+    _enforce_capacity_ceiling,
     enforce_expiry,
     enforce_reactivation,
     run_lifecycle_automation,
@@ -52,6 +53,8 @@ def _make_directive(
     expires_at: datetime | None = None,
     source_flag_type: str | None = None,
     directive_id: str | None = None,
+    frequency: float | None = 0.5,
+    weight: float = 0.7,
 ) -> Directive:
     now = datetime.now(tz=timezone.utc)
     return Directive(
@@ -60,10 +63,11 @@ def _make_directive(
         type=DirectiveType.CONVENTION,
         status=status,
         instruction="Test convention instruction",
-        frequency=0.5,
+        frequency=frequency,
         source_flag_type=source_flag_type,
         source_sessions=["sess-1"],
         identity_key=str(uuid.uuid4()),
+        weight=weight,
         created_at=now,
         expires_at=expires_at,
         updated_at=now,
@@ -127,7 +131,7 @@ class TestEnforceExpiry:
 
 
 class TestEnforceReactivation:
-    def test_reactivates_obsolete_with_recent_flags(
+    def test_does_not_reactivate_obsolete_with_recent_flags_anymore(
         self,
         directives_repo: DirectivesRepository,
         flags_repo: BehaviorFlagsRepository,
@@ -148,11 +152,11 @@ class TestEnforceReactivation:
             directives_repo,
             db_engine,
         )
-        assert count == 1
+        assert count == 0
 
         updated = directives_repo.get_by_id("d-reactivate")
         assert updated is not None
-        assert updated.status == DirectiveStatus.ACTIVE
+        assert updated.status == DirectiveStatus.OBSOLETE
 
     def test_does_not_reactivate_without_recent_flags(
         self,
@@ -173,6 +177,47 @@ class TestEnforceReactivation:
             db_engine,
         )
         assert count == 0
+
+
+class TestEnforceCapacityCeiling:
+    def test_sheds_lowest_weight_even_if_frequency_is_highest(
+        self,
+        directives_repo: DirectivesRepository,
+    ) -> None:
+        directives_repo.insert(
+            _make_directive(
+                directive_id="d-high-frequency-low-weight",
+                frequency=0.95,
+                weight=0.10,
+            )
+        )
+        directives_repo.insert(
+            _make_directive(
+                directive_id="d-low-frequency-high-weight",
+                frequency=0.10,
+                weight=0.90,
+            )
+        )
+        directives_repo.insert(
+            _make_directive(
+                directive_id="d-mid",
+                frequency=0.50,
+                weight=0.80,
+            )
+        )
+
+        count = _enforce_capacity_ceiling(_PROJECT_ID, directives_repo, ceiling=2)
+
+        assert count == 1
+        low_weight = directives_repo.get_by_id("d-high-frequency-low-weight")
+        assert low_weight is not None
+        assert low_weight.status is DirectiveStatus.OBSOLETE
+
+        retained = directives_repo.get_active_conventions(_PROJECT_ID)
+        assert {directive.id for directive in retained} == {
+            "d-low-frequency-high-weight",
+            "d-mid",
+        }
 
     def test_does_not_reactivate_active_conventions(
         self,
@@ -223,4 +268,4 @@ class TestRunLifecycleAutomation:
             db_engine,
         )
         assert result.expired_count == 1
-        assert result.reactivated_count == 1
+        assert result.reactivated_count == 0

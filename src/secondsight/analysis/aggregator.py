@@ -6,16 +6,16 @@ Steps:
      once per flag_type; receive AggregateOutput with discovered patterns.
   3 (automated): Merge all AggregatePattern instances, sort by occurrence_count
      DESC with deterministic tie-break, take top DEFAULT_CONVENTION_TOP_N=15,
-     UPSERT to directives table via stable identity_key.
+     resolve/reuse lineage identity, then UPSERT to directives.
 
 Death cases addressed here:
 - DC-3: Step-3 top-N silent tie-truncation. Deterministic tie-break by
   (flag_type.value ASC, pattern_description ASC) makes re-runs converge.
 - DC-5: Aggregator reads only what the repo returns; result.flags_read
   discloses this count (retention-purge disclosure surface).
-- DC-6: Identity-key uses the EMERGED pattern's representative_sessions
-  (not the input flags). Two patterns with overlapping but distinct session
-  sets produce distinct keys.
+- DC-6: Representative-session snapshots remain a diagnostic artifact only.
+  Canonical directive identity is resolved separately and is not derived from
+  `representative_sessions`.
 
 Failure semantics (read carefully — task-5 orchestrator):
 
@@ -52,13 +52,12 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Final
-
-_logger = logging.getLogger(__name__)
 
 from secondsight.analysis.agent import AnalysisAgent
 from secondsight.analysis.prompts.aggregate import (
@@ -71,11 +70,23 @@ from secondsight.analysis.schemas import (
     BehaviorFlag,
     BehaviorFlagType,
     Directive,
+    DirectiveRevision,
     DirectiveStatus,
     DirectiveType,
 )
+from secondsight.config.schema import DirectiveLifecycleConfig
 from secondsight.feedback.dedup import DedupVerdict, check_semantic_dedup
+from secondsight.feedback.directive_identity import resolve_or_create_identity
+from secondsight.feedback.directive_policy import (
+    DirectiveLifecycleSignal,
+    evaluate_directive_policy_with_config,
+)
+from secondsight.feedback.directive_revision import build_revision_candidate
 from secondsight.feedback.lifecycle import validate_transition
+from secondsight.feedback.lifecycle_automation import _enforce_capacity_ceiling
+from secondsight.storage.directive_revisions_repository import DirectiveRevisionsRepository
+
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     # Avoid circular import: storage.behavior_flags_repository imports
@@ -93,37 +104,24 @@ if TYPE_CHECKING:
 DEFAULT_CONVENTION_TOP_N: Final[int] = 15
 
 
+def _pattern_description_matches(left: str, right: str) -> bool:
+    left_tokens = set(re.sub(r"[^\w\s]", "", left.lower()).split())
+    right_tokens = set(re.sub(r"[^\w\s]", "", right.lower()).split())
+    if not left_tokens or not right_tokens:
+        return False
+    return len(left_tokens & right_tokens) / len(left_tokens | right_tokens) >= 0.6
+
+
 def compute_identity_key(
     project_id: str,
     flag_type: BehaviorFlagType,
     representative_sessions: Sequence[str],
 ) -> str:
-    """Stable hash for directives UPSERT.
+    """Legacy deterministic pattern fingerprint helper.
 
-    Public for the task-5 orchestrator and any future verifier or auditing
-    tool that needs to reproduce or check an identity_key without running a
-    full aggregation. Tests use it directly. The aggregator is the only
-    production caller today.
-
-    Input: emerged AggregatePattern's (project_id, flag_type,
-    representative_sessions) — NOT the input flags. This is critical: two
-    patterns emerging from the same flag_type with overlapping but distinct
-    session-sets must produce distinct identity_keys (DC-6).
-
-    Security-privacy-review MEDIUM-3: project_id is included in the hash
-    input so the hash itself is self-isolating across projects. Previously
-    cross-project isolation depended entirely on the DB
-    UNIQUE(project_id, identity_key) constraint; now it is structural in
-    the hash. This is defense-in-depth — the DB constraint still enforces
-    the invariant, but the hash no longer collides across projects even
-    if the constraint were removed or the hash were used outside the DB.
-
-    Returns: hex sha256 of `project_id + "|" + flag_type.value + "|" +
-    sorted(representative_sessions).join(",")`.
-
-    Assumption: flag_type.value is the canonical string (e.g.
-    "unnecessary_read"). Enum re-ordering does not affect the hash because
-    .value is the declared string, not the enum's integer ordinal or repr.
+    Lifecycle hygiene no longer uses representative-session hashes as the
+    canonical directive identity. The helper remains public for tests and
+    diagnostics that need a reproducible snapshot fingerprint.
     """
     sorted_sessions = sorted(representative_sessions)
     raw = f"{project_id}|{flag_type.value}|{','.join(sorted_sessions)}"
@@ -161,6 +159,8 @@ async def aggregate_project_flags(
     directives_repo: DirectivesRepository,
     agent: AnalysisAgent,
     top_n: int = DEFAULT_CONVENTION_TOP_N,
+    capacity_ceiling: int = DEFAULT_CONVENTION_TOP_N,
+    lifecycle_config: DirectiveLifecycleConfig | None = None,
 ) -> AggregateProjectResult:
     """Run Step 1 → Step 2 → Step 3 for one project.
 
@@ -174,9 +174,12 @@ async def aggregate_project_flags(
             Negative values raise ValueError immediately — loud
             misconfiguration failure rather than a silent empty result.
             Default: DEFAULT_CONVENTION_TOP_N (15).
+        capacity_ceiling: maximum number of active conventions retained after
+            lifecycle policy and revision processing. Must be > 0.
 
     Raises:
         ValueError: if top_n < 0.
+        ValueError: if capacity_ceiling <= 0.
         AnalysisAgentError: if any Step-2 LLM call fails (Step 2
             all-or-nothing — see module docstring Failure semantics).
 
@@ -205,14 +208,22 @@ async def aggregate_project_flags(
         If flags_read == 0 (empty project), frequency = 0.0.
 
         source_sessions stores the emerged pattern's representative_sessions
-        (NOT the full set of contributing session_ids — DC-6 identity
-        argument depends on this distinction).
+        (NOT the full set of contributing session_ids). They remain useful
+        diagnostic context, but they do not define canonical identity.
     """
     if top_n < 0:
         raise ValueError(
             f"top_n must be >= 0, got {top_n!r}. "
             "Pass top_n=0 for an explicit no-op (no directives written)."
         )
+    if capacity_ceiling <= 0:
+        raise ValueError(
+            f"capacity_ceiling must be > 0, got {capacity_ceiling!r}. "
+            "Pass a positive per-project directive_lifecycle.capacity_ceiling."
+        )
+    effective_lifecycle_config = lifecycle_config or DirectiveLifecycleConfig(
+        capacity_ceiling=capacity_ceiling
+    )
 
     # ------------------------------------------------------------------ Step 1
     # Group flags by flag_type. Only non-empty groups proceed to Step 2.
@@ -281,22 +292,64 @@ async def aggregate_project_flags(
     now = datetime.now(timezone.utc)
     upserted = 0
     skipped_dedup = 0
+    repromoted_identity_keys: set[str] = set()
+    revisions_repo = DirectiveRevisionsRepository(directives_repo._db)
+    revisions_repo.create_schema()
 
-    # P3B-1: load existing active conventions for semantic dedup.
-    # Only pre-existing conventions are checked — conventions added in
-    # this loop iteration are NOT deduped against each other (they come
-    # from distinct patterns with distinct identity_keys; the UPSERT
-    # handles same-key convergence).
-    preexisting_conventions = directives_repo.get_active_conventions(project_id)
+    # Identity reuse must see both pre-existing directives and directives
+    # already written earlier in this same aggregation run.
+    identity_scope_directives = directives_repo.list_for_identity_resolution(project_id)
+    active_conventions = directives_repo.get_active_conventions(project_id)
+    run_identity_descriptors: list[Directive] = []
 
     for flag_type, pattern in top:
-        # Compute identity_key first so we can exclude self-matches in dedup.
-        identity_key = compute_identity_key(project_id, flag_type, pattern.representative_sessions)
+        cached_directive = next(
+            (
+                d
+                for d in run_identity_descriptors
+                if d.source_flag_type == flag_type.value
+                and _pattern_description_matches(pattern.pattern_description, d.instruction)
+            ),
+            None,
+        )
+        if cached_directive is not None:
+            identity_key = cached_directive.identity_key
+            matched_directive_id = cached_directive.id
+            matched_status = cached_directive.status
+        else:
+            resolution = resolve_or_create_identity(
+                project_id=project_id,
+                flag_type=flag_type,
+                pattern_description=pattern.pattern_description,
+                candidate_instruction=pattern.convention,
+                representative_sessions=list(pattern.representative_sessions),
+                existing_directives=identity_scope_directives,
+            )
+            if resolution.is_unknown:
+                _logger.warning(
+                    "aggregator: identity resolution ambiguous for project_id=%r flag_type=%s pattern=%r reason=%s",
+                    project_id,
+                    flag_type.value,
+                    pattern.pattern_description,
+                    resolution.match_reason,
+                )
+                continue
+            identity_key = resolution.identity_key
+            matched_directive_id = resolution.matched_directive_id
+            matched_status = resolution.matched_status
+            if identity_key is None:
+                _logger.warning(
+                    "aggregator: identity resolution returned no lineage id for project_id=%r flag_type=%s pattern=%r",
+                    project_id,
+                    flag_type.value,
+                    pattern.pattern_description,
+                )
+                continue
 
         # P3B-1: semantic dedup check before UPSERT.
         dedup_result = check_semantic_dedup(
             pattern.convention,
-            preexisting_conventions,
+            active_conventions,
             exclude_identity_key=identity_key,
         )
 
@@ -328,8 +381,13 @@ async def aggregate_project_flags(
                     dedup_result.matched_directive_id,
                     dedup_result.similarity,
                 )
-                preexisting_conventions = [
-                    d for d in preexisting_conventions if d.id != dedup_result.matched_directive_id
+                active_conventions = [
+                    d for d in active_conventions if d.id != dedup_result.matched_directive_id
+                ]
+                identity_scope_directives = [
+                    d
+                    for d in identity_scope_directives
+                    if d.id != dedup_result.matched_directive_id
                 ]
             except Exception as exc:
                 _logger.warning(
@@ -338,11 +396,30 @@ async def aggregate_project_flags(
                     exc,
                 )
 
+        if matched_directive_id is not None and matched_status is DirectiveStatus.OBSOLETE:
+            try:
+                validate_transition(
+                    DirectiveStatus.OBSOLETE,
+                    DirectiveStatus.ACTIVE,
+                    directive_id=matched_directive_id,
+                )
+                directives_repo.update_status(
+                    matched_directive_id,
+                    DirectiveStatus.ACTIVE,
+                )
+            except Exception as exc:
+                _logger.warning(
+                    "aggregator: failed to reactivate obsolete directive_id=%r: %s",
+                    matched_directive_id,
+                    exc,
+                )
+                continue
+
         frequency = (
             float(pattern.occurrence_count) / flags_read_total if flags_read_total > 0 else 0.0
         )
         directive = Directive(
-            id=str(uuid.uuid4()),
+            id=matched_directive_id or str(uuid.uuid4()),
             project_id=project_id,
             type=DirectiveType.CONVENTION,
             status=DirectiveStatus.ACTIVE,
@@ -355,6 +432,31 @@ async def aggregate_project_flags(
             updated_at=now,
         )
         directives_repo.upsert_with_identity_key(directive)
+        stored = directives_repo.get_by_project_identity_key(project_id, identity_key)
+        if stored is not None:
+            repromoted_identity_keys.add(stored.identity_key)
+            if any(d.identity_key == stored.identity_key for d in identity_scope_directives):
+                identity_scope_directives = [
+                    d for d in identity_scope_directives if d.identity_key != stored.identity_key
+                ]
+                identity_scope_directives.append(stored)
+            run_identity_descriptors = [
+                d for d in run_identity_descriptors if d.identity_key != stored.identity_key
+            ]
+            run_identity_descriptors.append(
+                Directive(
+                    id=stored.id,
+                    project_id=stored.project_id,
+                    type=stored.type,
+                    status=stored.status,
+                    instruction=pattern.pattern_description,
+                    source_flag_type=flag_type.value,
+                    source_sessions=list(pattern.representative_sessions),
+                    identity_key=stored.identity_key,
+                    created_at=stored.created_at,
+                    updated_at=stored.updated_at,
+                )
+            )
         upserted += 1
 
     if skipped_dedup > 0:
@@ -363,6 +465,60 @@ async def aggregate_project_flags(
             skipped_dedup,
             project_id,
         )
+
+    seen_source_flag_types = {flag_type.value for flag_type, _ in all_patterns}
+    for directive in directives_repo.list_for_identity_resolution(project_id):
+        signal = DirectiveLifecycleSignal(
+            directive=directive,
+            now=now,
+            same_identity_repromoted=directive.identity_key in repromoted_identity_keys,
+            source_flag_seen=bool(directive.source_flag_type)
+            and directive.source_flag_type in seen_source_flag_types,
+        )
+        decision = evaluate_directive_policy_with_config(signal, effective_lifecycle_config)
+        if not decision.applied:
+            continue
+        directives_repo.update_policy_state(
+            directive.id,
+            status=decision.new_status,
+            weight=decision.new_weight,
+            miss_streak=decision.new_miss_streak,
+            last_promoted_at=decision.last_promoted_at,
+            last_source_flag_seen_at=decision.last_source_flag_seen_at,
+        )
+        refreshed = directives_repo.get_by_id(directive.id)
+        if refreshed is None or not decision.should_revise:
+            continue
+
+        candidate = build_revision_candidate(refreshed)
+        candidate_instruction = candidate.instruction if candidate is not None else None
+        accepted = bool(candidate_instruction) and candidate_instruction != refreshed.instruction
+        revision_row = DirectiveRevision(
+            id=str(uuid.uuid4()),
+            project_id=refreshed.project_id,
+            directive_id=refreshed.id,
+            identity_key=refreshed.identity_key,
+            revision_index=revisions_repo.next_revision_index(refreshed.id),
+            old_instruction=refreshed.instruction,
+            new_instruction=candidate_instruction or refreshed.instruction,
+            reason=decision.reason,
+            accepted=accepted,
+            review_note=(candidate.strategy if accepted and candidate is not None else "rejected"),
+            created_at=now,
+        )
+        revisions_repo.append(revision_row)
+        if accepted:
+            directives_repo.apply_revision(
+                refreshed.id,
+                new_instruction=revision_row.new_instruction,
+                revised_at=now,
+            )
+
+    _enforce_capacity_ceiling(
+        project_id,
+        directives_repo,
+        ceiling=effective_lifecycle_config.capacity_ceiling,
+    )
 
     return AggregateProjectResult(
         project_id=project_id,

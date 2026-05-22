@@ -15,6 +15,9 @@ will further restrict user-PATCHable values to {active, disabled}.
 
 GUR-102 identity_key constraint (task-1):
     The directives table gained UNIQUE(project_id, identity_key) in GUR-102.
+    Lifecycle hygiene extends the row with policy-state columns:
+    weight, miss_streak, last_promoted_at, last_source_flag_seen_at,
+    revision_count, last_revised_at.
     The server_default="" is a transitional DDL value — valid only because
     the table is empty pre-Phase 3. insert() is for non-aggregator code paths
     that don't assign identity_key; callers MUST supply a non-empty, unique
@@ -49,12 +52,43 @@ _logger = logging.getLogger(__name__)
 
 
 class DirectivesRepository:
+    _MISSING_COLUMN_DDL: tuple[tuple[str, str], ...] = (
+        ("weight", "ALTER TABLE directives ADD COLUMN weight FLOAT NOT NULL DEFAULT 0.7"),
+        (
+            "miss_streak",
+            "ALTER TABLE directives ADD COLUMN miss_streak INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "last_promoted_at",
+            "ALTER TABLE directives ADD COLUMN last_promoted_at DATETIME",
+        ),
+        (
+            "last_source_flag_seen_at",
+            "ALTER TABLE directives ADD COLUMN last_source_flag_seen_at DATETIME",
+        ),
+        (
+            "revision_count",
+            "ALTER TABLE directives ADD COLUMN revision_count INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "last_revised_at",
+            "ALTER TABLE directives ADD COLUMN last_revised_at DATETIME",
+        ),
+    )
+
     def __init__(self, db_engine: DBEngine) -> None:
         self._db = db_engine
 
     def create_schema(self) -> None:
-        """Create directives + indexes if absent. Idempotent."""
+        """Create directives + indexes if absent, and backfill new columns.
+
+        ``metadata.create_all(checkfirst=True)`` does not ALTER existing
+        SQLite tables. Lifecycle hygiene adds columns to a table that may
+        already exist on dogfood projects, so we explicitly ``ADD COLUMN`` any
+        missing policy-state fields here.
+        """
         metadata.create_all(self._db.engine, checkfirst=True)
+        self._backfill_missing_columns()
 
     def insert(self, directive: Directive) -> None:
         """Insert a directive. Idempotent on `id` (ON CONFLICT DO NOTHING).
@@ -135,6 +169,15 @@ class DirectivesRepository:
             row = conn.execute(stmt).mappings().first()
             return self._row_to_directive(row) if row else None
 
+    def get_by_project_identity_key(self, project_id: str, identity_key: str) -> Directive | None:
+        stmt = sa.select(directives).where(
+            directives.c.project_id == project_id,
+            directives.c.identity_key == identity_key,
+        )
+        with self._db.engine.connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+            return self._row_to_directive(row) if row else None
+
     def list_for_project(self, project_id: str, *, active_only: bool = False) -> list[Directive]:
         """List directives for a project ordered by ``updated_at`` DESC.
 
@@ -148,7 +191,12 @@ class DirectivesRepository:
         tie-break for rows whose ``updated_at`` collide on the same
         microsecond.
         """
-        _API_VISIBLE = [DirectiveStatus.ACTIVE.value, DirectiveStatus.DISABLED.value]
+        _API_VISIBLE = [
+            DirectiveStatus.ACTIVE.value,
+            DirectiveStatus.DISABLED.value,
+            DirectiveStatus.OBSOLETE.value,
+            DirectiveStatus.STALLED.value,
+        ]
         where = [directives.c.project_id == project_id]
         if active_only:
             where.append(directives.c.status == DirectiveStatus.ACTIVE.value)
@@ -158,6 +206,41 @@ class DirectivesRepository:
             sa.select(directives)
             .where(*where)
             .order_by(directives.c.updated_at.desc(), directives.c.id.asc())
+        )
+        with self._db.engine.connect() as conn:
+            return [self._row_to_directive(r) for r in conn.execute(stmt).mappings()]
+
+    def list_for_identity_resolution(self, project_id: str) -> list[Directive]:
+        """List directives eligible for lineage reuse within a project."""
+        statuses = [
+            DirectiveStatus.ACTIVE.value,
+            DirectiveStatus.OBSOLETE.value,
+            DirectiveStatus.STALLED.value,
+        ]
+        stmt = (
+            sa.select(directives)
+            .where(
+                directives.c.project_id == project_id,
+                directives.c.status.in_(statuses),
+            )
+            .order_by(directives.c.updated_at.desc(), directives.c.id.asc())
+        )
+        with self._db.engine.connect() as conn:
+            return [self._row_to_directive(r) for r in conn.execute(stmt).mappings()]
+
+    def list_active_for_capacity(self, project_id: str) -> list[Directive]:
+        stmt = (
+            sa.select(directives)
+            .where(
+                directives.c.project_id == project_id,
+                directives.c.status == DirectiveStatus.ACTIVE.value,
+                directives.c.type == DirectiveType.CONVENTION.value,
+            )
+            .order_by(
+                directives.c.weight.asc(),
+                directives.c.updated_at.asc(),
+                directives.c.id.asc(),
+            )
         )
         with self._db.engine.connect() as conn:
             return [self._row_to_directive(r) for r in conn.execute(stmt).mappings()]
@@ -263,6 +346,61 @@ class DirectivesRepository:
             if result.rowcount == 0:
                 raise LookupError(
                     f"directive {directive_id!r} not found; update_status will not silently no-op"
+                )
+
+    def update_policy_state(
+        self,
+        directive_id: str,
+        *,
+        status: DirectiveStatus,
+        weight: float,
+        miss_streak: int,
+        last_promoted_at: datetime | None,
+        last_source_flag_seen_at: datetime | None,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        values = {
+            "status": status.value,
+            "weight": weight,
+            "miss_streak": miss_streak,
+            "last_promoted_at": last_promoted_at,
+            "last_source_flag_seen_at": last_source_flag_seen_at,
+            "updated_at": now,
+        }
+        if status is not DirectiveStatus.DISABLED:
+            values["disabled_at"] = None
+            values["disabled_reason"] = None
+
+        stmt = sa.update(directives).where(directives.c.id == directive_id).values(**values)
+        with self._db.engine.begin() as conn:
+            result = conn.execute(stmt)
+            if result.rowcount == 0:
+                raise LookupError(
+                    f"directive {directive_id!r} not found; update_policy_state will not silently no-op"
+                )
+
+    def apply_revision(
+        self,
+        directive_id: str,
+        *,
+        new_instruction: str,
+        revised_at: datetime,
+    ) -> None:
+        stmt = (
+            sa.update(directives)
+            .where(directives.c.id == directive_id)
+            .values(
+                instruction=new_instruction,
+                revision_count=directives.c.revision_count + 1,
+                last_revised_at=revised_at,
+                updated_at=revised_at,
+            )
+        )
+        with self._db.engine.begin() as conn:
+            result = conn.execute(stmt)
+            if result.rowcount == 0:
+                raise LookupError(
+                    f"directive {directive_id!r} not found; apply_revision will not silently no-op"
                 )
 
     def compare_and_update_status(
@@ -400,6 +538,14 @@ class DirectivesRepository:
             return value.value
         return enum_cls(value).value
 
+    def _backfill_missing_columns(self) -> None:
+        with self._db.engine.begin() as conn:
+            rows = conn.exec_driver_sql("PRAGMA table_info(directives)").mappings().all()
+            existing = {row["name"] for row in rows}
+            for column_name, ddl in self._MISSING_COLUMN_DDL:
+                if column_name not in existing:
+                    conn.exec_driver_sql(ddl)
+
     @classmethod
     def _directive_to_row(cls, d: Directive) -> dict[str, Any]:
         return {
@@ -415,6 +561,12 @@ class DirectivesRepository:
             "source_flag_type": d.source_flag_type,
             "source_sessions": json.dumps(d.source_sessions, ensure_ascii=False),
             "identity_key": d.identity_key,
+            "weight": d.weight,
+            "miss_streak": d.miss_streak,
+            "last_promoted_at": d.last_promoted_at,
+            "last_source_flag_seen_at": d.last_source_flag_seen_at,
+            "revision_count": d.revision_count,
+            "last_revised_at": d.last_revised_at,
             "created_at": d.created_at,
             "expires_at": d.expires_at,
             "updated_at": d.updated_at,
@@ -437,6 +589,12 @@ class DirectivesRepository:
             source_flag_type=row["source_flag_type"],
             source_sessions=json.loads(row["source_sessions"]),
             identity_key=row["identity_key"],
+            weight=row["weight"],
+            miss_streak=row["miss_streak"],
+            last_promoted_at=row["last_promoted_at"],
+            last_source_flag_seen_at=row["last_source_flag_seen_at"],
+            revision_count=row["revision_count"],
+            last_revised_at=row["last_revised_at"],
             created_at=row["created_at"],
             expires_at=row["expires_at"],
             updated_at=row["updated_at"],

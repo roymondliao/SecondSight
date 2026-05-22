@@ -1,0 +1,144 @@
+feature: directive-lifecycle-hygiene
+coverage_type: verified
+
+scenarios:
+  # ============================================================
+  # DEATH PATHS — silent failures that look like success
+  # ============================================================
+
+  - name: "rewrite preserves directive row but silently breaks lineage identity"
+    type: death_path
+    given: "an active convention has identity_key=K and revision_count=1"
+    when: "revision pipeline rewrites the instruction text"
+    then:
+      - "directive.identity_key remains exactly K"
+      - "revision_count increments"
+      - "a new row is appended to directive_revisions"
+      - "no new directive row is created for the rewrite"
+
+  - name: "same concept across different session snapshots gets a new identity"
+    type: death_path
+    given: "two aggregation runs produce the same convention concept but different representative_sessions"
+    when: "identity resolution runs on the second aggregation"
+    then:
+      - "the second run reuses the first run's identity_key"
+      - "canonical identity is not derived from representative_sessions"
+      - "if a diagnostic fingerprint is stored, it may differ without affecting identity_key"
+
+  - name: "obsolete convention is re-promoted but remains non-injectable"
+    type: death_path
+    given: "a directive with status=obsolete matches a newly emerged pattern by identity resolution"
+    when: "aggregation + lifecycle policy complete"
+    then:
+      - "directive status transitions to active"
+      - "weight is boosted or restored per policy"
+      - "get_active_conventions() returns the directive"
+      - "no duplicate directive row with a new identity_key exists"
+
+  - name: "source flag family still exists but policy decays instead of revising"
+    type: death_path
+    given: "same_identity_repromoted=false and source_flag_seen=true for an active directive"
+    when: "directive policy is evaluated"
+    then:
+      - "weight does not decay in this step"
+      - "directive is marked for revision or stalled handling"
+      - "status does not transition to obsolete solely from this signal"
+
+  - name: "disabled directives are pulled back into autonomous lifecycle"
+    type: death_path
+    given: "a directive is status=disabled by operator action"
+    when: "aggregation and lifecycle automation run"
+    then:
+      - "policy evaluation excludes the disabled directive"
+      - "no auto-revive, auto-rewrite, or auto-decay touches the row"
+      - "status remains disabled unless operator PATCH changes it"
+
+  - name: "capacity shedding uses frequency instead of weight"
+    type: death_path
+    given: "three active conventions exceed the ceiling and the highest-frequency directive has the lowest weight"
+    when: "capacity shedding runs"
+    then:
+      - "the lowest-weight directive is transitioned to obsolete"
+      - "frequency order alone does not protect it from shedding"
+      - "tie-break is deterministic when weights are equal"
+
+  - name: "operator view hides obsolete and stalled states"
+    type: death_path
+    given: "one directive is obsolete, one is stalled, one is disabled"
+    when: "GET /api/directives?active=false or equivalent CLI listing runs"
+    then:
+      - "response includes obsolete, stalled, and disabled rows"
+      - "each row includes policy metadata fields"
+      - "active-only listing still excludes non-active rows"
+
+  # ============================================================
+  # DEGRADATION PATHS — partial failures with explicit marking
+  # ============================================================
+
+  - name: "semantic match is ambiguous across multiple stale directives"
+    type: degradation
+    given: "multiple obsolete/stalled directives in the same project overlap semantically with a new pattern"
+    when: "identity resolution cannot choose a confident single match"
+    then:
+      - "resolution does not silently mint a new identity_key"
+      - "the aggregation step surfaces an unknown/failure signal explicitly"
+      - "operator-visible logs state that identity resolution was ambiguous"
+
+  - name: "revision cap reached for an ineffective convention"
+    type: degradation
+    given: "a directive continues to miss identity re-promotion while source_flag_seen=true and revision_count is at cap"
+    when: "policy evaluation runs"
+    then:
+      - "status transitions to stalled"
+      - "no additional rewrite is attempted"
+      - "directive remains visible to operator surfaces with revision_count intact"
+
+  - name: "directive list API expands shape with lifecycle fields"
+    type: degradation
+    given: "older callers expect the original DirectiveOut contract"
+    when: "API/CLI return rows after this change"
+    then:
+      - "the new fields are always emitted, even when null"
+      - "schema contract tests pin the exact field set"
+      - "no field is conditionally omitted based on status"
+
+  # ============================================================
+  # HAPPY PATHS — explicit evidence chain
+  # ============================================================
+
+  - name: "new convention concept creates a stable lineage id"
+    type: happy_path
+    given: "an aggregation run emits a truly new convention concept for a project"
+    when: "identity resolution and directive upsert execute"
+    then:
+      - "a new opaque identity_key is assigned"
+      - "directive status is active"
+      - "weight and other lifecycle state fields are initialized"
+      - "subsequent rewrites or revivals must reuse this identity_key"
+
+  - name: "recurring concept revives an obsolete directive by identity"
+    type: happy_path
+    given: "an obsolete directive exists and a later aggregation emits the same concept"
+    when: "identity resolution matches the emerged pattern to the obsolete directive"
+    then:
+      - "the obsolete directive returns to active"
+      - "weight increases according to policy"
+      - "prompt injection can include the directive again"
+
+  - name: "successful teaching fades a convention into obsolete"
+    type: happy_path
+    given: "a directive's source flag family stops appearing across enough aggregation runs to cross the miss threshold"
+    when: "policy evaluation repeats over those runs"
+    then:
+      - "miss_streak increments deterministically"
+      - "weight decays after the configured grace threshold"
+      - "status eventually becomes obsolete when the obsolete threshold is crossed"
+
+  - name: "global active convention ceiling stays bounded"
+    type: happy_path
+    given: "a project accumulates more active conventions than directive_lifecycle.capacity_ceiling"
+    when: "post-policy capacity shedding runs"
+    then:
+      - "final active convention count is <= directive_lifecycle.capacity_ceiling"
+      - "shed directives become obsolete rather than deleted"
+      - "operator surfaces show which directives were shed"

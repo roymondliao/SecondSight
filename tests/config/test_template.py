@@ -583,10 +583,15 @@ def test_feedback_template_defaults_match_schema_defaults() -> None:
 
     parsed = tomllib.loads(generate_config_template())
     feedback = parsed["feedback"]
+    directive_lifecycle = parsed["directive_lifecycle"]
     defaults = FeedbackConfig()
+    from secondsight.config.schema import DirectiveLifecycleConfig
 
     assert feedback["convention_injection_budget"] == defaults.convention_injection_budget
     assert feedback["convention_top_n"] == defaults.convention_top_n
+    lifecycle_defaults = DirectiveLifecycleConfig()
+    assert directive_lifecycle["capacity_ceiling"] == lifecycle_defaults.capacity_ceiling
+    assert directive_lifecycle["revision_cap"] == lifecycle_defaults.revision_cap
 
 
 # ---------------------------------------------------------------------------

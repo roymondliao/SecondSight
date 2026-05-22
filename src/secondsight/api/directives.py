@@ -43,6 +43,7 @@ from secondsight.api._id_safety import is_safe_id
 from secondsight.api.registry import ProjectResources
 from secondsight.api.server import AppState  # type-only after lifespan setup
 from secondsight.storage.directives_repository import DirectivesRepository
+from secondsight.storage.directive_revisions_repository import DirectiveRevisionsRepository
 from secondsight.storage.directives_table import directives as directives_table
 
 _STRICT = ConfigDict(frozen=True, extra="forbid")
@@ -78,6 +79,12 @@ class DirectiveOut(BaseModel):
     source_flag_type: str | None = None
     source_sessions: list[str] = Field(default_factory=list)
     identity_key: str
+    weight: float = 0.7
+    miss_streak: int = 0
+    last_promoted_at: datetime | None = None
+    last_source_flag_seen_at: datetime | None = None
+    revision_count: int = 0
+    last_revised_at: datetime | None = None
     created_at: datetime
     expires_at: datetime | None = None
     updated_at: datetime
@@ -99,6 +106,12 @@ class DirectiveOut(BaseModel):
             source_flag_type=directive.source_flag_type,
             source_sessions=list(directive.source_sessions),
             identity_key=directive.identity_key,
+            weight=directive.weight,
+            miss_streak=directive.miss_streak,
+            last_promoted_at=directive.last_promoted_at,
+            last_source_flag_seen_at=directive.last_source_flag_seen_at,
+            revision_count=directive.revision_count,
+            last_revised_at=directive.last_revised_at,
             created_at=directive.created_at,
             expires_at=directive.expires_at,
             updated_at=directive.updated_at,
@@ -107,12 +120,46 @@ class DirectiveOut(BaseModel):
         )
 
 
+class DirectiveRevisionOut(BaseModel):
+    """Response shape for a directive revision ledger row."""
+
+    model_config = _STRICT
+
+    id: str
+    project_id: str
+    directive_id: str
+    identity_key: str
+    revision_index: int
+    old_instruction: str
+    new_instruction: str
+    reason: str
+    accepted: bool
+    review_note: str | None = None
+    created_at: datetime
+
+    @classmethod
+    def from_revision(cls, revision) -> "DirectiveRevisionOut":
+        return cls(
+            id=revision.id,
+            project_id=revision.project_id,
+            directive_id=revision.directive_id,
+            identity_key=revision.identity_key,
+            revision_index=revision.revision_index,
+            old_instruction=revision.old_instruction,
+            new_instruction=revision.new_instruction,
+            reason=revision.reason,
+            accepted=revision.accepted,
+            review_note=revision.review_note,
+            created_at=revision.created_at,
+        )
+
+
 class DirectivePatchRequest(BaseModel):
     """Body for ``PATCH /api/directives/{id}``.
 
     User-PATCHable status values are constrained to ``{active, disabled}``
-    per ``DirectivesRepository`` lifecycle contract. The other three
-    statuses (``expired``, ``superseded``, ``obsolete``) are analyzer-set
+    per ``DirectivesRepository`` lifecycle contract. The other four
+    statuses (``expired``, ``superseded``, ``obsolete``, ``stalled``) are analyzer-set
     and rejected at the Pydantic layer with 422.
 
     Lifecycle rules enforced by ``model_validator``:
@@ -206,6 +253,12 @@ def _directives_repo(resources: ProjectResources) -> DirectivesRepository:
     return repo
 
 
+def _directive_revisions_repo(resources: ProjectResources) -> DirectiveRevisionsRepository:
+    repo = DirectiveRevisionsRepository(resources.db_engine)
+    repo.create_schema()
+    return repo
+
+
 async def _aresources(request: Request, project_id: str) -> ProjectResources:
     """Project-scoped resource resolution with safe-id check.
 
@@ -240,7 +293,7 @@ router = APIRouter()
     description=(
         "Returns directives for the project. By default returns active "
         "directives only (``active=true``); pass ``active=false`` to "
-        "include disabled directives. Listing carries an ETag derived "
+        "include disabled/obsolete/stalled directives. Listing carries an ETag derived "
         "from MAX(updated_at) + row count over the in-scope set; clients "
         "that echo it via ``If-None-Match`` get 304 with no body."
     ),
@@ -253,9 +306,8 @@ async def list_directives(
         True,
         description=(
             "When true (default), return only directives with status "
-            "'active'. When false, include disabled directives too. "
-            "Other statuses (expired/superseded/obsolete) are analyzer-only "
-            "and never surfaced via this endpoint."
+            "'active'. When false, include disabled/obsolete/stalled directives too. "
+            "Other statuses (expired/superseded) remain analyzer-only and are not surfaced."
         ),
     ),
 ) -> list[DirectiveOut] | Response:
@@ -272,6 +324,41 @@ async def list_directives(
     if etag is not None:
         response.headers["ETag"] = etag
     return [DirectiveOut.from_directive(d) for d in directives_list]
+
+
+@router.get(
+    "/api/directives/{directive_id}/revisions",
+    response_model=None,
+    summary="List revision ledger entries for a directive",
+    description=(
+        "Returns append-only revision history for one directive. "
+        "Rows are ordered by revision_index ascending so operators can inspect "
+        "accepted and rejected rewrites."
+    ),
+)
+async def list_directive_revisions(
+    request: Request,
+    directive_id: str,
+    project_id: str = Query(..., min_length=1, max_length=128),
+) -> list[DirectiveRevisionOut]:
+    if not is_safe_id(directive_id):
+        raise HTTPException(
+            status_code=422,
+            detail=(f"directive_id {directive_id!r} contains unsafe characters."),
+        )
+
+    resources = await _aresources(request, project_id)
+    directives_repo = _directives_repo(resources)
+    directive = directives_repo.get_by_id(directive_id)
+    if directive is None or directive.project_id != project_id:
+        raise HTTPException(
+            status_code=404,
+            detail=(f"directive {directive_id!r} not found in project {project_id!r}."),
+        )
+
+    revisions_repo = _directive_revisions_repo(resources)
+    revisions = revisions_repo.list_for_directive(directive_id)
+    return [DirectiveRevisionOut.from_revision(revision) for revision in revisions]
 
 
 @router.patch(

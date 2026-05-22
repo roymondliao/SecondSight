@@ -7,8 +7,11 @@ adds these columns to the canonical DDL is part of task-5 (D3 ship gate).
 `status` and `type` columns are TEXT; validation lives at the
 repository layer (D1 — mirrors events.event_type convention).
 
-`identity_key` (GUR-102 task-1):
-    Hash = sha256(flag_type.value + "|" + sorted(repr_session_ids).join(",")).
+`identity_key` (GUR-102 task-1, lifecycle hygiene follow-up):
+    Project-scoped directive identity. The current aggregator still fills this
+    via its pre-lineage strategy; lifecycle hygiene later redefines the
+    generator. The DDL contract here is only that the value is non-empty per
+    project on real rows.
     server_default="" is a TRANSITIONAL DDL default only — valid because
     the table is empty pre-Phase 3 (G4). The DirectivesRepository
     upsert_with_identity_key() guard rejects empty identity_key, so no
@@ -36,7 +39,7 @@ directives = sa.Table(
         "status",
         sa.Text,
         nullable=False,
-    ),  # active|disabled|expired|superseded|obsolete
+    ),  # active|disabled|expired|superseded|obsolete|stalled
     sa.Column("instruction", sa.Text, nullable=False),
     sa.Column("frequency", sa.Float, nullable=True),
     sa.Column("trigger_pattern", sa.Text, nullable=True),  # hint reserved
@@ -49,6 +52,12 @@ directives = sa.Table(
         nullable=False,
         server_default="[]",
     ),  # JSON-encoded list[str]
+    sa.Column("weight", sa.Float, nullable=False, server_default="0.7"),
+    sa.Column("miss_streak", sa.Integer, nullable=False, server_default="0"),
+    sa.Column("last_promoted_at", sa.DateTime, nullable=True),
+    sa.Column("last_source_flag_seen_at", sa.DateTime, nullable=True),
+    sa.Column("revision_count", sa.Integer, nullable=False, server_default="0"),
+    sa.Column("last_revised_at", sa.DateTime, nullable=True),
     sa.Column("created_at", sa.DateTime, nullable=False),
     sa.Column("expires_at", sa.DateTime, nullable=True),
     sa.Column("updated_at", sa.DateTime, nullable=False),

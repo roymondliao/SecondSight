@@ -40,7 +40,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from secondsight.api.directives import DirectiveOut
+from secondsight.api.directives import DirectiveOut, DirectiveRevisionOut
 from secondsight.cli._home import secondsight_home as resolve_secondsight_home
 
 app = typer.Typer(
@@ -112,6 +112,11 @@ def _serialize_directives(directives: list[DirectiveOut]) -> str:
     return json.dumps(items)
 
 
+def _serialize_revisions(revisions: list[DirectiveRevisionOut]) -> str:
+    items = [json.loads(r.model_dump_json()) for r in revisions]
+    return json.dumps(items)
+
+
 # ---------------------------------------------------------------------------
 # Subcommand callback
 # ---------------------------------------------------------------------------
@@ -124,6 +129,17 @@ def directive(
         False,
         "--active",
         help="List active directives for the project.",
+    ),
+    all_statuses: bool = typer.Option(
+        False,
+        "--all",
+        help="List active + disabled + obsolete + stalled directives.",
+    ),
+    history: Optional[str] = typer.Option(
+        None,
+        "--history",
+        help="List revision ledger entries for one directive.",
+        metavar="DIRECTIVE_ID",
     ),
     disable: Optional[str] = typer.Option(
         None,
@@ -173,24 +189,26 @@ def directive(
 ) -> None:
     """Query and manage directives.
 
-    Use exactly one of --active, --disable, or --enable per invocation.
+    Use exactly one of --active, --all, --history, --disable, or --enable per invocation.
     """
     secondsight_home_path = resolve_secondsight_home(home)
     project_id = project or _resolve_project_id(secondsight_home_path)
 
     # -------------------------------------------------------------------
-    # Mode validation (Step 4): exactly one of {active, disable, enable}
+    # Mode validation (Step 4): exactly one of {active, all, history, disable, enable}
     # -------------------------------------------------------------------
-    modes_set = sum([active, disable is not None, enable is not None])
+    modes_set = sum(
+        [active, all_statuses, history is not None, disable is not None, enable is not None]
+    )
     if modes_set == 0:
         raise typer.BadParameter(
-            "Provide one of --active, --disable DIRECTIVE_ID, or --enable DIRECTIVE_ID.",
-            param_hint="--active / --disable / --enable",
+            "Provide one of --active, --all, --history DIRECTIVE_ID, --disable DIRECTIVE_ID, or --enable DIRECTIVE_ID.",
+            param_hint="--active / --all / --history / --disable / --enable",
         )
     if modes_set > 1:
         raise typer.BadParameter(
-            "Only one of --active, --disable, or --enable may be specified at a time.",
-            param_hint="--active / --disable / --enable",
+            "Only one of --active, --all, --history, --disable, or --enable may be specified at a time.",
+            param_hint="--active / --all / --history / --disable / --enable",
         )
 
     # -------------------------------------------------------------------
@@ -216,6 +234,25 @@ def directive(
     # -------------------------------------------------------------------
     if active:
         _handle_list_active(
+            project_id=project_id,
+            secondsight_home=secondsight_home_path,
+            no_server=no_server,
+            server_url=server_url,
+            output_format=format,
+            active_only=True,
+        )
+    elif all_statuses:
+        _handle_list_active(
+            project_id=project_id,
+            secondsight_home=secondsight_home_path,
+            no_server=no_server,
+            server_url=server_url,
+            output_format=format,
+            active_only=False,
+        )
+    elif history is not None:
+        _handle_history(
+            directive_id=history,
             project_id=project_id,
             secondsight_home=secondsight_home_path,
             no_server=no_server,
@@ -255,6 +292,7 @@ def _handle_list_active(
     no_server: bool,
     server_url: str,
     output_format: str,
+    active_only: bool,
 ) -> None:
     """List active directives and render the result."""
     if not no_server:
@@ -262,7 +300,7 @@ def _handle_list_active(
             directives = _list_directives_via_server(
                 server_url=server_url,
                 project_id=project_id,
-                active_only=True,
+                active_only=active_only,
             )
             _render_directives(directives, output_format=output_format)
             raise typer.Exit(code=0)
@@ -293,9 +331,56 @@ def _handle_list_active(
     directives = _list_directives_in_process(
         secondsight_home=secondsight_home,
         project_id=project_id,
-        active_only=True,
+        active_only=active_only,
     )
     _render_directives(directives, output_format=output_format)
+    raise typer.Exit(code=0)
+
+
+def _handle_history(
+    *,
+    directive_id: str,
+    project_id: str,
+    secondsight_home: Path,
+    no_server: bool,
+    server_url: str,
+    output_format: str,
+) -> None:
+    if not no_server:
+        try:
+            revisions = _list_revisions_via_server(
+                server_url=server_url,
+                project_id=project_id,
+                directive_id=directive_id,
+            )
+            _render_revisions(revisions, output_format=output_format)
+            raise typer.Exit(code=0)
+        except httpx.ConnectError:
+            logger.info(
+                f"directive: server at {server_url} not reachable; falling back to in-process history query"
+            )
+            typer.echo(
+                f"Server at {server_url} not reachable — running in-process.",
+                err=True,
+            )
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                f"directive: server at {server_url} returned HTTP {exc.response.status_code} "
+                f"for GET /api/directives/{directive_id}/revisions"
+            )
+            typer.echo(
+                f"Server at {server_url} returned HTTP {exc.response.status_code} "
+                f"— directive history aborted. Use --no-server to bypass server mode.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
+    revisions = _list_revisions_in_process(
+        secondsight_home=secondsight_home,
+        project_id=project_id,
+        directive_id=directive_id,
+    )
+    _render_revisions(revisions, output_format=output_format)
     raise typer.Exit(code=0)
 
 
@@ -326,6 +411,23 @@ def _list_directives_via_server(
     return [DirectiveOut.model_validate(item) for item in raw_list]
 
 
+def _list_revisions_via_server(
+    *,
+    server_url: str,
+    project_id: str,
+    directive_id: str,
+) -> list[DirectiveRevisionOut]:
+    url = f"{server_url.rstrip('/')}/api/directives/{directive_id}/revisions"
+    response = httpx.get(
+        url,
+        params={"project_id": project_id},
+        timeout=10.0,
+    )
+    response.raise_for_status()
+    raw_list: list[dict] = response.json()
+    return [DirectiveRevisionOut.model_validate(item) for item in raw_list]
+
+
 def _list_directives_in_process(
     *,
     secondsight_home: Path,
@@ -353,6 +455,39 @@ def _list_directives_in_process(
         repo.create_schema()
         directives_list = repo.list_for_project(project_id, active_only=active_only)
         return [DirectiveOut.from_directive(d) for d in directives_list]
+    finally:
+        db_engine.dispose()
+
+
+def _list_revisions_in_process(
+    *,
+    secondsight_home: Path,
+    project_id: str,
+    directive_id: str,
+) -> list[DirectiveRevisionOut]:
+    from secondsight.storage.db_engine import DBEngine
+    from secondsight.storage.directive_revisions_repository import DirectiveRevisionsRepository
+    from secondsight.storage.directives_repository import DirectivesRepository
+
+    project_dir = secondsight_home / "projects" / project_id
+    db_path = project_dir / "intelligence.db"
+
+    db_engine = DBEngine(db_path)
+    try:
+        directives_repo = DirectivesRepository(db_engine)
+        directives_repo.create_schema()
+        directive = directives_repo.get_by_id(directive_id)
+        if directive is None or directive.project_id != project_id:
+            raise typer.BadParameter(
+                f"Directive {directive_id!r} not found in project {project_id!r}.",
+                param_hint="--history",
+            )
+        revisions_repo = DirectiveRevisionsRepository(db_engine)
+        revisions_repo.create_schema()
+        return [
+            DirectiveRevisionOut.from_revision(revision)
+            for revision in revisions_repo.list_for_directive(directive_id)
+        ]
     finally:
         db_engine.dispose()
 
@@ -388,11 +523,11 @@ def _render_directives(
 
     # Rich table output
     table = Table(
-        title=f"Active Directives ({len(directives)} total)",
-        show_header=True,
-        header_style="bold cyan",
+        title=f"Directives ({len(directives)} total)", show_header=True, header_style="bold cyan"
     )
     table.add_column("id", style="dim", max_width=20)
+    table.add_column("status")
+    table.add_column("weight")
     table.add_column("type")
     table.add_column("instruction", max_width=60)
     table.add_column("frequency")
@@ -401,10 +536,44 @@ def _render_directives(
     for d in directives:
         table.add_row(
             d.id,
+            d.status,
+            f"{d.weight:.2f}",
             d.type,
             d.instruction,
             str(round(d.frequency, 3)) if d.frequency is not None else "—",
             str(d.created_at),
+        )
+
+    _console.print(table)
+
+
+def _render_revisions(
+    revisions: list[DirectiveRevisionOut],
+    *,
+    output_format: str,
+) -> None:
+    if output_format == "json":
+        typer.echo(_serialize_revisions(revisions))
+        return
+
+    table = Table(
+        title=f"Directive Revisions ({len(revisions)} total)",
+        show_header=True,
+        header_style="bold cyan",
+    )
+    table.add_column("index")
+    table.add_column("accepted")
+    table.add_column("reason", max_width=24)
+    table.add_column("review_note", max_width=16)
+    table.add_column("created_at")
+
+    for revision in revisions:
+        table.add_row(
+            str(revision.revision_index),
+            "yes" if revision.accepted else "no",
+            revision.reason,
+            revision.review_note or "—",
+            str(revision.created_at),
         )
 
     _console.print(table)
@@ -683,5 +852,8 @@ __all__ = [
     "app",
     "_list_directives_in_process",
     "_list_directives_via_server",
+    "_list_revisions_in_process",
+    "_list_revisions_via_server",
     "_serialize_directives",
+    "_serialize_revisions",
 ]

@@ -29,6 +29,7 @@ from secondsight.analysis.schemas import (
     SegmentData,
     ToolUseSpan,
 )
+from secondsight.api.directives import DirectivePatchRequest
 
 
 # ---------- helpers ----------
@@ -144,12 +145,25 @@ class TestDeathPaths:
         self,
     ) -> None:
         """DT-1.6 — SD §7.4 status vocabulary is exactly these five strings."""
-        expected = {"active", "disabled", "expired", "superseded", "obsolete"}
+        expected = {
+            "active",
+            "disabled",
+            "expired",
+            "superseded",
+            "obsolete",
+            "stalled",
+        }
         actual = {m.value for m in DirectiveStatus}
         assert actual == expected, (
             f"DirectiveStatus drifted from SD §7.4. "
             f"missing={expected - actual}, extra={actual - expected}"
         )
+
+    def test_dt_1_6_b_stalled_is_not_user_patchable(self) -> None:
+        """STALLED is analyzer-set and must stay outside PATCH surface."""
+        with pytest.raises(ValidationError) as exc:
+            DirectivePatchRequest(status=cast(Any, "stalled"))
+        assert "status" in str(exc.value).lower()
 
     def test_dt_1_7_segment_data_accepts_pre_prompt_empty_segment(self) -> None:
         """DT-1.7 — pre-prompt segment (user_prompt=None, events=[]) is valid.
@@ -202,6 +216,7 @@ class TestEnumCoverage:
             (DirectiveStatus.EXPIRED, "expired"),
             (DirectiveStatus.SUPERSEDED, "superseded"),
             (DirectiveStatus.OBSOLETE, "obsolete"),
+            (DirectiveStatus.STALLED, "stalled"),
         ],
     )
     def test_directive_status_value_exact(
@@ -251,6 +266,12 @@ class TestRoundTrip:
                 status=DirectiveStatus.DISABLED,
                 disabled_at=_now(),
                 disabled_reason="superseded by D-2",
+                weight=0.65,
+                miss_streak=1,
+                last_promoted_at=_now(),
+                last_source_flag_seen_at=_now(),
+                revision_count=2,
+                last_revised_at=_now(),
             )
         )
         dumped = d.model_dump(mode="json")
@@ -258,6 +279,9 @@ class TestRoundTrip:
         assert rebuilt == d
         assert rebuilt.disabled_at is not None
         assert rebuilt.disabled_reason == "superseded by D-2"
+        assert rebuilt.weight == 0.65
+        assert rebuilt.miss_streak == 1
+        assert rebuilt.revision_count == 2
 
     def test_tool_use_span_orphan_start_is_valid(self) -> None:
         span = ToolUseSpan(

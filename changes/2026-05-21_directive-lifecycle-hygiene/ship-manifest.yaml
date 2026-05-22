@@ -1,0 +1,38 @@
+delivered_capability: "Project-scoped directive lifecycle automation with stable lineage ids, config-tunable lifecycle policy, append-only revision history, and bounded active convention capacity."
+
+known_failure_modes:
+  - mode: "Generic pattern descriptions can over-merge unrelated conventions into one lineage during semantic identity resolution."
+    severity: silent_corruption
+    detection: "Review suspicious lineage reuse via `secondsight directive --all --format json` and `secondsight directive --history DIRECTIVE_ID` when one lineage starts collecting unrelated instructions or source sessions."
+  - mode: "Weak aggregation signals can decay a still-valid convention to obsolete because weight is driven by promotion/miss proxies rather than direct effectiveness."
+    severity: silent_corruption
+    detection: "Detect through unexpected `weight` drops, rising `miss_streak`, and `obsolete` transitions in the directives API/CLI surfaces."
+  - mode: "Revision generation is still deterministic by flag family, so multiple concepts can receive the same generic rewrite candidate."
+    severity: degradation
+    detection: "Inspect `/api/directives/{directive_id}/revisions` or `secondsight directive --history DIRECTIVE_ID` for placeholder review notes and low-value rewrites."
+  - mode: "Revision ledger rows can outlive deleted directives because foreign-key enforcement and delete policy are not implemented."
+    severity: degradation
+    detection: "Detect by storage inspection for `directive_revisions.directive_id` values that no longer resolve to a directives row."
+
+accepted_risks:
+  - risk: "Semantic lineage matching is still Jaccard-style and has not been calibrated against a broader corpus of real aggregation outputs."
+    accepted_by: "human"
+    expires: "2026-07-31"
+  - risk: "Weight policy is config-tunable but still proxy-driven rather than effectiveness-driven."
+    accepted_by: "human"
+    expires: "2026-07-31"
+  - risk: "Revision generation is a placeholder seam, not an LLM rewrite/review loop."
+    accepted_by: "human"
+    expires: "2026-07-31"
+  - risk: "Revision ledger delete/orphan policy remains undefined."
+    accepted_by: "human"
+    expires: "2026-08-15"
+
+silent_failure_surface: low
+
+monitoring_hooks:
+  - "`GET /api/directives?active=false` and `secondsight directive --all` expose `status`, `weight`, `miss_streak`, revision counters, and lifecycle timestamps."
+  - "`GET /api/directives/{directive_id}/revisions` and `secondsight directive --history DIRECTIVE_ID` expose accepted and rejected revision attempts."
+  - "Aggregator logs `identity resolution ambiguous` when lineage reuse cannot be decided safely."
+
+kill_switch: "Set `[feedback].convention_top_n = 0` to stop convention injection immediately; if lifecycle mutations themselves must stop, stop running the analysis/orchestrator path for that project."

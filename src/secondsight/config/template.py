@@ -196,6 +196,16 @@ convention_top_n = 15
 # Set to false to disable without removing the hook from ~/.claude/hooks/.
 hit_injection_enabled = true
 
+# [directive_lifecycle] — autonomous convention fade/revive/revision policy
+[directive_lifecycle]
+# aggregation + lifecycle 後允許保留的 active directive 上限。
+capacity_ceiling = 15
+boost_delta = 0.15
+decay_delta = 0.10
+miss_grace = 2
+obsolete_threshold = 0.20
+revision_cap = 3
+
 # =============================================================================
 # [retention] — Data lifecycle (TTL)
 # =============================================================================

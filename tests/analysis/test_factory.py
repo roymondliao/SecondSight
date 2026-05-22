@@ -200,6 +200,25 @@ class TestFactoryEnabledPath:
         trigger = orch._on_analysis_complete  # noqa: SLF001
         assert isinstance(trigger, PostAnalysisCleanupTrigger)
 
+    def test_factory_loads_directive_lifecycle_capacity_ceiling(
+        self,
+        home: Path,
+        project_id: str,
+        project_resources,
+        fake_agent: FakeAnalysisAgent,
+    ) -> None:
+        proj_cfg = home / "projects" / project_id / "config.toml"
+        proj_cfg.write_text("[directive_lifecycle]\ncapacity_ceiling = 9\n")
+
+        orch = build_orchestrator(
+            home=home,
+            project_id=project_id,
+            resources=project_resources,
+            agent=fake_agent,
+        )
+
+        assert orch._directive_lifecycle_config.capacity_ceiling == 9  # noqa: SLF001
+
 
 class TestFactoryNonBoolConfigRaises:
     """Boundary: a bool-typed config field must reject non-bool values

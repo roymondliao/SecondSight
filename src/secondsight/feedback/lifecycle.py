@@ -5,7 +5,8 @@ State graph (SD §5.9.1):
     active ──────┬──→ disabled     (user soft-disable via dashboard)
                  ├──→ obsolete     (effectiveness tracking: flag frequency → 0)
                  ├──→ superseded   (semantic dedup: newer convention replaces)
-                 └──→ expired      (TTL expiry enforcement)
+                 ├──→ expired      (TTL expiry enforcement)
+                 └──→ stalled      (revision cap reached)
 
     disabled ────┬──→ active       (user re-enable via dashboard)
                  └──  (terminal for analyzer — only user can re-enable)
@@ -18,6 +19,9 @@ State graph (SD §5.9.1):
 
     expired ─────┬──→ active       (re-evaluation finds relevance)
                  └──  (analyzer may re-activate after TTL re-assessment)
+
+    stalled ─────┬──→ active       (same identity re-promoted later)
+                 └──  (analyzer may keep it dormant until then)
 
 Transition actors:
     - USER: active ↔ disabled (via PATCH /api/directives/{id})
@@ -55,6 +59,7 @@ VALID_TRANSITIONS: dict[DirectiveStatus, frozenset[DirectiveStatus]] = {
             DirectiveStatus.OBSOLETE,
             DirectiveStatus.SUPERSEDED,
             DirectiveStatus.EXPIRED,
+            DirectiveStatus.STALLED,
         }
     ),
     DirectiveStatus.DISABLED: frozenset(
@@ -69,6 +74,11 @@ VALID_TRANSITIONS: dict[DirectiveStatus, frozenset[DirectiveStatus]] = {
     ),
     DirectiveStatus.SUPERSEDED: frozenset(),
     DirectiveStatus.EXPIRED: frozenset(
+        {
+            DirectiveStatus.ACTIVE,
+        }
+    ),
+    DirectiveStatus.STALLED: frozenset(
         {
             DirectiveStatus.ACTIVE,
         }

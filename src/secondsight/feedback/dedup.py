@@ -53,7 +53,32 @@ if TYPE_CHECKING:
 
 _logger = logging.getLogger(__name__)
 
-DEDUP_SIMILARITY_THRESHOLD = 0.7
+DEDUP_SIMILARITY_THRESHOLD = 0.66
+_DEFAULT_IDENTITY_THRESHOLD = 0.5
+_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "already",
+    "for",
+    "in",
+    "is",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "when",
+}
+_TOKEN_EQUIVALENTS = {
+    "repository": "repo",
+    "repos": "repo",
+    "searching": "search",
+    "searched": "search",
+    "searches": "search",
+    "files": "file",
+    "paths": "path",
+}
 
 
 class DedupVerdict(str, Enum):
@@ -69,10 +94,25 @@ class DedupResult:
     similarity: float = 0.0
 
 
+@dataclass(frozen=True, slots=True)
+class SemanticMatch:
+    directive_id: str | None
+    identity_key: str | None
+    similarity: float
+    ambiguous: bool = False
+    candidate_ids: tuple[str, ...] = ()
+
+
 def _normalize_tokens(text: str) -> set[str]:
     """Lowercase, strip punctuation, split into word tokens."""
     cleaned = re.sub(r"[^\w\s]", "", text.lower())
-    return set(cleaned.split())
+    normalized: set[str] = set()
+    for raw in cleaned.split():
+        token = _TOKEN_EQUIVALENTS.get(raw, raw)
+        if token in _STOPWORDS:
+            continue
+        normalized.add(token)
+    return normalized
 
 
 def _jaccard_similarity(a: set[str], b: set[str]) -> float:
@@ -81,6 +121,95 @@ def _jaccard_similarity(a: set[str], b: set[str]) -> float:
     if not a or not b:
         return 0.0
     return len(a & b) / len(a | b)
+
+
+def _best_semantic_match(
+    new_instruction: str,
+    existing_conventions: list["Directive"],
+    *,
+    exclude_identity_key: str | None = None,
+    threshold: float = DEDUP_SIMILARITY_THRESHOLD,
+) -> tuple["Directive", float] | None:
+    if not new_instruction:
+        return None
+
+    new_tokens = _normalize_tokens(new_instruction)
+    if not new_tokens:
+        return None
+
+    best_similarity = 0.0
+    best_match: Directive | None = None
+
+    for existing in existing_conventions:
+        if exclude_identity_key and existing.identity_key == exclude_identity_key:
+            continue
+        if not existing.instruction:
+            continue
+        existing_tokens = _normalize_tokens(existing.instruction)
+        if not existing_tokens:
+            continue
+
+        sim = _jaccard_similarity(new_tokens, existing_tokens)
+        if sim > best_similarity:
+            best_similarity = sim
+            best_match = existing
+
+    if best_match is None or best_similarity < threshold:
+        return None
+    return best_match, best_similarity
+
+
+def find_semantic_match(
+    new_instruction: str,
+    existing_conventions: list["Directive"],
+    *,
+    exclude_identity_key: str | None = None,
+    threshold: float = _DEFAULT_IDENTITY_THRESHOLD,
+) -> SemanticMatch | None:
+    """Return the best semantic match, or an explicit ambiguous result."""
+    if not new_instruction:
+        return None
+    new_tokens = _normalize_tokens(new_instruction)
+    if not new_tokens:
+        return None
+
+    matches: list[tuple[Directive, float]] = []
+    for existing in existing_conventions:
+        if exclude_identity_key and existing.identity_key == exclude_identity_key:
+            continue
+        if not existing.instruction:
+            continue
+        existing_tokens = _normalize_tokens(existing.instruction)
+        if not existing_tokens:
+            continue
+        similarity = _jaccard_similarity(new_tokens, existing_tokens)
+        if similarity >= threshold:
+            matches.append((existing, similarity))
+
+    if not matches:
+        return None
+
+    matches.sort(key=lambda item: (-item[1], item[0].id))
+    best_directive, best_similarity = matches[0]
+    tied = [
+        directive.id
+        for directive, similarity in matches
+        if abs(similarity - best_similarity) < 1e-9
+    ]
+    if len(tied) > 1:
+        return SemanticMatch(
+            directive_id=None,
+            identity_key=None,
+            similarity=best_similarity,
+            ambiguous=True,
+            candidate_ids=tuple(tied),
+        )
+
+    return SemanticMatch(
+        directive_id=best_directive.id,
+        identity_key=best_directive.identity_key,
+        similarity=best_similarity,
+    )
 
 
 def check_semantic_dedup(
@@ -105,32 +234,18 @@ def check_semantic_dedup(
         - SKIP: new instruction is a semantic duplicate of an existing one.
         - SUPERSEDE: new instruction is more precise; supersede the match.
     """
-    if not new_instruction:
+    best = _best_semantic_match(
+        new_instruction,
+        existing_conventions,
+        exclude_identity_key=exclude_identity_key,
+        threshold=DEDUP_SIMILARITY_THRESHOLD,
+    )
+    if not new_instruction or _normalize_tokens(new_instruction) == set():
         return DedupResult(verdict=DedupVerdict.SKIP, similarity=0.0)
+    if best is None:
+        return DedupResult(verdict=DedupVerdict.ADD, similarity=0.0)
 
-    new_tokens = _normalize_tokens(new_instruction)
-    if not new_tokens:
-        return DedupResult(verdict=DedupVerdict.SKIP, similarity=0.0)
-
-    best_similarity = 0.0
-    best_match: Directive | None = None
-
-    for existing in existing_conventions:
-        if exclude_identity_key and existing.identity_key == exclude_identity_key:
-            continue
-        if not existing.instruction:
-            continue
-        existing_tokens = _normalize_tokens(existing.instruction)
-        if not existing_tokens:
-            continue
-
-        sim = _jaccard_similarity(new_tokens, existing_tokens)
-        if sim > best_similarity:
-            best_similarity = sim
-            best_match = existing
-
-    if best_similarity < DEDUP_SIMILARITY_THRESHOLD or best_match is None:
-        return DedupResult(verdict=DedupVerdict.ADD, similarity=best_similarity)
+    best_match, best_similarity = best
 
     new_len = len(new_instruction)
     existing_len = len(best_match.instruction)
@@ -166,5 +281,7 @@ __all__ = [
     "DEDUP_SIMILARITY_THRESHOLD",
     "DedupResult",
     "DedupVerdict",
+    "SemanticMatch",
+    "find_semantic_match",
     "check_semantic_dedup",
 ]

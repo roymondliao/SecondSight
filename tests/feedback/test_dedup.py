@@ -10,6 +10,7 @@ from secondsight.analysis.schemas import Directive, DirectiveStatus, DirectiveTy
 from secondsight.feedback.dedup import (
     DEDUP_SIMILARITY_THRESHOLD,
     DedupVerdict,
+    find_semantic_match,
     _jaccard_similarity,
     _normalize_tokens,
     check_semantic_dedup,
@@ -38,7 +39,7 @@ def _make_directive(
 class TestNormalizeTokens:
     def test_basic_normalization(self) -> None:
         tokens = _normalize_tokens("Always use grep for searching!")
-        assert tokens == {"always", "use", "grep", "for", "searching"}
+        assert tokens == {"always", "use", "grep", "search"}
 
     def test_strips_punctuation(self) -> None:
         tokens = _normalize_tokens("don't use rm -rf /")
@@ -129,3 +130,60 @@ class TestCheckSemanticDedup:
             exclude_identity_key="key-self",
         )
         assert result.verdict == DedupVerdict.SKIP
+
+    def test_find_semantic_match_returns_obsolete_directive(self) -> None:
+        existing = [
+            Directive(
+                id="d-obsolete",
+                project_id="proj-test",
+                type=DirectiveType.CONVENTION,
+                status=DirectiveStatus.OBSOLETE,
+                instruction="Read the target file directly",
+                identity_key="lineage-obsolete",
+                created_at=datetime.now(tz=timezone.utc),
+                updated_at=datetime.now(tz=timezone.utc),
+            )
+        ]
+
+        result = find_semantic_match(
+            "Read the target file directly when the path is already known",
+            existing,
+        )
+
+        assert result is not None
+        assert result.directive_id == "d-obsolete"
+        assert result.identity_key == "lineage-obsolete"
+
+    def test_find_semantic_match_marks_ambiguous_ties(self) -> None:
+        existing = [
+            Directive(
+                id="d-a",
+                project_id="proj-test",
+                type=DirectiveType.CONVENTION,
+                status=DirectiveStatus.OBSOLETE,
+                instruction="Open the exact target file directly",
+                identity_key="lineage-a",
+                created_at=datetime.now(tz=timezone.utc),
+                updated_at=datetime.now(tz=timezone.utc),
+            ),
+            Directive(
+                id="d-b",
+                project_id="proj-test",
+                type=DirectiveType.CONVENTION,
+                status=DirectiveStatus.STALLED,
+                instruction="Open the exact target file directly",
+                identity_key="lineage-b",
+                created_at=datetime.now(tz=timezone.utc),
+                updated_at=datetime.now(tz=timezone.utc),
+            ),
+        ]
+
+        result = find_semantic_match(
+            "Open the exact target file directly",
+            existing,
+        )
+
+        assert result is not None
+        assert result.ambiguous is True
+        assert result.directive_id is None
+        assert set(result.candidate_ids) == {"d-a", "d-b"}

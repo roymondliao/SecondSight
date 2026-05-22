@@ -53,6 +53,9 @@ class TestDeathPaths:
         for status in DirectiveStatus:
             assert status in VALID_TRANSITIONS
 
+    def test_dt_4_b_stalled_has_explicit_transition_contract(self) -> None:
+        assert DirectiveStatus.STALLED in VALID_TRANSITIONS
+
     def test_dt_5_error_includes_directive_id(self) -> None:
         """DT-5: LifecycleError names the directive for diagnostics."""
         with pytest.raises(LifecycleError) as exc_info:
@@ -72,9 +75,11 @@ class TestHappyPath:
             (DirectiveStatus.ACTIVE, DirectiveStatus.OBSOLETE),
             (DirectiveStatus.ACTIVE, DirectiveStatus.SUPERSEDED),
             (DirectiveStatus.ACTIVE, DirectiveStatus.EXPIRED),
+            (DirectiveStatus.ACTIVE, DirectiveStatus.STALLED),
             (DirectiveStatus.DISABLED, DirectiveStatus.ACTIVE),
             (DirectiveStatus.OBSOLETE, DirectiveStatus.ACTIVE),
             (DirectiveStatus.EXPIRED, DirectiveStatus.ACTIVE),
+            (DirectiveStatus.STALLED, DirectiveStatus.ACTIVE),
         ],
     )
     def test_valid_transitions(self, current: DirectiveStatus, target: DirectiveStatus) -> None:
@@ -90,6 +95,7 @@ class TestHappyPath:
             (DirectiveStatus.EXPIRED, DirectiveStatus.SUPERSEDED),
             (DirectiveStatus.SUPERSEDED, DirectiveStatus.ACTIVE),
             (DirectiveStatus.SUPERSEDED, DirectiveStatus.DISABLED),
+            (DirectiveStatus.STALLED, DirectiveStatus.DISABLED),
         ],
     )
     def test_invalid_transitions(self, current: DirectiveStatus, target: DirectiveStatus) -> None:

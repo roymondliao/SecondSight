@@ -71,6 +71,7 @@ __all__ = [
     "AnalysisRetryConfig",
     "AnalysisConfig",
     "FeedbackConfig",
+    "DirectiveLifecycleConfig",
     # SDK model defaults — named constants (single source of truth for schema + loader)
     "BUILTIN_SDK_PRIMARY_MODEL",
     "BUILTIN_SDK_FALLBACK_MODEL",
@@ -81,6 +82,12 @@ __all__ = [
     "BUILTIN_FEEDBACK_CONVENTION_INJECTION_BUDGET",
     "BUILTIN_FEEDBACK_CONVENTION_TOP_N",
     "BUILTIN_FEEDBACK_HIT_INJECTION_ENABLED",
+    "BUILTIN_DIRECTIVE_LIFECYCLE_CAPACITY_CEILING",
+    "BUILTIN_DIRECTIVE_LIFECYCLE_BOOST_DELTA",
+    "BUILTIN_DIRECTIVE_LIFECYCLE_DECAY_DELTA",
+    "BUILTIN_DIRECTIVE_LIFECYCLE_MISS_GRACE",
+    "BUILTIN_DIRECTIVE_LIFECYCLE_OBSOLETE_THRESHOLD",
+    "BUILTIN_DIRECTIVE_LIFECYCLE_REVISION_CAP",
 ]
 
 
@@ -124,6 +131,12 @@ BUILTIN_ANALYSIS_TIMEOUT_SECONDS: int = 300
 BUILTIN_FEEDBACK_CONVENTION_INJECTION_BUDGET: int = 2000
 BUILTIN_FEEDBACK_CONVENTION_TOP_N: int = 15
 BUILTIN_FEEDBACK_HIT_INJECTION_ENABLED: bool = True
+BUILTIN_DIRECTIVE_LIFECYCLE_CAPACITY_CEILING: int = 15
+BUILTIN_DIRECTIVE_LIFECYCLE_BOOST_DELTA: float = 0.15
+BUILTIN_DIRECTIVE_LIFECYCLE_DECAY_DELTA: float = 0.10
+BUILTIN_DIRECTIVE_LIFECYCLE_MISS_GRACE: int = 2
+BUILTIN_DIRECTIVE_LIFECYCLE_OBSOLETE_THRESHOLD: float = 0.20
+BUILTIN_DIRECTIVE_LIFECYCLE_REVISION_CAP: int = 3
 
 
 @dataclass(frozen=True)
@@ -446,6 +459,76 @@ class FeedbackConfig:
             )
 
 
+@dataclass(frozen=True)
+class DirectiveLifecycleConfig:
+    """Config for [directive_lifecycle] section."""
+
+    capacity_ceiling: int = BUILTIN_DIRECTIVE_LIFECYCLE_CAPACITY_CEILING
+    boost_delta: float = BUILTIN_DIRECTIVE_LIFECYCLE_BOOST_DELTA
+    decay_delta: float = BUILTIN_DIRECTIVE_LIFECYCLE_DECAY_DELTA
+    miss_grace: int = BUILTIN_DIRECTIVE_LIFECYCLE_MISS_GRACE
+    obsolete_threshold: float = BUILTIN_DIRECTIVE_LIFECYCLE_OBSOLETE_THRESHOLD
+    revision_cap: int = BUILTIN_DIRECTIVE_LIFECYCLE_REVISION_CAP
+
+    def __post_init__(self) -> None:
+        if type(self.capacity_ceiling) is not int:
+            raise SecondSightConfigError(
+                "[directive_lifecycle].capacity_ceiling must be an integer; "
+                f"got {type(self.capacity_ceiling).__name__!r}"
+            )
+        if self.capacity_ceiling <= 0:
+            raise SecondSightConfigError(
+                f"[directive_lifecycle].capacity_ceiling must be > 0; got {self.capacity_ceiling!r}"
+            )
+        if type(self.boost_delta) not in (int, float):
+            raise SecondSightConfigError(
+                "[directive_lifecycle].boost_delta must be numeric; "
+                f"got {type(self.boost_delta).__name__!r}"
+            )
+        if float(self.boost_delta) <= 0:
+            raise SecondSightConfigError(
+                f"[directive_lifecycle].boost_delta must be > 0; got {self.boost_delta!r}"
+            )
+        if type(self.decay_delta) not in (int, float):
+            raise SecondSightConfigError(
+                "[directive_lifecycle].decay_delta must be numeric; "
+                f"got {type(self.decay_delta).__name__!r}"
+            )
+        if float(self.decay_delta) <= 0:
+            raise SecondSightConfigError(
+                f"[directive_lifecycle].decay_delta must be > 0; got {self.decay_delta!r}"
+            )
+        if type(self.miss_grace) is not int:
+            raise SecondSightConfigError(
+                "[directive_lifecycle].miss_grace must be an integer; "
+                f"got {type(self.miss_grace).__name__!r}"
+            )
+        if self.miss_grace <= 0:
+            raise SecondSightConfigError(
+                f"[directive_lifecycle].miss_grace must be > 0; got {self.miss_grace!r}"
+            )
+        if type(self.obsolete_threshold) not in (int, float):
+            raise SecondSightConfigError(
+                "[directive_lifecycle].obsolete_threshold must be numeric; "
+                f"got {type(self.obsolete_threshold).__name__!r}"
+            )
+        threshold = float(self.obsolete_threshold)
+        if threshold <= 0 or threshold >= 1:
+            raise SecondSightConfigError(
+                "[directive_lifecycle].obsolete_threshold must be between 0 and 1; "
+                f"got {self.obsolete_threshold!r}"
+            )
+        if type(self.revision_cap) is not int:
+            raise SecondSightConfigError(
+                "[directive_lifecycle].revision_cap must be an integer; "
+                f"got {type(self.revision_cap).__name__!r}"
+            )
+        if self.revision_cap <= 0:
+            raise SecondSightConfigError(
+                f"[directive_lifecycle].revision_cap must be > 0; got {self.revision_cap!r}"
+            )
+
+
 # ---------------------------------------------------------------------------
 # SecondSightConfig root — aggregates all sections
 # ---------------------------------------------------------------------------
@@ -489,6 +572,7 @@ class SecondSightConfig:
             and analysis.cli.default_agent will not diverge for the same input config.
         project_analysis: Per-project analysis config (model override, empty = not set).
         feedback: Feedback config for convention injection.
+        directive_lifecycle: Config for autonomous directive lifecycle policy.
     """
 
     retention: RetentionConfig
@@ -498,3 +582,4 @@ class SecondSightConfig:
     analysis_global: GlobalAnalysisConfig
     project_analysis: ProjectAnalysisConfig
     feedback: FeedbackConfig = field(default_factory=FeedbackConfig)
+    directive_lifecycle: DirectiveLifecycleConfig = field(default_factory=DirectiveLifecycleConfig)

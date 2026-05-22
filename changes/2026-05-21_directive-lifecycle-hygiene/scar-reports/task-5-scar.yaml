@@ -1,0 +1,14 @@
+task_id: task-5
+completion_status: done_with_concerns
+
+known_shortcuts: []
+
+silent_failure_conditions: []
+
+assumptions_made:
+  - assumption: "operator visibility for dormant directives is satisfied by active=false API/CLI listings plus policy metadata fields, even without a dedicated dashboard revision view."
+    verified: true
+    note: "Verified by tests/api/test_directives.py and tests/cli/test_directive.py covering obsolete/stalled visibility and stable JSON shape."
+
+debt_registered: false
+debt_location: ""

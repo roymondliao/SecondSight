@@ -88,8 +88,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
-from secondsight.analysis.aggregator import AggregateProjectResult, aggregate_project_flags
+from secondsight.analysis.aggregator import (
+    DEFAULT_CONVENTION_TOP_N,
+    AggregateProjectResult,
+    aggregate_project_flags,
+)
 from secondsight.analysis.agent import AnalysisAgent, AnalysisAgentError
+from secondsight.config.schema import DirectiveLifecycleConfig
 from secondsight.feedback.lifecycle_automation import run_lifecycle_automation
 from secondsight.api._id_safety import is_safe_id
 from secondsight.analysis.behavior import promote_draft, validate_draft_pre_insert
@@ -229,6 +234,7 @@ class Orchestrator:
         segmenter: Segmenter | None = None,
         filesystem_backup_home: Path | None = None,
         on_analysis_complete: Callable[[str], None] | None = None,
+        directive_lifecycle_config: DirectiveLifecycleConfig | None = None,
     ) -> None:
         """Construct an Orchestrator.
 
@@ -284,6 +290,9 @@ class Orchestrator:
         self._agent = agent
         self._db_engine = db_engine
         self._filesystem_backup_home = filesystem_backup_home
+        self._directive_lifecycle_config = directive_lifecycle_config or DirectiveLifecycleConfig(
+            capacity_ceiling=DEFAULT_CONVENTION_TOP_N
+        )
         # Allow DI of a fake segmenter for testing; default to real Segmenter.
         self._segmenter: Segmenter = segmenter or Segmenter(events_repo)
         self._on_analysis_complete = on_analysis_complete
@@ -455,6 +464,8 @@ class Orchestrator:
             behavior_flags_repo=self._behavior_flags_repo,
             directives_repo=self._directives_repo,
             agent=self._agent,
+            capacity_ceiling=self._directive_lifecycle_config.capacity_ceiling,
+            lifecycle_config=self._directive_lifecycle_config,
         )
 
     async def analyze_and_aggregate(

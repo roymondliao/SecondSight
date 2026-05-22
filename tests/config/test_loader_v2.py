@@ -748,13 +748,14 @@ class TestUTV2LoaderFeedbackConfig:
         home = tmp_path / ".secondsight"
         _write_toml(
             home / "config.toml",
-            "[feedback]\nconvention_injection_budget = 777\nconvention_top_n = 8\n",
+            "[feedback]\nconvention_injection_budget = 777\nconvention_top_n = 8\n\n[directive_lifecycle]\ncapacity_ceiling = 12\n",
         )
 
         cfg = load_global_config(home)
 
         assert cfg.feedback.convention_injection_budget == 777
         assert cfg.feedback.convention_top_n == 8
+        assert cfg.directive_lifecycle.capacity_ceiling == 12
 
     def test_project_feedback_overrides_global_per_field(self, tmp_path: Path) -> None:
         from secondsight.config.loader import load_project_config
@@ -762,14 +763,15 @@ class TestUTV2LoaderFeedbackConfig:
         home = tmp_path / ".secondsight"
         _write_toml(
             home / "config.toml",
-            "[feedback]\nconvention_injection_budget = 777\nconvention_top_n = 8\n",
+            "[feedback]\nconvention_injection_budget = 777\nconvention_top_n = 8\n\n[directive_lifecycle]\ncapacity_ceiling = 12\n",
         )
         _write_toml(
             home / "projects" / "proj-1" / "config.toml",
-            "[feedback]\nconvention_injection_budget = 111\n",
+            "[feedback]\nconvention_injection_budget = 111\n\n[directive_lifecycle]\ncapacity_ceiling = 4\n",
         )
 
         cfg = load_project_config(home, "proj-1")
 
         assert cfg.feedback.convention_injection_budget == 111
         assert cfg.feedback.convention_top_n == 8
+        assert cfg.directive_lifecycle.capacity_ceiling == 4

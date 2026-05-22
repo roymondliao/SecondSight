@@ -6,8 +6,9 @@ Death tests come FIRST. Each death test names the silent failure mode it closes.
 Death test inventory:
 - DT-4.1: DC-3 — deterministic tie-break at top_n boundary. Re-runs pick the
            same pattern at rank 15 when three patterns share occurrence_count=5.
-- DT-4.2: DC-6 — two patterns, same flag_type, distinct identity_key from
-           distinct representative_sessions.
+- DT-4.2: two semantically distinct patterns mint separate lineage ids.
+- DT-4.2.b: same concept across different representative_sessions reuses one
+            lineage id instead of minting a second directive.
 - DT-4.3: DG-2.1 — partial step-2 failure writes nothing. First call succeeds,
            second raises AnalysisAgentError; no directives written.
 - DT-4.4: DC-5 — flags_read disclosed in result (not silently omitted).
@@ -30,6 +31,7 @@ Assumption (verified): pytest-asyncio with @pytest.mark.asyncio on each async te
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,9 +50,13 @@ from secondsight.analysis.prompts.aggregate import (
 from secondsight.analysis.schemas import (
     BehaviorFlag,
     BehaviorFlagType,
+    Directive,
+    DirectiveStatus,
+    DirectiveType,
 )
 from secondsight.storage.behavior_flags_repository import BehaviorFlagsRepository
 from secondsight.storage.db_engine import DBEngine
+from secondsight.storage.directive_revisions_repository import DirectiveRevisionsRepository
 from secondsight.storage.directives_repository import DirectivesRepository
 from tests.analysis._fake_agent import FakeAnalysisAgent
 
@@ -310,11 +316,11 @@ class TestDT41DeterministicTieBreak:
 
 
 class TestDT42DistinctIdentityKeys:
-    """DT-4.2 (= DT-1.5) — DC-6: two patterns, same flag_type, distinct identity_key.
+    """DT-4.2 — two semantically distinct patterns mint separate lineage ids.
 
-    Two AggregatePattern for UNNECESSARY_READ with overlapping but distinct
-    representative_sessions. Both must produce distinct identity_keys and
-    be separately persisted. Re-run must not duplicate rows.
+    Representative session sets are no longer the canonical identity source.
+    This test still expects two rows, but because the concepts differ, not
+    because the session snapshots differ.
     """
 
     pytestmark = pytest.mark.asyncio
@@ -370,18 +376,7 @@ class TestDT42DistinctIdentityKeys:
         assert len(keys) == 2, f"Expected 2 directives, got {len(keys)}"
         assert len(set(keys)) == 2, f"Expected 2 DISTINCT identity_keys, got {keys}"
 
-        # Verify keys match compute_identity_key
-        expected_key_A = compute_identity_key(
-            _PROJECT_ID,
-            BehaviorFlagType.UNNECESSARY_READ,
-            pattern_A.representative_sessions,
-        )
-        expected_key_B = compute_identity_key(
-            _PROJECT_ID,
-            BehaviorFlagType.UNNECESSARY_READ,
-            pattern_B.representative_sessions,
-        )
-        assert set(keys) == {expected_key_A, expected_key_B}
+        assert all(key for key in keys)
 
         # Re-run — still 2 rows (UPSERT, no duplicate)
         agent2 = FakeAnalysisAgent(aggregate_outputs={prompt_key: aggregate_output})
@@ -393,6 +388,54 @@ class TestDT42DistinctIdentityKeys:
         )
         assert result2.directives_upserted == 2
         assert _count_directives(db_engine) == 2, "Re-run must not create duplicate rows"
+
+    @pytest.mark.asyncio
+    async def test_same_concept_different_session_sets_reuses_identity(
+        self,
+        db_engine: DBEngine,
+        flags_repo: BehaviorFlagsRepository,
+        directives_repo: DirectivesRepository,
+    ) -> None:
+        flag1 = _make_flag(session_id="sess-A", flag_id_suffix="dt42b-1")
+        flag2 = _make_flag(session_id="sess-B", flag_id_suffix="dt42b-2")
+        flags_repo.insert(flag1)
+        flags_repo.insert(flag2)
+
+        pattern_A = _make_pattern(
+            pattern_description="Pattern A",
+            occurrence_count=3,
+            representative_sessions=["sess-A", "sess-C"],
+            convention="Always use rg for repository search",
+        )
+        pattern_B = _make_pattern(
+            pattern_description="Pattern A rewritten",
+            occurrence_count=2,
+            representative_sessions=["sess-B", "sess-D"],
+            convention="Always use rg for searching the repository",
+        )
+        aggregate_output = AggregateOutput(patterns=[pattern_A, pattern_B])
+        flag_summaries = [
+            FlagSummary(
+                session_id=f.session_id,
+                segment_summary=f.intent_summary,
+                reason=f.reason,
+            )
+            for f in [flag1, flag2]
+        ]
+        prompt_key = build_aggregate_prompt(BehaviorFlagType.UNNECESSARY_READ, flag_summaries)
+
+        agent = FakeAnalysisAgent(aggregate_outputs={prompt_key: aggregate_output})
+        result = await aggregate_project_flags(
+            _PROJECT_ID,
+            behavior_flags_repo=flags_repo,
+            directives_repo=directives_repo,
+            agent=agent,
+        )
+
+        assert result.directives_upserted == 2
+        assert _count_directives(db_engine) == 1
+        keys = _get_directive_identity_keys(db_engine)
+        assert len(keys) == 1
 
 
 class TestDT43PartialFailureWritesNothing:
@@ -721,7 +764,7 @@ class TestDT47NegativeTopNRaisesValueError:
 
 
 class TestHPA4IdempotentRerun:
-    """HP-4.A — Aggregate, then re-run idempotent via identity_key.
+    """HP-4.A — Aggregate, then re-run idempotent via reused lineage id.
 
     First run creates K directives; second run with same inputs UPSERTs
     (no new rows). The identity_key is preserved; convention text may
@@ -785,10 +828,6 @@ class TestHPA4IdempotentRerun:
         # identity_key must be the same between runs
         keys = _get_directive_identity_keys(db_engine)
         assert len(keys) == 1
-        expected_key = compute_identity_key(
-            _PROJECT_ID, BehaviorFlagType.UNNECESSARY_READ, ["sess-001"]
-        )
-        assert keys[0] == expected_key
 
 
 class TestHPB4TopNBound:
@@ -1049,3 +1088,371 @@ class TestResultFields:
         assert result.flags_read == 2
         assert result.patterns_emerged == 2
         assert result.directives_upserted == 2
+
+
+class TestTask4RevisionPipeline:
+    pytestmark = pytest.mark.asyncio
+
+    @pytest.mark.asyncio
+    async def test_accepted_rewrite_preserves_identity_and_appends_ledger(
+        self,
+        db_engine: DBEngine,
+        flags_repo: BehaviorFlagsRepository,
+        directives_repo: DirectivesRepository,
+    ) -> None:
+        original = Directive(
+            id="dir-revise-1",
+            project_id=_PROJECT_ID,
+            type=DirectiveType.CONVENTION,
+            status=DirectiveStatus.ACTIVE,
+            instruction="Old convention text",
+            source_flag_type=BehaviorFlagType.UNNECESSARY_READ.value,
+            identity_key="lineage-revise-1",
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+        directives_repo.insert(original)
+        flag = _make_flag(flag_id_suffix="rev-1", session_id="sess-rev-1")
+        flags_repo.insert(flag)
+
+        prompt_key = build_aggregate_prompt(
+            BehaviorFlagType.UNNECESSARY_READ,
+            [
+                FlagSummary(
+                    session_id=flag.session_id,
+                    segment_summary=flag.intent_summary,
+                    reason=flag.reason,
+                )
+            ],
+        )
+        agent = FakeAnalysisAgent(
+            aggregate_outputs={
+                prompt_key: AggregateOutput(
+                    patterns=[
+                        _make_pattern(
+                            "Different concept",
+                            2,
+                            ["sess-other"],
+                            "A different unnecessary read convention",
+                        )
+                    ]
+                )
+            }
+        )
+
+        await aggregate_project_flags(
+            _PROJECT_ID,
+            behavior_flags_repo=flags_repo,
+            directives_repo=directives_repo,
+            agent=agent,
+        )
+
+        updated = directives_repo.get_by_id("dir-revise-1")
+        assert updated is not None
+        assert updated.identity_key == "lineage-revise-1"
+        assert updated.revision_count == 1
+        assert (
+            updated.instruction
+            == "Prefer the explicit target path over broad repository exploration."
+        )
+
+        revisions = DirectiveRevisionsRepository(db_engine).list_for_directive("dir-revise-1")
+        assert len(revisions) == 1
+        assert revisions[0].accepted is True
+        assert revisions[0].review_note == "deterministic_flag_type_placeholder"
+
+    @pytest.mark.asyncio
+    async def test_revision_cap_transitions_to_stalled_without_rewrite(
+        self,
+        db_engine: DBEngine,
+        flags_repo: BehaviorFlagsRepository,
+        directives_repo: DirectivesRepository,
+    ) -> None:
+        original = Directive(
+            id="dir-stalled-cap",
+            project_id=_PROJECT_ID,
+            type=DirectiveType.CONVENTION,
+            status=DirectiveStatus.ACTIVE,
+            instruction="Old convention text",
+            source_flag_type=BehaviorFlagType.UNNECESSARY_READ.value,
+            identity_key="lineage-stalled-cap",
+            revision_count=3,
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+        directives_repo.insert(original)
+        flag = _make_flag(flag_id_suffix="rev-cap", session_id="sess-cap")
+        flags_repo.insert(flag)
+
+        prompt_key = build_aggregate_prompt(
+            BehaviorFlagType.UNNECESSARY_READ,
+            [
+                FlagSummary(
+                    session_id=flag.session_id,
+                    segment_summary=flag.intent_summary,
+                    reason=flag.reason,
+                )
+            ],
+        )
+        agent = FakeAnalysisAgent(
+            aggregate_outputs={
+                prompt_key: AggregateOutput(
+                    patterns=[
+                        _make_pattern(
+                            "Different concept",
+                            2,
+                            ["sess-other"],
+                            "A different unnecessary read convention",
+                        )
+                    ]
+                )
+            }
+        )
+
+        await aggregate_project_flags(
+            _PROJECT_ID,
+            behavior_flags_repo=flags_repo,
+            directives_repo=directives_repo,
+            agent=agent,
+        )
+
+        updated = directives_repo.get_by_id("dir-stalled-cap")
+        assert updated is not None
+        assert updated.status is DirectiveStatus.STALLED
+        assert updated.revision_count == 3
+        assert updated.instruction == "Old convention text"
+        revisions = DirectiveRevisionsRepository(db_engine).list_for_directive("dir-stalled-cap")
+        assert revisions == []
+
+    @pytest.mark.asyncio
+    async def test_rejected_rewrite_does_not_overwrite_instruction(
+        self,
+        db_engine: DBEngine,
+        flags_repo: BehaviorFlagsRepository,
+        directives_repo: DirectivesRepository,
+    ) -> None:
+        original = Directive(
+            id="dir-reject-1",
+            project_id=_PROJECT_ID,
+            type=DirectiveType.CONVENTION,
+            status=DirectiveStatus.ACTIVE,
+            instruction="Prefer the explicit target path over broad repository exploration.",
+            source_flag_type=BehaviorFlagType.UNNECESSARY_READ.value,
+            identity_key="lineage-reject-1",
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+        directives_repo.insert(original)
+        flag = _make_flag(flag_id_suffix="rev-reject", session_id="sess-reject")
+        flags_repo.insert(flag)
+
+        prompt_key = build_aggregate_prompt(
+            BehaviorFlagType.UNNECESSARY_READ,
+            [
+                FlagSummary(
+                    session_id=flag.session_id,
+                    segment_summary=flag.intent_summary,
+                    reason=flag.reason,
+                )
+            ],
+        )
+        agent = FakeAnalysisAgent(
+            aggregate_outputs={
+                prompt_key: AggregateOutput(
+                    patterns=[
+                        _make_pattern(
+                            "Different concept",
+                            2,
+                            ["sess-other"],
+                            "A different unnecessary read convention",
+                        )
+                    ]
+                )
+            }
+        )
+
+        await aggregate_project_flags(
+            _PROJECT_ID,
+            behavior_flags_repo=flags_repo,
+            directives_repo=directives_repo,
+            agent=agent,
+        )
+
+        updated = directives_repo.get_by_id("dir-reject-1")
+        assert updated is not None
+        assert updated.instruction == original.instruction
+        assert updated.revision_count == 0
+
+        revisions = DirectiveRevisionsRepository(db_engine).list_for_directive("dir-reject-1")
+        assert len(revisions) == 1
+        assert revisions[0].accepted is False
+
+
+class TestTask5CapacityCeiling:
+    pytestmark = pytest.mark.asyncio
+
+    @pytest.mark.asyncio
+    async def test_capacity_shedding_prefers_low_weight_over_high_frequency(
+        self,
+        flags_repo: BehaviorFlagsRepository,
+        directives_repo: DirectivesRepository,
+    ) -> None:
+        directives_repo.insert(
+            Directive(
+                id="dir-low-weight",
+                project_id=_PROJECT_ID,
+                type=DirectiveType.CONVENTION,
+                status=DirectiveStatus.ACTIVE,
+                instruction="Keep this only if still justified",
+                frequency=0.95,
+                source_flag_type=BehaviorFlagType.UNNECESSARY_READ.value,
+                source_sessions=["sess-old-1"],
+                identity_key="lineage-low-weight",
+                weight=0.10,
+                created_at=_NOW,
+                updated_at=_NOW,
+            )
+        )
+        directives_repo.insert(
+            Directive(
+                id="dir-high-weight",
+                project_id=_PROJECT_ID,
+                type=DirectiveType.CONVENTION,
+                status=DirectiveStatus.ACTIVE,
+                instruction="Lower frequency but still justified",
+                frequency=0.10,
+                source_flag_type=BehaviorFlagType.REDUNDANT_EXPLORATION.value,
+                source_sessions=["sess-old-2"],
+                identity_key="lineage-high-weight",
+                weight=0.90,
+                created_at=_NOW,
+                updated_at=_NOW,
+            )
+        )
+
+        flag = _make_flag(
+            flag_type=BehaviorFlagType.WRONG_TOOL_CHOICE,
+            flag_id_suffix="cap-1",
+            session_id="sess-cap-1",
+        )
+        flags_repo.insert(flag)
+        prompt_key = build_aggregate_prompt(
+            BehaviorFlagType.WRONG_TOOL_CHOICE,
+            [
+                FlagSummary(
+                    session_id=flag.session_id,
+                    segment_summary=flag.intent_summary,
+                    reason=flag.reason,
+                )
+            ],
+        )
+        agent = FakeAnalysisAgent(
+            aggregate_outputs={
+                prompt_key: AggregateOutput(
+                    patterns=[
+                        _make_pattern(
+                            "Wrong tool pattern",
+                            2,
+                            ["sess-cap-1"],
+                            "Use the narrowest tool that answers the task.",
+                        )
+                    ]
+                )
+            }
+        )
+
+        await aggregate_project_flags(
+            _PROJECT_ID,
+            behavior_flags_repo=flags_repo,
+            directives_repo=directives_repo,
+            agent=agent,
+            capacity_ceiling=2,
+        )
+
+        low_weight = directives_repo.get_by_id("dir-low-weight")
+        high_weight = directives_repo.get_by_id("dir-high-weight")
+        assert low_weight is not None
+        assert high_weight is not None
+        assert low_weight.status is DirectiveStatus.OBSOLETE
+        assert high_weight.status is DirectiveStatus.ACTIVE
+
+
+class TestTask2AmbiguousIdentityResolution:
+    pytestmark = pytest.mark.asyncio
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_match_logs_warning_and_skips_new_lineage(
+        self,
+        db_engine: DBEngine,
+        flags_repo: BehaviorFlagsRepository,
+        directives_repo: DirectivesRepository,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        directives_repo.insert(
+            Directive(
+                id="dir-obsolete-a",
+                project_id=_PROJECT_ID,
+                type=DirectiveType.CONVENTION,
+                status=DirectiveStatus.OBSOLETE,
+                instruction="Open the exact target file directly",
+                source_flag_type=BehaviorFlagType.UNNECESSARY_READ.value,
+                source_sessions=["sess-old-a"],
+                identity_key="lineage-a",
+                created_at=_NOW,
+                updated_at=_NOW,
+            )
+        )
+        directives_repo.insert(
+            Directive(
+                id="dir-stalled-b",
+                project_id=_PROJECT_ID,
+                type=DirectiveType.CONVENTION,
+                status=DirectiveStatus.STALLED,
+                instruction="Open the exact target file directly",
+                source_flag_type=BehaviorFlagType.UNNECESSARY_READ.value,
+                source_sessions=["sess-old-b"],
+                identity_key="lineage-b",
+                created_at=_NOW,
+                updated_at=_NOW,
+            )
+        )
+        flag = _make_flag(flag_id_suffix="amb-1", session_id="sess-amb-1")
+        flags_repo.insert(flag)
+        prompt_key = build_aggregate_prompt(
+            BehaviorFlagType.UNNECESSARY_READ,
+            [
+                FlagSummary(
+                    session_id=flag.session_id,
+                    segment_summary=flag.intent_summary,
+                    reason=flag.reason,
+                )
+            ],
+        )
+        agent = FakeAnalysisAgent(
+            aggregate_outputs={
+                prompt_key: AggregateOutput(
+                    patterns=[
+                        _make_pattern(
+                            "Exact file pattern",
+                            2,
+                            ["sess-amb-1"],
+                            "Open the exact target file directly",
+                        )
+                    ]
+                )
+            }
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = await aggregate_project_flags(
+                _PROJECT_ID,
+                behavior_flags_repo=flags_repo,
+                directives_repo=directives_repo,
+                agent=agent,
+            )
+
+        assert result.directives_upserted == 0
+        assert _count_directives(db_engine) == 2
+        assert any(
+            "identity resolution ambiguous" in record.getMessage() for record in caplog.records
+        )

@@ -1,0 +1,16 @@
+task_id: task-3
+completion_status: done_with_concerns
+
+known_shortcuts: []
+
+silent_failure_conditions:
+  - description: "weight updates are driven by promotion/miss signals, not direct before/after effectiveness; a convention can decay for the wrong reason if aggregation signals are systematically weak."
+    deferred_to_feature_iteration: true
+
+assumptions_made:
+  - assumption: "lifecycle.py should remain the single transition validator even after adding STALLED."
+    verified: true
+    note: "Verified by tests/feedback/test_lifecycle.py covering ACTIVE↔STALLED and orphan transition entries."
+
+debt_registered: true
+debt_location: "src/secondsight/feedback/directive_policy.py; src/secondsight/feedback/lifecycle.py"

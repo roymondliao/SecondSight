@@ -56,8 +56,9 @@ class BehaviorFlagType(str, Enum):
 
 
 class DirectiveStatus(str, Enum):
-    """Per SD §7.4. Five values; user-PATCH surface (GUR-104) accepts
-    only {active, disabled} — the other three are analyzer-set.
+    """Per SD §7.4 + directive lifecycle hygiene. Six values;
+    user-PATCH surface (GUR-104) accepts only {active, disabled} —
+    the other four are analyzer-set.
     """
 
     ACTIVE = "active"
@@ -65,6 +66,7 @@ class DirectiveStatus(str, Enum):
     EXPIRED = "expired"
     SUPERSEDED = "superseded"
     OBSOLETE = "obsolete"
+    STALLED = "stalled"
 
 
 class DirectiveType(str, Enum):
@@ -188,13 +190,37 @@ class Directive(BaseModel):
     confidence: float | None = None  # hint reserved
     max_firing: int | None = None  # hint reserved
     source_flag_type: str | None = None
-    source_sessions: list[str] = []
+    source_sessions: list[str] = Field(default_factory=list)
     identity_key: str = ""
+    weight: float = 0.7
+    miss_streak: int = 0
+    last_promoted_at: datetime | None = None
+    last_source_flag_seen_at: datetime | None = None
+    revision_count: int = 0
+    last_revised_at: datetime | None = None
     created_at: datetime
     expires_at: datetime | None = None
     updated_at: datetime
     disabled_at: datetime | None = None
     disabled_reason: str | None = None
+
+
+class DirectiveRevision(BaseModel):
+    """Append-only ledger row for directive instruction rewrites."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    project_id: str
+    directive_id: str
+    identity_key: str
+    revision_index: int
+    old_instruction: str
+    new_instruction: str
+    reason: str
+    accepted: bool
+    review_note: str | None = None
+    created_at: datetime
 
 
 class ToolUseSpan(BaseModel):

@@ -30,6 +30,7 @@ _EXPECTED_TABLE_NAMES = {
     "events",
     "behavior_flags",
     "directives",
+    "directive_revisions",
     "analysis_runs",
     "session_reports",
     "analysis_outputs",
@@ -229,6 +230,13 @@ class TestStoragePackageRegistrationInvariant:
         from secondsight.storage.events_table import metadata
 
         assert "directives" in metadata.tables
+
+    def test_directive_revisions_table_registered(self):
+        """directive_revisions is registered via storage import chain."""
+        import secondsight.storage  # noqa: F401
+        from secondsight.storage.events_table import metadata
+
+        assert "directive_revisions" in metadata.tables
 
     def test_session_reports_table_registered(self):
         """session_reports is registered via BehaviorFlagsRepository import chain."""

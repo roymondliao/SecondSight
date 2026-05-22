@@ -1,0 +1,16 @@
+task_id: task-4
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: "revision generation is deterministic and keyed by source_flag_type; it does not yet use an LLM rewrite/review loop, so rewritten guidance can be generic for multiple concepts in the same flag family."
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions: []
+
+assumptions_made:
+  - assumption: "append-only directive_revisions rows are sufficient v1 evidence for rewrite/stall debugging without adding a separate lifecycle event stream."
+    verified: true
+    note: "Verified by tests/analysis/test_aggregator.py and tests/storage/test_directive_revisions_repository.py covering accepted, rejected, and capped revision paths."
+
+debt_registered: true
+debt_location: "src/secondsight/analysis/aggregator.py; src/secondsight/storage/directive_revisions_repository.py"

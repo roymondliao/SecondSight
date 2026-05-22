@@ -1,0 +1,45 @@
+feature: directive-lifecycle-hygiene
+status: done_with_concerns
+plan_ref_doc: changes/2026-05-21_directive-lifecycle-hygiene/2-plan.md
+acceptance_ref_doc: changes/2026-05-21_directive-lifecycle-hygiene/acceptance.yaml
+overview_ref_doc: changes/2026-05-21_directive-lifecycle-hygiene/overview.md
+research_refs:
+  kickoff: changes/2026-05-21_directive-lifecycle-hygiene/1-kickoff.md
+  problem_autopsy: changes/2026-05-21_directive-lifecycle-hygiene/problem-autopsy.md
+  pre_thinking: changes/2026-05-21_directive-lifecycle-hygiene/2-pre-thinking.md
+
+tasks:
+  - id: task-1
+    title: "Extend directive schema/storage for lifecycle state and revision ledger"
+    status: done_with_concerns
+    scar_count: 1
+    unresolved_assumptions: 0
+    depends_on: []
+
+  - id: task-2
+    title: "Implement project-scoped identity resolution and stable lineage assignment"
+    status: done_with_concerns
+    scar_count: 3
+    unresolved_assumptions: 1
+    depends_on: [task-1]
+
+  - id: task-3
+    title: "Add deterministic weight policy and replace flag-type rebound lifecycle logic"
+    status: done_with_concerns
+    scar_count: 1
+    unresolved_assumptions: 0
+    depends_on: [task-1, task-2]
+
+  - id: task-4
+    title: "Add revision pipeline, stalled handling, and revision history persistence"
+    status: done_with_concerns
+    scar_count: 1
+    unresolved_assumptions: 0
+    depends_on: [task-1, task-2, task-3]
+
+  - id: task-5
+    title: "Enforce capacity ceiling and expose lifecycle state to operator surfaces"
+    status: done
+    scar_count: 0
+    unresolved_assumptions: 0
+    depends_on: [task-1, task-2, task-3, task-4]

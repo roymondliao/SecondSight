@@ -1,0 +1,19 @@
+task_id: task-1
+completion_status: done_with_concerns
+
+known_shortcuts:
+  - description: "directive_revisions is linked by logical directive_id/identity_key only; no foreign-key enforcement or delete policy is implemented in this task."
+    deferred_to_feature_iteration: true
+
+silent_failure_conditions: []
+
+assumptions_made:
+  - assumption: "SQLite ALTER TABLE ADD COLUMN with DEFAULT backfills existing directives rows safely enough for lifecycle state columns."
+    verified: true
+    note: "Verified by tests/storage/test_directives_repository.py::test_create_schema_backfills_new_lifecycle_columns_on_existing_table."
+  - assumption: "The shared per-project SQLite DB is the correct long-term home for directive revision ledger rows."
+    verified: true
+    note: "Verified by architecture constraint: SecondSight only ships per-project SQLite databases, so directive revision history must live at the project DB layer."
+
+debt_registered: true
+debt_location: "src/secondsight/storage/directive_revisions_table.py; changes/2026-05-21_directive-lifecycle-hygiene/2-plan.md"
