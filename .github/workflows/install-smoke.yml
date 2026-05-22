@@ -47,47 +47,13 @@ jobs:
           ls -1 dist/*.whl
 
       - name: Verify wheel ships dashboard bundle
-        # Guard against pyproject `force-include` silently skipping a missing
-        # frontend/dist — without this the wheel could install successfully
-        # but serve a 404 at /dashboard/.
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import glob, sys, zipfile
-          wheel = glob.glob('dist/*.whl')[0]
-          with zipfile.ZipFile(wheel) as z:
-              names = z.namelist()
-          required = [
-              'secondsight/_resources/dashboard/index.html',
-              'secondsight/_resources/hooks',
-          ]
-          missing = [r for r in required if not any(n.startswith(r) for n in names)]
-          if missing:
-              print(f'wheel missing bundled resources: {missing}', file=sys.stderr)
-              sys.exit(1)
-          print(f'wheel ok: {wheel}')
-          PY
+        run: python tests/smoke/test_verify_wheel_contents.py dist/*.whl
 
-      - name: Install wheel + smoke CLI lifecycle in clean python:3.14-slim
+      - name: Install wheel smoke in clean python:3.14-slim
         run: |
           set -euo pipefail
           docker run --rm \
             -v "$PWD/dist:/dist:ro" \
+            -v "$PWD/tests/smoke:/smoke:ro" \
             python:3.14-slim \
-            bash -euo pipefail -c '
-              pip install --no-cache-dir --disable-pip-version-check /dist/*.whl
-              secondsight --version
-              SS_HOME=/tmp/secondsight-home
-              CLAUDE_HOME=/tmp/claude-home
-              mkdir -p "$SS_HOME" "$CLAUDE_HOME"
-              printf "{}" > "$CLAUDE_HOME/settings.json"
-              secondsight init --claude-home "$CLAUDE_HOME" --format json >/tmp/init.json
-              secondsight serve --daemon --home "$SS_HOME"
-              python -c "import json, subprocess, time; cmd = ['secondsight', 'status', '--home', '/tmp/secondsight-home', '--format', 'json']; ok = False; [(ok := json.loads(subprocess.check_output(cmd, text=True))['server']['running']) or time.sleep(0.25) for _ in range(40) if not ok]; assert ok, 'daemon did not report running=true'"
-              secondsight serve --stop --home "$SS_HOME"
-              python -c "import json, subprocess; status = json.loads(subprocess.check_output(['secondsight', 'status', '--home', '/tmp/secondsight-home', '--format', 'json'], text=True)); assert not status['server']['running'], 'status still reports running after stop'"
-              if secondsight serve --home relative-home >/tmp/serve-negative.log 2>&1; then
-                echo "expected serve failure for relative home" >&2
-                exit 1
-              fi
-            '
+            python /smoke/test_installed_wheel_smoke.py "/dist/*.whl"

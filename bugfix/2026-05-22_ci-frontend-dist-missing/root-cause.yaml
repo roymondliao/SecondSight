@@ -1,0 +1,12 @@
+root_cause:
+  summary: "The Python package build forcibly includes frontend/dist, but CI ran uv sync before producing that directory."
+  evidence:
+    - "pyproject.toml maps frontend/dist into the wheel resource bundle with hatchling force-include."
+    - "frontend/dist is gitignored, so a clean GitHub Actions checkout does not contain it."
+    - "ci.yml previously ran uv sync before any Node setup or frontend build step."
+  why_it_hid:
+    - "Developer machines and prior local validation can have a stale ignored frontend/dist directory."
+    - "install-smoke.yml already builds the frontend before wheel build, so that workflow does not expose the same ordering bug."
+death_test:
+  command: "CI clean checkout: uv sync before frontend build"
+  expected_before_fix: "FileNotFoundError: Forced include not found: frontend/dist"

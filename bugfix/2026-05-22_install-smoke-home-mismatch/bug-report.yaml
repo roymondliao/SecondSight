@@ -1,0 +1,14 @@
+failure:
+  level: 1
+  type: visible_crash
+  observed_in: .github/workflows/install-smoke.yml
+  symptom: "install-smoke container fails at `secondsight serve --daemon --home \"$SS_HOME\"` with reason='state_missing'"
+impact:
+  scope: "Install Smoke Test workflow for pull_request and pushes to main"
+  affected_users: "contributors relying on package install smoke validation"
+duration:
+  since: "the smoke test began exercising serve startup after init"
+  detection_delay: "detected by GitHub Actions on a clean python:3.14-slim container"
+notes:
+  - "The log shows init wrote state.json under /root/.secondsight, while serve used /tmp/secondsight-home."
+  - "The smoke test is validating server lifecycle, not real CLI dispatch."

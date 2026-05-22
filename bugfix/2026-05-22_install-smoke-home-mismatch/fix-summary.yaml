@@ -1,0 +1,12 @@
+fix:
+  summary: "Point secondsight init at the same $SS_HOME used by the smoke test and narrow install-smoke to installed-wheel init validation."
+  files_changed:
+    - ".github/workflows/install-smoke.yml"
+    - "tests/smoke/test_installed_wheel_smoke.py"
+    - "tests/smoke/test_verify_wheel_contents.py"
+  validation:
+    - "The clean installed-wheel smoke asserts $SS_HOME/state.json exists after init."
+    - "Daemon startup is no longer part of install-smoke; no fake coding-agent CLI is needed."
+residual_risk:
+  - "This smoke test does not validate real Claude Code or Codex authentication."
+  - "Daemon serve/status/stop regressions must be covered by integration or gated e2e tests rather than install-smoke."

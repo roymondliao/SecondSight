@@ -1,0 +1,32 @@
+type: fast_track
+description: "Move install-smoke wheel assertions into tests/smoke scripts and narrow the Docker smoke to installed-wheel init checks."
+death_clause: "If install-smoke stops verifying wheel package resources or clean installed-wheel init behavior, this change is failed."
+acceptance:
+  - ".github/workflows/install-smoke.yml delegates wheel content validation to tests/smoke/test_verify_wheel_contents.py."
+  - ".github/workflows/install-smoke.yml delegates clean installed-wheel validation to tests/smoke/test_installed_wheel_smoke.py."
+  - "The Docker smoke no longer starts or stops the daemon."
+  - "The clean installed-wheel smoke still runs secondsight --version and secondsight init with a dedicated --secondsight-home."
+scar_tag: none
+scar_items: []
+files_changed:
+  - ".github/workflows/install-smoke.yml"
+  - "tests/smoke/test_verify_wheel_contents.py"
+  - "tests/smoke/test_installed_wheel_smoke.py"
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: "The wheel resource prefixes stay in one smoke script instead of being embedded in workflow YAML."
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: "The workflow now orchestrates build/container steps while tests/smoke owns assertions."
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: "The daemon lifecycle branch was removed from install-smoke because it depends on process and port behavior outside installed-wheel packaging."
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: "The Docker smoke keeps clean-install coverage without duplicating serve/status integration tests."
+verification:
+  - "python -m py_compile tests/smoke/test_verify_wheel_contents.py tests/smoke/test_installed_wheel_smoke.py"
+  - "python tests/smoke/test_verify_wheel_contents.py dist/*.whl"
+  - "temporary Python 3.14 venv: tests/smoke/test_installed_wheel_smoke.py dist/*.whl"
+  - "pre-commit run --files .github/workflows/install-smoke.yml tests/smoke/test_verify_wheel_contents.py tests/smoke/test_installed_wheel_smoke.py changes/2026-05-22_install-smoke-wheel-scripts/fast-track.yaml bugfix/2026-05-22_install-smoke-home-mismatch/root-cause.yaml bugfix/2026-05-22_install-smoke-home-mismatch/fix-summary.yaml"

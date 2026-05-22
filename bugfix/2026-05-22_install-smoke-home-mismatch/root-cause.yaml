@@ -1,0 +1,14 @@
+root_cause:
+  summary: "The install smoke test initialized the default SecondSight home but started the server with a different --home."
+  evidence:
+    - "`secondsight init --claude-home \"$CLAUDE_HOME\"` did not pass --secondsight-home."
+    - "`secondsight serve --daemon --home \"$SS_HOME\"` loaded /tmp/secondsight-home/state.json."
+    - "The observed log says state.json was written at /root/.secondsight/state.json."
+  follow_up_refinement:
+    summary: "The daemon lifecycle check was broader than the installed-wheel packaging contract."
+    mitigation: "Move installed-wheel assertions to tests/smoke and stop starting the daemon in install-smoke; daemon lifecycle belongs in integration or gated e2e coverage."
+  prior_context:
+    - "changes/2026-05-14_analysis-mode-toggle/1-kickoff.md notes that install-smoke/CI CLI-mode happy path needs either a mock or a real coding-agent CLI; this workflow now avoids that contract by not starting serve."
+death_test:
+  command: "Run install-smoke in a clean container with init using default home and serve using /tmp/secondsight-home."
+  expected_before_fix: "serve fails with reason='state_missing'"

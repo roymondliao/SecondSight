@@ -24,6 +24,21 @@ jobs:
           enable-cache: true
           python-version: "3.14"
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.19.0"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend dashboard
+        run: |
+          set -euo pipefail
+          cd frontend
+          npm ci
+          npm run build
+          test -f dist/index.html
+
       - name: Cache pre-commit hooks
         uses: actions/cache@v4
         with:
@@ -32,12 +47,6 @@ jobs:
 
       - name: Sync dependencies
         run: uv sync
-
-      - name: Ruff check
-        run: uvx ruff@0.15.5 check .
-
-      - name: Ruff format check
-        run: uvx ruff@0.15.5 format --check .
 
       - name: Pre-commit
         run: uvx pre-commit run --all-files --show-diff-on-failure

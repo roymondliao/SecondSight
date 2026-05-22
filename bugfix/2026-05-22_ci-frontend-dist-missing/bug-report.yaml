@@ -1,0 +1,13 @@
+failure:
+  level: 1
+  type: visible_crash
+  observed_in: .github/workflows/ci.yml
+  symptom: "uv sync fails while hatchling builds the secondsight editable package"
+impact:
+  scope: "CI runs for pull_request and pushes to main"
+  affected_users: "contributors waiting on CI"
+duration:
+  since: "unknown"
+  detection_delay: "detected when CI ran from a clean checkout without frontend/dist"
+notes:
+  - "The local checkout can hide this because frontend/dist is ignored and may already exist."

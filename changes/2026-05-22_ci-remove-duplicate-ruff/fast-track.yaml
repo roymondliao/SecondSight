@@ -1,0 +1,24 @@
+type: fast_track
+description: "Remove duplicate standalone Ruff CI steps because pre-commit already runs Ruff check and format hooks."
+death_clause: "If CI stops running Ruff through pre-commit, this change is failed."
+acceptance:
+  - ".github/workflows/ci.yml no longer contains standalone Ruff check or Ruff format steps."
+  - "The Pre-commit CI step remains present."
+  - "Workflow YAML passes pre-commit validation."
+scar_tag: none
+scar_items: []
+files_changed:
+  - ".github/workflows/ci.yml"
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: "Reuses the existing pre-commit Ruff hooks instead of maintaining duplicate uvx ruff commands."
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: "Keeps lint and formatting responsibility in the existing pre-commit step."
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: "Deletes two redundant workflow steps without adding new branching or abstraction."
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: "Removes the duplicated Ruff source of truth from CI."

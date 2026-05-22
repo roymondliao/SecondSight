@@ -1,0 +1,10 @@
+fix:
+  summary: "Build the frontend dashboard in ci.yml before uv sync triggers hatchling editable package construction."
+  files_changed:
+    - ".github/workflows/ci.yml"
+  validation:
+    - "npm build produces frontend/dist/index.html"
+    - "uv sync can run after frontend/dist exists"
+residual_risk:
+  - "If frontend/package-lock.json becomes incompatible with Node 20.19.0, CI will fail earlier in the dashboard build step."
+  - "If pyproject.toml adds more force-included generated paths, those paths need matching CI build steps before uv sync."
