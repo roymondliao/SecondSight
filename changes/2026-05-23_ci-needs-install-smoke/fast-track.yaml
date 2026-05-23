@@ -1,0 +1,27 @@
+type: fast_track
+description: "Merge install-smoke into CI as a dependent job."
+death_clause: "If install-smoke can run before the CI job succeeds, or if installed-wheel smoke coverage is removed, this change is failed."
+acceptance:
+  - ".github/workflows/ci.yml contains an install-smoke job with needs: ci."
+  - ".github/workflows/install-smoke.yml is removed."
+  - "The install-smoke job still builds the frontend, builds the wheel, verifies wheel resources, and runs the clean installed-wheel smoke."
+  - "Both CI and install-smoke setup actions use Node 24-compatible major versions."
+  - ".github/workflows/ci.yml defines shared PYTHON_VERSION and NODE_VERSION env values used by both jobs."
+scar_tag: none
+scar_items: []
+files_changed:
+  - ".github/workflows/ci.yml"
+  - ".github/workflows/install-smoke.yml"
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: "Reuses the existing CI trigger and concurrency instead of maintaining a second parallel workflow for the same PR/push gate."
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: "Keeps source validation in job ci and artifact validation in job install-smoke with an explicit needs edge."
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: "Uses GitHub Actions native job dependency rather than workflow_run checkout/head_sha plumbing."
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: "Deletes the separate install-smoke workflow trigger and concurrency block; shared Python and Node pins now have one workflow-level source."

@@ -1,0 +1,26 @@
+type: fast_track
+description: "Update install-smoke GitHub Actions and frontend build pin to Node 24-compatible versions."
+death_clause: "If install-smoke still uses Node 20-runtime JavaScript actions or builds the frontend with Node 20 after this change, the change is failed."
+acceptance:
+  - ".github/workflows/install-smoke.yml uses actions/checkout@v6."
+  - ".github/workflows/install-smoke.yml uses astral-sh/setup-uv@v8."
+  - ".github/workflows/install-smoke.yml uses actions/setup-node@v6."
+  - ".github/workflows/ci.yml installs Node 24.16.0 for the frontend build via shared NODE_VERSION."
+scar_tag: none
+scar_items: []
+files_changed:
+  - ".github/workflows/ci.yml"
+  - ".github/workflows/install-smoke.yml"
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: "Uses upstream action major tags instead of adding FORCE_JAVASCRIPT_ACTIONS_TO_NODE24 as a workflow-level workaround."
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: "Keeps action runtime upgrades in the existing setup steps without changing job structure."
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: "Changes only action references and the tested frontend Node pin; package build/test commands stay untouched."
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: "Avoids duplicating action-runtime configuration and frontend Node pins; action versions and NODE_VERSION encode the runtime choices."
