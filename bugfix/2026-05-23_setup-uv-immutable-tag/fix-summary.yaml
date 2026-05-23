@@ -1,0 +1,5 @@
+fix: "Pin astral-sh/setup-uv to the immutable v8.1.0 tag in CI and release workflows."
+death_test: "pre-commit check-yaml validates the edited workflow files; rg confirms no setup-uv@v8 references remain."
+validation:
+  - "uv run pre-commit run --files .github/workflows/ci.yml .github/workflows/release.yml bugfix/2026-05-23_setup-uv-immutable-tag/bug-report.yaml bugfix/2026-05-23_setup-uv-immutable-tag/root-cause.yaml bugfix/2026-05-23_setup-uv-immutable-tag/fix-summary.yaml"
+silent_failure_condition: "This can fail again if another workflow adds a floating setup-uv major/minor tag instead of an immutable tag."

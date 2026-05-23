@@ -1,0 +1,8 @@
+hypothesis: "The workflow uses a non-existent setup-uv major tag."
+root_cause: "astral-sh/setup-uv v8 removed major and minor tags; workflows must use an immutable full tag such as v8.1.0."
+evidence:
+  - "GitHub Actions reported: unable to find version v8."
+  - "The setup-uv v8.0.0 release notes say major/minor tags are no longer published."
+affected_files:
+  - ".github/workflows/ci.yml"
+  - ".github/workflows/release.yml"

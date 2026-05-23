@@ -1,0 +1,6 @@
+failure_level: 1
+classification: "Visible crash"
+symptom: "GitHub Actions cannot resolve astral-sh/setup-uv@v8."
+impact_scope: ".github/workflows/ci.yml jobs that install uv fail before tests run."
+duration: "Introduced when workflows were updated from setup-uv v4 to v8."
+detection_delay: "Detected by GitHub Actions immediately on workflow startup."
