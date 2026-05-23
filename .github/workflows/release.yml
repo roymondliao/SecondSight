@@ -1,0 +1,175 @@
+name: Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+    paths:
+      - "pyproject.toml"
+      - ".github/workflows/release.yml"
+      - "tests/smoke/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.14"
+  NODE_VERSION: "24.16.0"
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.event.pull_request.merge_commit_sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      tag: ${{ steps.release_meta.outputs.tag }}
+      release_sha: ${{ steps.release_meta.outputs.release_sha }}
+      release_exists: ${{ steps.remote_state.outputs.release_exists }}
+      tag_commit: ${{ steps.remote_state.outputs.tag_commit }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+
+      - name: Derive release tag
+        id: release_meta
+        shell: bash
+        env:
+          RELEASE_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          version="$(python3 - <<'PY'
+          import tomllib
+
+          with open("pyproject.toml", "rb") as file:
+              pyproject = tomllib.load(file)
+
+          version = pyproject["project"]["version"]
+          if not isinstance(version, str) or not version:
+              raise SystemExit("[project].version must be a non-empty string")
+
+          print(version)
+          PY
+          )"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "release_sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Inspect remote tag and release state
+        id: remote_state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.release_meta.outputs.tag }}"
+          current_sha="$RELEASE_SHA"
+          tag_commit="$(git ls-remote --tags origin "refs/tags/${tag}^{}" | awk '{print $1}')"
+          if [ -z "$tag_commit" ]; then
+            tag_commit="$(git ls-remote --tags origin "refs/tags/${tag}" | awk '{print $1}')"
+          fi
+          if gh release view "$tag" --json tagName >/dev/null 2>&1; then
+            release_exists=true
+          else
+            release_exists=false
+          fi
+          if [ -n "$tag_commit" ] && [ "$tag_commit" != "$current_sha" ]; then
+            echo "Existing tag ${tag} points to ${tag_commit}, current commit is ${current_sha}." >&2
+            exit 1
+          fi
+          echo "tag_commit=$tag_commit" >> "$GITHUB_OUTPUT"
+          echo "release_exists=$release_exists" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: prepare
+    if: needs.prepare.outputs.release_exists != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.release_sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8
+        with:
+          enable-cache: true
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend dashboard
+        run: |
+          set -euo pipefail
+          cd frontend
+          npm ci
+          npm run build
+          test -f dist/index.html
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      - name: Build release distributions
+        run: |
+          set -euo pipefail
+          uv build --sdist --wheel --out-dir dist
+          ls -1 dist/*
+
+      - name: Verify wheel ships dashboard bundle
+        run: python tests/smoke/test_verify_wheel_contents.py dist/*.whl
+
+      - name: Install wheel smoke in clean python:3.14-slim
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD/dist:/dist:ro" \
+            -v "$PWD/tests/smoke:/smoke:ro" \
+            python:3.14-slim \
+            python /smoke/test_installed_wheel_smoke.py "/dist/*.whl"
+
+      - name: Create annotated tag
+        if: needs.prepare.outputs.tag_commit == ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ needs.prepare.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" "${{ needs.prepare.outputs.release_sha }}" -m "Release ${tag}"
+          git push origin "$tag"
+
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ needs.prepare.outputs.tag }}"
+          gh release create "$tag" dist/* --verify-tag --target "${{ needs.prepare.outputs.release_sha }}" --generate-notes
+
+  already-released:
+    needs: prepare
+    if: needs.prepare.outputs.release_exists == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Release already exists
+        run: echo "degradation_reason=already_released"

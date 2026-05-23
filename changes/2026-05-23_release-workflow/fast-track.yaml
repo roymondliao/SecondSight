@@ -1,0 +1,27 @@
+type: fast_track
+description: "Add a GitHub Release workflow whose tag is derived from pyproject.toml [project].version."
+death_clause: "If a release can be created with a tag that does not match pyproject.toml [project].version, this change is failed."
+acceptance:
+  - ".github/workflows/release.yml creates tag v<pyproject project.version>."
+  - "Release runs automatically only for merged PRs into main that touch pyproject.toml, release.yml, or smoke scripts."
+  - "Release can also run manually from main via workflow_dispatch."
+  - "Release builds frontend assets before building wheel/sdist."
+  - "Release verifies wheel resources and clean installed-wheel smoke before creating the tag or GitHub Release."
+  - "Release attaches dist/* artifacts to the GitHub Release."
+scar_tag: none
+scar_items: []
+files_changed:
+  - ".github/workflows/release.yml"
+quality_checklist:
+  - criterion: "C5 Reuse"
+    checked: true
+    note: "Reuses the existing tests/smoke scripts for package artifact validation."
+  - criterion: "C6 Clear Structure"
+    checked: true
+    note: "Keeps release metadata derivation, remote state inspection, artifact build, smoke validation, tag creation, and release creation as separate workflow steps."
+  - criterion: "C7 Elegant Logic"
+    checked: true
+    note: "Reads pyproject.toml with stdlib tomllib instead of introducing a project-specific release helper dependency."
+  - criterion: "C8 No Redundancy"
+    checked: true
+    note: "pyproject.toml [project].version is the only version source; the release tag is derived from it as v<version>."
