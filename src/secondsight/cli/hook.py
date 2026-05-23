@@ -6,9 +6,10 @@ import sys
 
 import typer
 
+from secondsight.cli._typer import create_typer
 from secondsight.feedback.hook_runner import build_user_prompt_hook_output
 
-app = typer.Typer(
+app = create_typer(
     name="hook",
     help="Internal hook runtime commands.",
     hidden=True,

@@ -47,6 +47,7 @@ import typer
 from rich.console import Console
 
 from secondsight.cli._home import secondsight_home as resolve_secondsight_home
+from secondsight.cli._typer import create_typer
 from secondsight.config.env import (
     ENV_ANALYSIS_MODEL,
     ENV_DEFAULT_AGENT,
@@ -64,7 +65,7 @@ from secondsight.storage.retention import (
     BUILTIN_DEFAULT_TTL_DAYS,
 )
 
-app = typer.Typer(
+app = create_typer(
     name="config",
     help="Show effective configuration with source attribution, or validate config files.",
     invoke_without_command=False,

@@ -45,6 +45,8 @@ from tests.e2e.conftest import (
     wait_for_server as _wait_for_server_shared,
 )
 
+pytestmark = pytest.mark.local_only
+
 # ---------------------------------------------------------------------------
 # Gate: skip unless SECONDSIGHT_TEST_REAL_CLI=1
 # ---------------------------------------------------------------------------

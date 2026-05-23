@@ -33,8 +33,9 @@ from secondsight.cli import init as init_cmd
 from secondsight.cli import serve as serve_cmd
 from secondsight.cli import status as status_cmd
 from secondsight.cli import sync as sync_cmd
+from secondsight.cli._typer import create_typer
 
-app = typer.Typer(
+app = create_typer(
     name="secondsight",
     help=(
         "SecondSight — observation + analysis for coding agents.\n\n"

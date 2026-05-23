@@ -34,13 +34,14 @@ from rich.table import Table
 
 from secondsight.api.registry import ProjectRegistry
 from secondsight.cli._home import secondsight_home as resolve_secondsight_home
+from secondsight.cli._typer import create_typer
 from secondsight.storage.filesystem_backfill import (
     FallbackArchiveReport,
     FilesystemBackfill,
     archive_fallback_events,
 )
 
-app = typer.Typer(name="sync", help="Backfill SecondSight DB from filesystem traces.")
+app = create_typer(name="sync", help="Backfill SecondSight DB from filesystem traces.")
 _console = Console()
 
 

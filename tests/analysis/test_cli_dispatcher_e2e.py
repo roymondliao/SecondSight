@@ -28,6 +28,8 @@ from secondsight.analysis.output import AnalysisOutput
 from secondsight.config.schema import AnalysisCLIConfig, AnalysisCLIModelsConfig, AnalysisConfig
 from secondsight.state import SecondSightState
 
+pytestmark = pytest.mark.local_only
+
 # Gate: skip unless SECONDSIGHT_TEST_REAL_CLI=1
 real_cli = pytest.mark.skipif(
     os.environ.get("SECONDSIGHT_TEST_REAL_CLI") != "1",

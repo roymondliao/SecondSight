@@ -67,6 +67,7 @@ from rich.table import Table
 from secondsight.api._id_safety import is_safe_id
 from secondsight.api.registry import ProjectRegistry
 from secondsight.cli._home import secondsight_home as resolve_secondsight_home
+from secondsight.cli._typer import create_typer
 from secondsight.storage.analysis_retention import (
     AnalysisResultsPurger,
     ExpiredAnalysis,
@@ -83,7 +84,7 @@ from secondsight.storage.retention import (
 )
 from secondsight.storage.session_reports_repository import SessionReportsRepository
 
-app = typer.Typer(
+app = create_typer(
     name="cleanup",
     help=(
         "Reap expired sessions per the retention policy. "

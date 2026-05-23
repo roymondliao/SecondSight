@@ -56,7 +56,7 @@ jobs:
         run: uvx pre-commit run --all-files --show-diff-on-failure
 
       - name: Pytest
-        run: uv run pytest
+        run: uv run pytest -m "not local_only"
 
   install-smoke:
     needs: ci

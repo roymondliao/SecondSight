@@ -1011,6 +1011,7 @@ def _is_pid_alive(pid: int) -> bool:
         return False
 
 
+@pytest.mark.local_only
 class TestMH5CliLifecycle:
     """MH-5: Full install-and-run lifecycle composes correctly.
 
@@ -1022,11 +1023,11 @@ class TestMH5CliLifecycle:
         secondsight serve --stop       → PID file gone, port unbound
         secondsight status --json      → running=false, event count visible
 
-    This test is the most fragile of MH-1..MH-5 (subprocess fork +
-    real port bind + filesystem state across 4 directories). Every
-    step uses bounded polling instead of blind sleeps, and the
-    finalizer ALWAYS attempts `serve --stop` even if a sub-step
-    fails — to avoid leaking a daemon process across test runs.
+    This local-only test is the most fragile of MH-1..MH-5 (subprocess
+    fork + real port bind + filesystem state across 4 directories). It
+    also depends on the machine having the relevant coding-agent CLI
+    available to satisfy serve precheck. GitHub Actions intentionally
+    excludes it with ``pytest -m "not local_only"``.
     """
 
     def test_mh5_lifecycle_composes_end_to_end(self, tmp_path: Path) -> None:
@@ -1070,7 +1071,13 @@ class TestMH5CliLifecycle:
             # --- Step 1: init --dry-run (no files written) ---
             dry = runner.invoke(
                 init_app,
-                ["--claude-home", str(claude_home), "--dry-run"],
+                [
+                    "--claude-home",
+                    str(claude_home),
+                    "--secondsight-home",
+                    str(secondsight_home),
+                    "--dry-run",
+                ],
             )
             assert dry.exit_code == 0, (
                 f"init --dry-run failed: exit={dry.exit_code} stdout={dry.stdout!r}"
@@ -1087,7 +1094,15 @@ class TestMH5CliLifecycle:
             ), "init --dry-run modified settings.json — must be no-op."
 
             # --- Step 2: init (real) ---
-            real = runner.invoke(init_app, ["--claude-home", str(claude_home)])
+            real = runner.invoke(
+                init_app,
+                [
+                    "--claude-home",
+                    str(claude_home),
+                    "--secondsight-home",
+                    str(secondsight_home),
+                ],
+            )
             assert real.exit_code == 0, f"init failed: exit={real.exit_code} stdout={real.stdout!r}"
             hooks_dir = claude_home / "hooks"
             assert hooks_dir.is_dir(), f"hooks directory not created at {hooks_dir}"

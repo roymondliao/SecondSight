@@ -42,8 +42,9 @@ from rich.table import Table
 
 from secondsight.api.directives import DirectiveOut, DirectiveRevisionOut
 from secondsight.cli._home import secondsight_home as resolve_secondsight_home
+from secondsight.cli._typer import create_typer
 
-app = typer.Typer(
+app = create_typer(
     name="directive",
     help=(
         "Query and manage directives. Supports server-mode (httpx → API server) "

@@ -31,6 +31,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, Literal, cast
 
 from loguru import logger
@@ -52,8 +53,7 @@ from secondsight.config import load_project_config
 from secondsight.config.loader import _resolve_provider_keys
 from secondsight.config.schema import SecondSightConfig
 from secondsight.sdk.agent import PydanticAIAnalysisAgent
-from secondsight.sdk._specs import ModelSpec
-from secondsight.sdk.model_selection import _infer_provider
+from secondsight.sdk.model_selection import select_model
 from secondsight.sdk.router import LLMRouter
 from secondsight.sdk.trigger import LockRegistry, Trigger
 from secondsight.state import SecondSightState
@@ -763,12 +763,12 @@ def _build_analysis_agent(
     # Task 5: resolve provider keys from config (Decision E1 / DC8).
     # Loaded ONCE here — mid-flight env mutations have no effect (cache-once).
     resolved_keys = _resolve_provider_keys(cfg.providers)
-    primary_model = cfg.analysis.sdk.primary_model
-    primary_spec = ModelSpec(name=primary_model, provider=_infer_provider(primary_model))
-    fallback_specs: list[ModelSpec] = []
-    if cfg.analysis.sdk.fallback_model:
-        fallback_model = cfg.analysis.sdk.fallback_model
-        fallback_specs = [ModelSpec(name=fallback_model, provider=_infer_provider(fallback_model))]
+    primary_spec, fallback_specs = select_model(
+        project_id=project_id,
+        project_config=SimpleNamespace(analysis=cfg.project_analysis),
+        global_config=SimpleNamespace(analysis=cfg.analysis_global),
+        events_repo=events_repository,
+    )
     router = LLMRouter(
         primary=primary_spec,
         fallbacks=fallback_specs,

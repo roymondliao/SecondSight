@@ -72,9 +72,10 @@ from secondsight.installer import (
 )
 from secondsight.installer.claude_settings import InvalidSettingsError, PatchPlan
 from secondsight.installer.hook_install import HookBundleNotFoundError
+from secondsight.cli._typer import create_typer
 from secondsight.state import SecondSightState, SecondSightStateError, make_state
 
-app = typer.Typer(name="init", help="Install SecondSight hook scripts into Claude Code or Codex.")
+app = create_typer(name="init", help="Install SecondSight hook scripts into Claude Code or Codex.")
 _console = Console()
 
 _SUPPORTED_AGENTS = frozenset({"claude_code", "codex"})

@@ -47,6 +47,11 @@ packages = ["src/secondsight"]
 "frontend/dist" = "secondsight/_resources/dashboard"
 "scripts/hooks" = "secondsight/_resources/hooks"
 
+[tool.pytest.ini_options]
+markers = [
+  "local_only: tests that require local machine state, daemon lifecycle, or installed coding-agent CLIs and are excluded from GitHub Actions CI."
+]
+
 [tool.ruff]
 extend-exclude = ["changes"]
 line-length = 100

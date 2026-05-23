@@ -18,9 +18,10 @@ from rich.table import Table
 
 from secondsight.api.registry import ProjectRegistry
 from secondsight.cli._home import secondsight_home as resolve_secondsight_home
+from secondsight.cli._typer import create_typer
 from secondsight.daemon import daemon_status
 
-app = typer.Typer(name="status", help="Print SecondSight daemon + project status.")
+app = create_typer(name="status", help="Print SecondSight daemon + project status.")
 _console = Console()
 
 

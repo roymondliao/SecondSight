@@ -155,6 +155,12 @@ class _ClaudeCodeAdapterStub:
             return False
 
     def normalize(self, envelope: Any, event_type: str) -> Any:
+        payload = getattr(envelope, "payload", None)
+        if isinstance(payload, dict) and payload.get("hook_event_name"):
+            from secondsight.adapters import ClaudeCodeAdapter
+
+            return ClaudeCodeAdapter().normalize(envelope, event_type)
+
         from secondsight.adapters import IdentityAdapter
 
         return IdentityAdapter().normalize(envelope, event_type)
@@ -262,7 +268,8 @@ def real_secondsight_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
-        app.state.server_state.adapter_registry.register(_ClaudeCodeAdapterStub())  # type: ignore[arg-type]
+        registry = app.state.server_state.adapter_registry
+        registry._adapters.insert(0, _ClaudeCodeAdapterStub())  # type: ignore[attr-defined]
 
     try:
         yield {

@@ -6,7 +6,7 @@ Background — bugfix/2026-05-15_init-template-schema-drift:
   authored during config-unification (2026-05-13 task-4). The subsequent
   effort 2026-05-14_analysis-mode-toggle reshaped the schema dataclasses
   (added [general], [providers.*], [analysis.cli|sdk], etc.) and produced
-  a locked example file, but the _TEMPLATE string was never updated.
+  a root config.example.toml file, but the _TEMPLATE string was never updated.
 
   Operators running `secondsight init` got a stale config that silently
   fell through to builtin defaults for the missing sections. The diff-
@@ -59,15 +59,9 @@ else:
 
 from secondsight.config.template import generate_config_template
 
-# Path to the locked schema example, relative to repo root.
-# This file is the authored truth for the global config.toml shape; the
-# 2026-05-14_analysis-mode-toggle effort's research/planning gate locked it.
-LOCKED_EXAMPLE_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "changes"
-    / "2026-05-14_analysis-mode-toggle"
-    / "config.example.toml"
-)
+# Path to the canonical schema example, relative to repo root.
+# The root example is the authored truth for the global config.toml shape.
+LOCKED_EXAMPLE_PATH = Path(__file__).resolve().parents[2] / "config.example.toml"
 
 
 def _flatten(data: dict, prefix: str = "") -> set[str]:

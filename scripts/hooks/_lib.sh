@@ -185,7 +185,12 @@ secondsight_post() {
         return 0
     fi
     local post_body
-    post_body="$(jq -c '{event_id,timestamp,sequence_number,payload}' <<<"$fallback_record" 2>/dev/null)"
+    post_body="$(
+        jq -c \
+            '{event_id,timestamp,sequence_number,session_id,payload}
+             + (if (.project_id // "") == "" then {} else {project_id} end)' \
+            <<<"$fallback_record" 2>/dev/null
+    )"
     if [ -z "$post_body" ]; then
         _secondsight_fallback_append_record "$fallback_record" "$(_secondsight_resolve_home)"
         return 0
@@ -343,6 +348,12 @@ _secondsight_build_ingress_material() {
         return 1
     fi
 
+    local project_id
+    project_id="$(jq -r '.project_id // empty' <<<"$raw_payload" 2>/dev/null)"
+    if [ -z "$project_id" ]; then
+        project_id="$(_secondsight_extract_legacy_field "$payload_json" "project_id")"
+    fi
+
     local agent="${SECONDSIGHT_AGENT:-claude_code}"
     local ss_home
     ss_home="$(_secondsight_resolve_home)"
@@ -373,12 +384,13 @@ _secondsight_build_ingress_material() {
         event_id="evt-${checksum}-${sequence_number}"
     fi
 
-    printf '%s\n%s\n%s\n%s\n%s\n' \
+    printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
         "$event_id" \
         "$timestamp" \
         "$sequence_number" \
         "$raw_payload" \
-        "$session_id"
+        "$session_id" \
+        "$project_id"
 }
 
 _secondsight_build_fallback_record() {
@@ -386,11 +398,13 @@ _secondsight_build_fallback_record() {
     local payload_json="$2"
     local material
     material="$(_secondsight_build_ingress_material "$event_type" "$payload_json")" || return 1
-    local event_id timestamp sequence_number raw_payload
+    local event_id timestamp sequence_number raw_payload session_id project_id
     event_id="$(printf '%s\n' "$material" | sed -n '1p')"
     timestamp="$(printf '%s\n' "$material" | sed -n '2p')"
     sequence_number="$(printf '%s\n' "$material" | sed -n '3p')"
     raw_payload="$(printf '%s\n' "$material" | sed -n '4p')"
+    session_id="$(printf '%s\n' "$material" | sed -n '5p')"
+    project_id="$(printf '%s\n' "$material" | sed -n '6p')"
     local agent="${SECONDSIGHT_AGENT:-claude_code}"
 
     jq -c -n \
@@ -398,6 +412,8 @@ _secondsight_build_fallback_record() {
         --arg event_type "$event_type" \
         --arg event_id "$event_id" \
         --arg timestamp "$timestamp" \
+        --arg session_id "$session_id" \
+        --arg project_id "$project_id" \
         --arg version "$_SECONDSIGHT_VERSION" \
         --argjson sequence_number "$sequence_number" \
         --argjson payload "$raw_payload" \
@@ -407,7 +423,8 @@ _secondsight_build_fallback_record() {
             event_id: $event_id,
             timestamp: $timestamp,
             sequence_number: $sequence_number,
+            session_id: $session_id,
             payload: $payload,
             hook_script_version: $version
-        }' 2>/dev/null
+        } + (if $project_id == "" then {} else {project_id: $project_id} end)' 2>/dev/null
 }

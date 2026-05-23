@@ -53,9 +53,10 @@ import typer
 import httpx
 
 from secondsight.cli._home import secondsight_home as resolve_secondsight_home
+from secondsight.cli._typer import create_typer
 from secondsight.sdk.trigger import DispatchResult, Trigger
 
-app = typer.Typer(
+app = create_typer(
     name="analyze",
     help=(
         "Trigger analysis for a session. Prefers API server mode; "

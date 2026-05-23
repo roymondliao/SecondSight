@@ -216,9 +216,9 @@ class ProjectAnalysisConfig:
 # ---------------------------------------------------------------------------
 # analysis-mode-toggle task-1: new section dataclasses
 # ---------------------------------------------------------------------------
-# These dataclasses represent the locked final schema from:
-#   changes/2026-05-14_analysis-mode-toggle/config.example.toml
-# Field names, defaults, and nesting exactly match that file.
+# These dataclasses represent the canonical schema documented in the repository
+# root config.example.toml. Field names, defaults, and nesting must match that
+# file.
 # ---------------------------------------------------------------------------
 
 

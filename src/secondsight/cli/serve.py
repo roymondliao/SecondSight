@@ -36,11 +36,12 @@ from loguru import logger
 
 from secondsight.api.server import ServerConfig, create_app
 from secondsight.cli import _home as cli_home
+from secondsight.cli._typer import create_typer
 from secondsight.config import SecondSightConfig, SecondSightConfigError, load_global_config
 from secondsight.daemon import StopOutcome, daemon_status, daemonize, stop_daemon
 from secondsight.logging_utils import configure_logging
 
-app = typer.Typer(name="serve", help="Manage the SecondSight daemon server.")
+app = create_typer(name="serve", help="Manage the SecondSight daemon server.")
 
 
 def _pid_path(home: Path) -> Path:

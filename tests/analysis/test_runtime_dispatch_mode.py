@@ -38,6 +38,8 @@ from secondsight.config.schema import (
 from secondsight.state import SecondSightState
 from secondsight.storage.retention import RetentionConfig
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -165,8 +167,8 @@ def test_sweeper_module_does_not_reference_mode() -> None:
     forbidden_patterns = [r"\.mode\b", r"mode\s*==", r"general\.mode", r'"cli"', r'"sdk"']
 
     sweeper_files = [
-        Path("/Users/yuyu_liao/vicone/SecondSight/src/secondsight/sdk/trigger.py"),
-        Path("/Users/yuyu_liao/vicone/SecondSight/src/secondsight/api/server.py"),
+        REPO_ROOT / "src" / "secondsight" / "sdk" / "trigger.py",
+        REPO_ROOT / "src" / "secondsight" / "api" / "server.py",
     ]
 
     violations: list[str] = []
@@ -195,7 +197,7 @@ def test_sweeper_module_does_not_reference_mode() -> None:
 
 def test_manual_analyze_cli_does_not_reference_mode() -> None:
     """Architectural guardrail: analyze.py must NOT reference config.general.mode."""
-    analyze_file = Path("/Users/yuyu_liao/vicone/SecondSight/src/secondsight/cli/analyze.py")
+    analyze_file = REPO_ROOT / "src" / "secondsight" / "cli" / "analyze.py"
     text = analyze_file.read_text()
 
     forbidden_patterns = [r"\.mode\b", r"mode\s*==", r"general\.mode"]
