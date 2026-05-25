@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
+
+# Typer's Rich help renderer reads this at import time. In GitHub Actions or
+# FORCE_COLOR environments, Rich can split option names with ANSI controls
+# (e.g. "-\x1b...-session"), making semantic CLI assertions flaky.
+os.environ.setdefault("_TYPER_FORCE_DISABLE_TERMINAL", "1")
 
 import pytest
 from _pytest.logging import LogCaptureFixture
